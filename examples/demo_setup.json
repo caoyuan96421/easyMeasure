@@ -1,0 +1,191 @@
+{
+  "format": "easyMeasure-setup-1",
+  "instruments": [
+    {
+      "name": "src",
+      "driver": "sim_source",
+      "address": "SIM::GPIB0",
+      "options": {
+        "gpib_addr": 1
+      }
+    },
+    {
+      "name": "dmm",
+      "driver": "sim_dmm",
+      "address": "SIM::GPIB0",
+      "options": {
+        "gpib_addr": 2
+      }
+    },
+    {
+      "name": "lockin",
+      "driver": "sim_lockin",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "magnet",
+      "driver": "sim_magnet",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "spec",
+      "driver": "sim_spectrum",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "cam",
+      "driver": "sim_camera",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "awg",
+      "driver": "sim_awg",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "tc",
+      "driver": "sim_temperature",
+      "address": "NONE",
+      "options": {}
+    }
+  ],
+  "aliases": [
+    {
+      "name": "Vg",
+      "target": "src.V1",
+      "min": -2,
+      "max": 2,
+      "ramp_rate": 2.0,
+      "unit": "V",
+      "description": "gate"
+    },
+    {
+      "name": "Vb",
+      "target": "src.V2",
+      "min": -0.5,
+      "max": 0.5,
+      "ramp_rate": 1.0,
+      "unit": "V",
+      "description": "bias"
+    },
+    {
+      "name": "Vx",
+      "target": "src.V3",
+      "min": -1,
+      "max": 1,
+      "ramp_rate": 2.0,
+      "unit": "V"
+    },
+    {
+      "name": "Vy",
+      "target": "src.V4",
+      "min": -1,
+      "max": 1,
+      "ramp_rate": 2.0,
+      "unit": "V"
+    },
+    {
+      "name": "output",
+      "target": "src.output",
+      "allowed": [
+        "ON",
+        "OFF"
+      ]
+    },
+    {
+      "name": "I",
+      "target": "dmm.reading",
+      "unit": "nA"
+    },
+    {
+      "name": "X",
+      "target": "lockin.X",
+      "unit": "V"
+    },
+    {
+      "name": "XY",
+      "target": "lockin.XY",
+      "unit": "V"
+    },
+    {
+      "name": "B",
+      "target": "magnet.field",
+      "min": -3,
+      "max": 3,
+      "unit": "T"
+    },
+    {
+      "name": "spectrum",
+      "target": "spec.trace"
+    },
+    {
+      "name": "peak",
+      "target": "spec.peak",
+      "unit": "GHz"
+    },
+    {
+      "name": "image",
+      "target": "cam.image"
+    },
+    {
+      "name": "brightness",
+      "target": "cam.total"
+    },
+    {
+      "name": "wave",
+      "target": "awg.waveform",
+      "min": -5,
+      "max": 5
+    },
+    {
+      "name": "awg_rms",
+      "target": "awg.rms"
+    },
+    {
+      "name": "T",
+      "target": "tc.temperature",
+      "unit": "K"
+    },
+    {
+      "name": "Tset",
+      "target": "tc.setpoint",
+      "min": 0,
+      "max": 300,
+      "ramp_rate": 5,
+      "unit": "K"
+    }
+  ],
+  "composites": [
+    {
+      "name": "detuning",
+      "targets": {
+        "Vx": "x",
+        "Vy": "-x"
+      },
+      "read": "(Vx-Vy)/2",
+      "min": -0.9,
+      "max": 0.9,
+      "unit": "V",
+      "description": "moves Vx and Vy in opposite directions"
+    }
+  ],
+  "monitor": [
+    {
+      "channel": "T",
+      "interval": 1.0
+    },
+    {
+      "channel": "I",
+      "interval": 0.5
+    },
+    {
+      "channel": "spectrum",
+      "interval": 2.0
+    }
+  ]
+}

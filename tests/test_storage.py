@@ -1,0 +1,123 @@
+import os
+import zlib
+
+import numpy as np
+import pytest
+
+from easymeasure.backend.storage import (EVENT, FOOTER, HEADER, POINT, DataSet, DataStore,
+                                         JournalWriter, StorageError, export_hdf5, iter_frames,
+                                         read_header)
+
+
+def make_header():
+    return {"shape": [4, 3], "dims": [{"sweep": ["x"], "record": ["a", "img"]},
+                                      {"sweep": ["y"], "record": ["s"]}],
+            "setpoints": {"0": {"x": np.linspace(0, 1, 4)}, "1": {"y": np.arange(3.0)}},
+            "definition": {"name": "t"}, "name": "t", "run": 1}
+
+
+def write_journal(path, n_points=None, footer=True):
+    w = JournalWriter(path, fsync_interval=0.0)
+    w.write(HEADER, make_header(), sync=True)
+    count = 0
+    for j in range(3):
+        w.write(POINT, {"k": 1, "i": [j], "v": {"s": "label%d" % j}})
+        for i in range(4):
+            if n_points is not None and count >= n_points:
+                w.close()
+                return
+            w.write(POINT, {"k": 0, "i": [i, j], "v": {"a": float(i + 10 * j),
+                                                      "img": np.full((2, 5), i)}})
+            count += 1
+    if footer:
+        w.write(FOOTER, {"status": "finished"}, sync=True)
+    w.close()
+
+
+def test_full_roundtrip(tmp_path):
+    p = tmp_path / "r.emj"
+    write_journal(p)
+    ds = DataSet.load(p)
+    assert ds.status == "finished" and ds.points == 12
+    assert ds.data["a"].shape == (4, 3) and ds.data["a"][2, 1] == 12
+    assert ds.data["img"].shape == (4, 3, 2, 5)
+    assert list(ds.data["s"]) == ["label0", "label1", "label2"]
+    assert read_header(p)["name"] == "t"
+    with pytest.raises(FileExistsError):
+        JournalWriter(p)          # never overwrite data
+
+
+def test_crash_recovery_truncated_and_corrupt(tmp_path):
+    p = tmp_path / "r.emj"
+    write_journal(p, n_points=7, footer=False)
+    raw = p.read_bytes()
+    # simulate power loss in the middle of the last frame
+    p.write_bytes(raw[:-13])
+    ds = DataSet.load(p)
+    assert ds.status == "incomplete"
+    assert ds.points == 6
+    assert np.isnan(ds.data["a"]).sum() == 6
+    # corrupt a byte in the middle: everything before it is kept
+    p2 = tmp_path / "c.emj"
+    write_journal(p2)
+    b = bytearray(p2.read_bytes())
+    b[len(b) // 2] ^= 0xFF
+    p2.write_bytes(bytes(b))
+    ds2 = DataSet.load(p2)
+    assert 0 < ds2.points < 12
+    # garbage file
+    p3 = tmp_path / "g.emj"
+    p3.write_bytes(b"hello world")
+    with pytest.raises(StorageError):
+        DataSet.load(p3)
+
+
+def test_shape_change_mid_sweep(tmp_path):
+    ds = DataSet(make_header())
+    ds.apply_point(0, (0, 0), {"img": np.ones((2, 5))})
+    ds.apply_point(0, (1, 0), {"img": np.ones((3, 3)) * 2})      # different shape
+    ds.apply_point(0, (2, 0), {"img": 7.0})
+    assert ds.data["img"].shape == (4, 3, 2, 5)
+    assert np.isnan(ds.data["img"][1, 0, 0, 3])
+    assert ds.data["img"][1, 0, 1, 2] == 2
+    assert (ds.data["img"][2, 0] == 7).all()
+    with pytest.raises(StorageError):
+        ds.apply_point(0, (9, 0), {"a": 1.0})
+
+
+def test_snapshot_and_hdf5(tmp_path):
+    p = tmp_path / "r.emj"
+    write_journal(p)
+    ds = DataSet.load(p)
+    snap = ds.snapshot()
+    from easymeasure.common import codec
+    ds2 = DataSet.from_snapshot(codec.decode(codec.encode(snap)))
+    np.testing.assert_array_equal(ds2.data["a"], ds.data["a"])
+    h5 = export_hdf5(ds, tmp_path / "r.h5")
+    ds3 = DataSet.load(h5)
+    np.testing.assert_array_equal(ds3.data["a"], ds.data["a"])
+    assert list(ds3.data["s"]) == ["label0", "label1", "label2"]
+    assert ds3.status == "finished"
+
+
+def test_datastore_numbering(tmp_path):
+    st = DataStore(tmp_path / "data")
+    r1, p1 = st.new_path("my sweep/../x")
+    r2, p2 = st.new_path("")
+    assert r2 == r1 + 1
+    assert ".." not in p1.name and "/" not in p1.name
+    (tmp_path / "data" / "run_counter.txt").write_text("garbage")
+    p1.parent.mkdir(parents=True, exist_ok=True)
+    p1.write_bytes(b"x")
+    r3, _ = st.new_path("a")
+    assert r3 == r1 + 1 or r3 > r1   # rebuilt from existing files, never reuses older numbers
+
+
+def test_live_journal_readable_while_writing(tmp_path):
+    p = tmp_path / "live.emj"
+    w = JournalWriter(p)
+    w.write(HEADER, make_header(), sync=True)
+    w.write(POINT, {"k": 0, "i": [0, 0], "v": {"a": 1.0}})
+    ds = DataSet.load(p)          # another process may read it any time
+    assert ds.points == 1 and ds.status == "incomplete"
+    w.close()

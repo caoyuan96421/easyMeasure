@@ -1,0 +1,74 @@
+"""Simulated lock-in amplifier (no port; address ``NONE``).
+
+Measures the differential conductance of the simulated quantum dot.  Besides
+scalar channels it offers ``XY`` - a 2-element vector reading.
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+from ...common.errors import ChannelError
+from ..instrument import ChannelSpec
+from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
+from .simworld import WORLD
+
+_SENS = ["1e-6", "1e-5", "1e-4", "1e-3", "1e-2", "1e-1", "1"]
+
+
+class SimLockin(SimDirectInstrument):
+    DESCRIPTION = "Simulated lock-in amplifier (X, Y, R, theta, XY vector)"
+    CHANNELS = [
+        ChannelSpec("X", "r", "float", (), "V"),
+        ChannelSpec("Y", "r", "float", (), "V"),
+        ChannelSpec("R", "r", "float", (), "V"),
+        ChannelSpec("theta", "r", "float", (), "deg"),
+        ChannelSpec("XY", "r", "float", (2,), "V", "X and Y as a vector"),
+        ChannelSpec("frequency", "rw", "float", (), "Hz"),
+        ChannelSpec("amplitude", "rw", "float", (), "V"),
+        ChannelSpec("sensitivity", "rw", "str", (), "", "one of " + ", ".join(_SENS)),
+    ]
+    DEFAULT_OPTIONS = dict(gate="src.V1", bias="src.V2", field="magnet.field", **FAULT_OPTION_DOC)
+
+    def connect(self):
+        self.gate()
+        self.freq = getattr(self, "freq", 17.77)
+        self.amp = getattr(self, "amp", 0.01)
+        self.sens = getattr(self, "sens", "1e-3")
+
+    def _xy(self):
+        o = self.options
+        return WORLD.lockin(float(WORLD.get(o["gate"])), float(WORLD.get(o["bias"])),
+                            float(WORLD.get(o["field"])), self.amp)
+
+    def read(self, channel):
+        self.gate()
+        if channel in ("X", "Y", "R", "theta", "XY"):
+            x, y = self._xy()
+            val = {"X": x, "Y": y, "R": math.hypot(x, y),
+                   "theta": math.degrees(math.atan2(y, x)), "XY": np.array([x, y])}[channel]
+            return self.finish(val)
+        if channel == "frequency":
+            return self.freq
+        if channel == "amplitude":
+            return self.amp
+        if channel == "sensitivity":
+            return self.sens
+        raise ChannelError("unknown channel %s" % channel)
+
+    def write(self, channel, value):
+        self.gate()
+        if channel == "frequency":
+            if not 0.001 <= value <= 1e5:
+                raise ChannelError("frequency out of range")
+            self.freq = value
+        elif channel == "amplitude":
+            self.amp = max(0.0, min(5.0, value))
+        elif channel == "sensitivity":
+            if value not in _SENS:
+                raise ChannelError("sensitivity must be one of %s" % _SENS)
+            self.sens = value
+        else:
+            raise ChannelError("channel %s not writable" % channel)

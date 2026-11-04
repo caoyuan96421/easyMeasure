@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easymeasure"
+version = "0.1.0"
+description = "A generic framework for multi-dimensional automated measurement"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.22",
+    "PySide6>=6.4",
+    "pyqtgraph>=0.13",
+    "h5py>=3.6",
+    "python-pptx>=0.6.21",
+    "matplotlib>=3.5",
+]
+
+[project.optional-dependencies]
+hardware = ["pyserial>=3.5", "pyvisa>=1.12"]
+test = ["pytest>=7", "pytest-timeout>=2"]
+
+[project.scripts]
+easymeasure-backend = "easymeasure.backend.__main__:main"
+
+[project.gui-scripts]
+easymeasure = "easymeasure.frontend.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["easymeasure*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 300

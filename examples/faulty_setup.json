@@ -1,0 +1,277 @@
+{
+  "format": "easyMeasure-setup-1",
+  "instruments": [
+    {
+      "name": "src",
+      "driver": "sim_source",
+      "address": "SIM::GPIB0",
+      "options": {
+        "gpib_addr": 1,
+        "garble_rate": 0.02,
+        "error_rate": 0.02,
+        "hang_rate": 0.002,
+        "hang_time": 20,
+        "disconnect_rate": 0.005,
+        "exception_rate": 0.01,
+        "call_timeout": 2.0
+      }
+    },
+    {
+      "name": "dmm",
+      "driver": "sim_dmm",
+      "address": "SIM::GPIB0",
+      "options": {
+        "gpib_addr": 2,
+        "garble_rate": 0.05,
+        "error_rate": 0.05,
+        "nan_rate": 0.02,
+        "hang_rate": 0.003,
+        "hang_time": 20,
+        "disconnect_rate": 0.005,
+        "exception_rate": 0.02,
+        "call_timeout": 2.0
+      }
+    },
+    {
+      "name": "lockin",
+      "driver": "sim_lockin",
+      "address": "NONE",
+      "options": {
+        "exception_rate": 0.03,
+        "garble_rate": 0.03,
+        "nan_rate": 0.02,
+        "hang_rate": 0.002,
+        "hang_time": 20,
+        "call_timeout": 2.0
+      }
+    },
+    {
+      "name": "magnet",
+      "driver": "sim_magnet",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "spec",
+      "driver": "sim_spectrum",
+      "address": "NONE",
+      "options": {
+        "exception_rate": 0.03,
+        "garble_rate": 0.03,
+        "latency": 0.01,
+        "call_timeout": 2.0
+      }
+    },
+    {
+      "name": "cam",
+      "driver": "sim_camera",
+      "address": "NONE",
+      "options": {
+        "exception_rate": 0.03,
+        "garble_rate": 0.02,
+        "hang_rate": 0.002,
+        "hang_time": 20,
+        "call_timeout": 2.0
+      }
+    },
+    {
+      "name": "awg",
+      "driver": "sim_awg",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "tc",
+      "driver": "sim_temperature",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "chaos",
+      "driver": "sim_chaos",
+      "address": "NONE",
+      "options": {
+        "exception_rate": 0.1,
+        "call_timeout": 2.0
+      }
+    }
+  ],
+  "aliases": [
+    {
+      "name": "Vg",
+      "target": "src.V1",
+      "min": -2,
+      "max": 2,
+      "ramp_rate": 2.0,
+      "unit": "V",
+      "description": "gate"
+    },
+    {
+      "name": "Vb",
+      "target": "src.V2",
+      "min": -0.5,
+      "max": 0.5,
+      "ramp_rate": 1.0,
+      "unit": "V",
+      "description": "bias"
+    },
+    {
+      "name": "Vx",
+      "target": "src.V3",
+      "min": -1,
+      "max": 1,
+      "ramp_rate": 2.0,
+      "unit": "V"
+    },
+    {
+      "name": "Vy",
+      "target": "src.V4",
+      "min": -1,
+      "max": 1,
+      "ramp_rate": 2.0,
+      "unit": "V"
+    },
+    {
+      "name": "output",
+      "target": "src.output",
+      "allowed": [
+        "ON",
+        "OFF"
+      ]
+    },
+    {
+      "name": "I",
+      "target": "dmm.reading",
+      "unit": "nA"
+    },
+    {
+      "name": "X",
+      "target": "lockin.X",
+      "unit": "V"
+    },
+    {
+      "name": "XY",
+      "target": "lockin.XY",
+      "unit": "V"
+    },
+    {
+      "name": "B",
+      "target": "magnet.field",
+      "min": -3,
+      "max": 3,
+      "unit": "T"
+    },
+    {
+      "name": "spectrum",
+      "target": "spec.trace"
+    },
+    {
+      "name": "peak",
+      "target": "spec.peak",
+      "unit": "GHz"
+    },
+    {
+      "name": "image",
+      "target": "cam.image"
+    },
+    {
+      "name": "brightness",
+      "target": "cam.total"
+    },
+    {
+      "name": "wave",
+      "target": "awg.waveform",
+      "min": -5,
+      "max": 5
+    },
+    {
+      "name": "awg_rms",
+      "target": "awg.rms"
+    },
+    {
+      "name": "T",
+      "target": "tc.temperature",
+      "unit": "K"
+    },
+    {
+      "name": "Tset",
+      "target": "tc.setpoint",
+      "min": 0,
+      "max": 300,
+      "ramp_rate": 5,
+      "unit": "K"
+    },
+    {
+      "name": "chaos_value",
+      "target": "chaos.value",
+      "min": -10,
+      "max": 10
+    },
+    {
+      "name": "chaos_garbage",
+      "target": "chaos.garbage"
+    },
+    {
+      "name": "chaos_vector",
+      "target": "chaos.vector"
+    },
+    {
+      "name": "chaos_slow",
+      "target": "chaos.slow"
+    },
+    {
+      "name": "chaos_crash",
+      "target": "chaos.crash"
+    },
+    {
+      "name": "chaos_hang",
+      "target": "chaos.hang"
+    },
+    {
+      "name": "chaos_set",
+      "target": "chaos.flaky_set",
+      "min": -1,
+      "max": 1
+    },
+    {
+      "name": "chaos_text",
+      "target": "chaos.text"
+    }
+  ],
+  "composites": [
+    {
+      "name": "detuning",
+      "targets": {
+        "Vx": "x",
+        "Vy": "-x"
+      },
+      "read": "(Vx-Vy)/2",
+      "min": -0.9,
+      "max": 0.9,
+      "unit": "V",
+      "description": "moves Vx and Vy in opposite directions"
+    }
+  ],
+  "monitor": [
+    {
+      "channel": "T",
+      "interval": 1.0
+    },
+    {
+      "channel": "I",
+      "interval": 0.5
+    },
+    {
+      "channel": "spectrum",
+      "interval": 2.0
+    },
+    {
+      "channel": "chaos_garbage",
+      "interval": 0.5
+    },
+    {
+      "channel": "chaos_hang",
+      "interval": 5
+    }
+  ]
+}
