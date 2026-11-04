@@ -135,7 +135,15 @@ class ChannelRow:
         self._updating = False
 
     # ---- value display --------------------------------------------------------
-    def show_value(self, v) -> None:
+    def user_is_typing(self) -> bool:
+        """True while the user has typed into the spin box but not committed yet."""
+        return isinstance(self.editor, QDoubleSpinBox) and self.editor.hasFocus() and \
+            self.editor.lineEdit().isModified()
+
+    def show_value(self, v, force: bool = False) -> None:
+        """Display *v*.  Background refreshes (force=False) leave a focused spin box
+        alone; values the user just set (force=True) are always shown, unless the
+        user is in the middle of typing a new number."""
         if v is None:
             return
         self._updating = True
@@ -147,8 +155,9 @@ class ChannelRow:
                     return
                 if not math.isfinite(fv):
                     return
-                if not self.editor.hasFocus():
+                if (force and not self.user_is_typing()) or not self.editor.hasFocus():
                     self.editor.setValue(fv)
+                    self.editor.lineEdit().setModified(False)
                 if self.slider is not None and not self.slider.isSliderDown():
                     self.slider.setValue(self._to_slider(fv))
             elif isinstance(self.editor, QComboBox):
@@ -217,6 +226,7 @@ class ChannelRow:
             self.panel.message("✘ %s: expression gave %r" % (self.name, v))
             return
         self.panel.last_expression[self.name] = txt
+        self.show_value(v, force=True)               # show the requested value at once
         self.panel.request_set(self.name, v)
 
 
@@ -337,7 +347,7 @@ class ManualPanel(QWidget):
             if r is not None:
                 r.set_state("ok" if ok else "error", err)
                 if ok:
-                    r.show_value(result)
+                    r.show_value(result, force=True)
             self.message(("%s = %s" % (name, result)) if ok else ("✘ %s: %s" % (name, err)))
             if name in self._queued:
                 nxt = self._queued.pop(name)

@@ -360,3 +360,28 @@ def test_actions_and_config_in_gui(app, gui):
     assert "action('lockin.auto_phase')" in ed.definition()["pre"]["hook"]
     # sweep channel lists never contain config channels
     assert not any(n.startswith("dmm.") for n in w.model.writable_channels())
+
+
+def test_manual_expression_updates_focused_spinbox(app, gui, monkeypatch):
+    """Regression: after 'Set from expression' the (still focused) spin box must show
+    the new value."""
+    from PySide6.QtWidgets import QInputDialog
+    w, be, _, _ = gui
+    mp = w.manual
+    assert pump(app, 5, lambda: "Vb" in mp.rows)
+    row = mp.rows["Vb"]
+    be.write_channel("Vb", 0.1)
+    row.show_value(0.1, force=True)
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("x + 0.15", True)))
+    monkeypatch.setattr(row.editor, "hasFocus", lambda: True)     # dialog returns focus here
+    row._expression()
+    assert row.editor.value() == pytest.approx(0.25)               # shown immediately
+    assert pump(app, 10, lambda: not mp._pending.get("Vb"))
+    assert be.channels.last_value("Vb") == pytest.approx(0.25)
+    assert row.editor.value() == pytest.approx(0.25)
+    assert row.slider.value() == row._to_slider(0.25)
+    # a background refresh does not overwrite text the user is typing
+    row.editor.lineEdit().setText("0.3")
+    row.editor.lineEdit().setModified(True)
+    row.show_value(0.0, force=True)
+    assert row.editor.lineEdit().text().startswith("0.3")

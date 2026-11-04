@@ -7,6 +7,9 @@ Starts a backend *process* with ``faulty_setup.json``, then for the given time:
 * keeps the run queue full of sweeps and scripts (some of which abort/fail),
 * runs several clients that hammer the backend with reads, writes (including
   out-of-limit writes), queue edits and malformed requests,
+* runs every instrument action (including ones that fail, hang or crash), writes
+  configuration channels and makes rapid ramped writes like the Manual panel,
+* runs sweeps whose pre/post hooks call actions,
 * periodically kills clients abruptly and "freezes" one client (never reads),
 * randomly pauses / resumes / aborts.
 
@@ -38,15 +41,31 @@ from easymeasure.common import codec  # noqa: E402
 EX = ROOT / "examples"
 
 
+ACTIONS = ["dmm.reset", "dmm.trigger", "lockin.auto_phase", "lockin.auto_gain", "spec.preset",
+           "cam.snap", "awg.start", "awg.stop", "awg.trigger", "magnet.hold", "src.clear_status",
+           "chaos.ok", "chaos.fail", "chaos.hang", "chaos.crash", "dmm.nope"]
+CONFIG_WRITES = [("dmm.nplc", lambda: random.choice([0.1, 1, 10])),
+                 ("lockin.sensitivity", lambda: random.choice(["1e-4", "1e-3", "1e-2", "bad"])),
+                 ("spec.points", lambda: random.choice([51, 201, 401, 0])),
+                 ("cam.exposure", lambda: random.choice([0.001, 0.01, -1])),
+                 ("src.output", lambda: random.choice(["ON", "OFF"])),
+                 ("chaos.text", lambda: random.choice(["a", "b"]))]
+
+
 def small_sweep(i):
-    return {"name": "stress_%d" % i, "dimensions": [
+    hooks = random.random() < 0.4
+    return {"name": "stress_%d" % i,
+            "pre": {"hook": "action('dmm.reset')\naction('awg.start')" if hooks else "",
+                    "record": ["dmm.nplc", "lockin.sensitivity"] if hooks else []},
+            "post": {"hook": "action('awg.stop')" if hooks else "",
+                     "constants": [{"channel": "Vg", "value": 0.0}]},
+            "dimensions": [
         {"points": random.randint(5, 25), "sweep": [{"channel": "Vg", "start": -0.3, "stop": 0.3}],
          "record": random.sample(["I", "X", "XY", "spectrum", "image", "chaos_garbage",
                                   "chaos_vector", "chaos.text"], 3)},
         {"points": random.randint(1, 4), "sweep": [{"channel": "Vb", "start": -0.1, "stop": 0.1}],
          "record": ["T"]}],
-        "on_read_error": "nan", "on_set_error": "skip",
-        "post": {"constants": [{"channel": "Vg", "value": 0.0}]}}
+        "on_read_error": "nan", "on_set_error": "skip"}
 
 
 SCRIPTS = [
@@ -55,6 +74,8 @@ SCRIPTS = [
     "raise RuntimeError('deliberate script failure')",
     "x = 0\nwhile True:\n    x += 1",          # needs an abort
     "set('Vg', 99)",                           # limit violation
+    "action('lockin.auto_gain')\nset_raw('dmm.nplc', 2)\nlog(get('lockin.sensitivity'))",
+    "action('chaos.hang')",                    # hanging action inside a script
 ]
 
 
@@ -77,7 +98,8 @@ def main():
     info = json.loads(rt.read_text())
     port, token = info["port"], info["token"]
     stop = threading.Event()
-    stats = {"calls": 0, "remote_errors": 0, "client_kills": 0, "timeouts": 0}
+    stats = {"calls": 0, "remote_errors": 0, "client_kills": 0, "timeouts": 0, "actions": 0,
+             "action_errors": 0}
     lock = threading.Lock()
 
     def bump(k):
@@ -97,7 +119,24 @@ def main():
                 n += 1
                 op = random.random()
                 try:
-                    if op < 0.35:
+                    if op < 0.08:
+                        try:
+                            c.call("run_action", _timeout=60, ref=random.choice(ACTIONS))
+                            bump("actions")
+                        except TimeoutError:
+                            raise
+                        except Exception:
+                            bump("action_errors")
+                            raise
+                    elif op < 0.13:
+                        ref, val = random.choice(CONFIG_WRITES)
+                        c.call("write_channel", name=ref, value=val())
+                    elif op < 0.18:
+                        # Manual panel style: a quick burst of ramped writes
+                        for _ in range(random.randint(2, 6)):
+                            c.call("write_channel", _timeout=60, name="Vy",
+                                   value=random.uniform(-0.8, 0.8))
+                    elif op < 0.35:
                         c.call("read_channel", _timeout=60,
                                name=random.choice(["I", "X", "T", "Vg", "spectrum", "chaos_crash",
                                                    "chaos_garbage", "detuning", "nonexistent"]))
@@ -154,12 +193,24 @@ def main():
                 threading.Thread(target=garbage_client, daemon=True)]
     for t in threads:
         t.start()
+    def rss_mb():
+        try:
+            for line in open("/proc/%d/status" % be.pid):
+                if line.startswith("VmRSS"):
+                    return int(line.split()[1]) / 1024.0
+        except OSError:
+            return None
     t_end = time.time() + args.minutes * 60
+    mem = []
     while time.time() < t_end:
-        time.sleep(5)
+        time.sleep(10)
         alive = be.poll() is None
-        print("[%5.0fs] backend alive=%s %s" % (args.minutes * 60 - (t_end - time.time()), alive, stats),
-              flush=True)
+        m = rss_mb()
+        if m is not None:
+            mem.append(m)
+        print("[%5.0fs] backend alive=%s rss=%s MB %s" % (
+            args.minutes * 60 - (t_end - time.time()), alive,
+            "%.0f" % m if m is not None else "?", stats), flush=True)
         if not alive:
             break
     stop.set()
@@ -177,6 +228,36 @@ def main():
             time.sleep(0.1)
         hist = c.call("queue_state")["history"]
         insts = c.call("list_instruments")
+        # every protected value is still inside its limits
+        for a in c.call("list_channels")["aliases"]:
+            if a.get("dtype") == "str" or a.get("shape") or not a.get("readable"):
+                continue
+            if a.get("min") is None and a.get("max") is None:
+                continue
+            try:
+                v = float(c.call("read_channel", _timeout=30, name=a["name"]))
+            except Exception:
+                continue
+            lo = a["min"] if a["min"] is not None else -1e300
+            hi = a["max"] if a["max"] is not None else 1e300
+            if not lo - 1e-9 <= v <= hi + 1e-9:
+                print("LIMIT VIOLATION: %s = %g outside [%g, %g]" % (a["name"], v, lo, hi))
+                ok = False
+        # the backend still runs a normal sweep to completion
+        c.call("queue_add", item={"kind": "sweep", "definition": {
+            "name": "final_check", "on_read_error": "nan", "dimensions": [
+                {"points": 20, "sweep": [{"channel": "Vg", "start": -0.2, "stop": 0.2}],
+                 "record": ["I", "spectrum"]}],
+            "pre": {"hook": "action('dmm.reset')"}}}, start=True)
+        for _ in range(600):
+            st = c.call("queue_state")
+            if st["state"] == "idle" and st["history"][-1]["name"] == "final_check":
+                break
+            time.sleep(0.2)
+        final = c.call("queue_state")["history"][-1]
+        print("final sweep after stress:", final["status"], final.get("error", ""))
+        if final["status"] != "finished":
+            ok = False
         c.call("shutdown", force=True)
         c.close()
     except Exception as exc:
@@ -200,6 +281,8 @@ def main():
         be.wait(15)
     except subprocess.TimeoutExpired:
         be.kill()
+    if mem:
+        print("backend memory: start %.0f MB, max %.0f MB, end %.0f MB" % (mem[0], max(mem), mem[-1]))
     print("RESULT:", "PASS" if ok and bad == 0 else "FAIL")
     return 0 if ok and bad == 0 else 1
 
