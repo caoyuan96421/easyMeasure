@@ -18,9 +18,12 @@ def test_limits_and_protection(demo):
     with pytest.raises(ChannelError):
         ch.set("src.V1", 1.0)                  # raw channels are not settable
     with pytest.raises(LimitError):
-        ch.set("output", "MAYBE")              # allowed values
-    ch.set("output", "OFF")
-    assert ch.get("output") == "OFF"
+        ch.set("Vg", 1e9)
+    # configuration channels are set directly and cannot be aliased
+    ch.set("src.output", "OFF")
+    assert ch.get("src.output") == "OFF"
+    with pytest.raises(ChannelError, match="configuration"):
+        ch.add_alias(Alias("out", "src.output"))
     with pytest.raises(ChannelError):
         ch.set("Vg", "abc")
     # value unchanged after refusals
@@ -195,3 +198,41 @@ def test_review_composite_nonlinear_path_respects_rates(demo):
     ch.set("s", 0.9)
     src.write = orig
     assert len(seen) >= 9 and max(abs(b - a) for a, b in zip([0.0] + seen, seen)) <= 0.1 + 1e-9
+
+
+def test_actions_and_config_channels(demo):
+    be = demo
+    be.add_instrument("chaos", "sim_chaos", options={"call_timeout": 0.5, "retries": 2,
+                                                     "exception_rate": 0.0})
+    info = {i["name"]: i for i in be.list_instruments()}
+    assert {a["name"] for a in info["dmm"]["actions"]} == {"reset", "trigger"}
+    cfg = {c["name"] for c in info["dmm"]["channels"] if c["config"]}
+    assert cfg == {"nplc", "function", "idn"}
+    # actions run once (never retried), failures/hangs/crashes are contained
+    be.run_action("chaos.ok")
+    assert be.instruments.get("chaos").driver.actions_done == 1
+    for bad in ("chaos.fail", "chaos.crash", "chaos.hang", "chaos.nope", "nodot"):
+        with pytest.raises(Exception):
+            be.run_action(bad)
+    be.run_action("chaos.ok")
+    # an action makes cached alias values stale -> next ramp reads back
+    be.write_channel("Vg", 0.2)
+    assert be.channels.last_value("Vg") == pytest.approx(0.2)
+    be.run_action("src.clear_status")
+    assert be.channels.last_value("Vg") is None
+    # config channel round trip, including through the dmm reset action
+    be.write_channel("dmm.nplc", 10)
+    assert be.read_channel("dmm.nplc") == 10
+    be.run_action("dmm.reset")
+    assert be.read_channel("dmm.nplc") == 1
+    # non-config raw channels still cannot be set directly
+    with pytest.raises(ChannelError):
+        be.write_channel("src.V1", 0.1)
+    # actions from scripts / hooks (the hang above replaced the driver object, so
+    # count relative to the current one)
+    n = be.instruments.get("chaos").driver.actions_done
+    be.queue_add({"kind": "script", "code": "action('dmm.trigger')\ninstrument('chaos').action('ok')"},
+                 start=True)
+    assert be.queue.wait_idle(20)
+    assert be.queue_state()["history"][-1]["status"] == "finished"
+    assert be.instruments.get("chaos").driver.actions_done == n + 1

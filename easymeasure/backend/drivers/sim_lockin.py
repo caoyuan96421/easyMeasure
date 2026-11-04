@@ -11,7 +11,7 @@ import math
 import numpy as np
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 
@@ -26,10 +26,12 @@ class SimLockin(SimDirectInstrument):
         ChannelSpec("R", "r", "float", (), "V"),
         ChannelSpec("theta", "r", "float", (), "deg"),
         ChannelSpec("XY", "r", "float", (2,), "V", "X and Y as a vector"),
-        ChannelSpec("frequency", "rw", "float", (), "Hz"),
-        ChannelSpec("amplitude", "rw", "float", (), "V"),
-        ChannelSpec("sensitivity", "rw", "str", (), "", "one of " + ", ".join(_SENS)),
+        ChannelSpec("frequency", "rw", "float", (), "Hz", config=True),
+        ChannelSpec("amplitude", "rw", "float", (), "V", config=True),
+        ChannelSpec("sensitivity", "rw", "str", (), "", "one of " + ", ".join(_SENS), config=True),
     ]
+    ACTIONS = [ActionSpec("auto_phase", "rotate the phase so that Y = 0"),
+               ActionSpec("auto_gain", "choose the sensitivity for the present signal")]
     DEFAULT_OPTIONS = dict(gate="src.V1", bias="src.V2", field="magnet.field", **FAULT_OPTION_DOC)
 
     def connect(self):
@@ -42,6 +44,16 @@ class SimLockin(SimDirectInstrument):
         o = self.options
         return WORLD.lockin(float(WORLD.get(o["gate"])), float(WORLD.get(o["bias"])),
                             float(WORLD.get(o["field"])), self.amp)
+
+    def _action_auto_phase(self):
+        self.gate()
+        self.phase_offset = 0.0
+
+    def _action_auto_gain(self):
+        self.gate()
+        x, y = self._xy()
+        r = max(abs(x), abs(y), 1e-9)
+        self.sens = next((s for s in _SENS if float(s) >= 1.5 * r), _SENS[-1])
 
     def read(self, channel):
         self.gate()

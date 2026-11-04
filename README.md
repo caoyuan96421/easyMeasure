@@ -118,6 +118,20 @@ or `str`. Each driver is one Python file with a class deriving from
 a driver that fails to import is reported, never fatal. `scpi_generic` builds a
 SCPI instrument purely from options.
 
+**Configuration channels** (`ChannelSpec(..., config=True)`): settings such as
+sensitivity, range, integration time or output on/off. They can be read and set
+directly (`write_channel("lockin.sensitivity", "1e-3")`, GUI *Instrument channels →
+Set…*, sweep pre/post constants and one-off records) but are never aliased or swept,
+which keeps the channel lists short with many instruments.
+
+**Actions** (`ACTIONS = [ActionSpec("reset", ...)]`, implemented by `_action_reset()`):
+commands without arguments such as trigger, reset, auto-phase. Run them from the GUI
+(*Instrument channels & actions → Run action*), the API (`run_action(ref="dmm.reset")`),
+or scripts and sweep hooks (`action('dmm.reset')`; the sweep editor has a *+ action*
+button that appends this to the pre/post hook). Actions are guarded like every other
+call but never retried automatically (a trigger must not fire twice); afterwards the
+cached values of that instrument's aliases are discarded, so the next ramp reads back.
+
 Per-instrument guard options: `call_timeout` (deadline per call, default 10 s),
 `retries` (2), `retry_delay`, `reconnect_after` (consecutive failures before a
 reconnect, 2), `timeout_retries` (1), `breaker_threshold` (2) and
@@ -228,7 +242,12 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   value axes, other axes become sliders (*follow latest* tracks new data); curve,
   stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.
   Redraws are coalesced, so fast sweeps don't load the GUI.
-* **Monitor** dock and **Log** dock.
+* **Monitor** dock, **Manual** dock below it and **Log** dock. The Manual panel lists
+  every writable scalar alias and composite with a spin box, a slider (when the alias
+  has a minimum and a maximum) and, on right click, *Set from expression…* (a function
+  of the present value `x`, e.g. `x + 0.01`). Writes are protected and ramped; while a
+  ramp runs, further changes to that channel are coalesced. The mouse wheel only acts
+  on a focused control, so scrolling the panel never moves an instrument.
 * **File → Settings → Display**: font size (applied immediately, also to plot axes)
   and an overall UI scale (50–300 %, applied on the next GUI start) to suit any
   screen resolution. The window can be made small: toolbars wrap, panels scroll.
@@ -273,6 +292,15 @@ hammer it with reads, out-of-limit writes, sweeps, scripts, pause/abort,
 malformed requests, abrupt disconnects, plus a frozen client and a client
 sending random bytes; it then checks the backend is alive and every data file
 loads.
+
+## Several clients at once
+
+Any number of frontends and scripts can be connected to one backend at the same
+time (several GUIs on different screens, a notebook, the tray icon). Every client
+sees the same live state: monitor values, sweep data, queue and log are pushed to all
+of them. Requests are executed concurrently, but each instrument serialises its own
+calls, and the run queue executes one item at a time. There is no locking between
+users: two GUIs can both edit the queue or set channels, the last action wins.
 
 ## Using it from Python
 

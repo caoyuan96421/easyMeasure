@@ -31,7 +31,7 @@ def test_faulty_instruments_full_sweep(faulty):
     d = {"name": "faulty", "dimensions": [
         {"points": 20, "sweep": [{"channel": "Vg", "start": -0.4, "stop": 0.4}],
          "record": ["I", "X", "XY", "spectrum", "image", "chaos_garbage", "chaos_vector",
-                    "chaos_text"]},
+                    "chaos.text"]},
         {"points": 4, "sweep": [{"channel": "Vb", "start": -0.1, "stop": 0.1}], "record": ["T"]}],
         "on_read_error": "nan", "on_set_error": "skip"}
     be.queue_add({"kind": "sweep", "definition": d}, start=True)
@@ -80,7 +80,7 @@ def test_faulty_instruments_full_sweep(faulty):
 def test_chaos_channels_never_crash(faulty):
     be = faulty
     t0 = time.time()
-    for name in ("chaos_garbage", "chaos_vector", "chaos_crash", "chaos_text", "chaos_slow",
+    for name in ("chaos_garbage", "chaos_vector", "chaos_crash", "chaos.text", "chaos_slow",
                  "chaos_hang"):
         for _ in range(3):
             try:

@@ -57,7 +57,7 @@ class Backend:
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
-        "shutdown", "start_tray",
+        "shutdown", "start_tray", "run_action",
     )
 
     def __init__(self, settings: Optional[dict] = None, home: Optional[Path] = None,
@@ -248,6 +248,17 @@ class Backend:
 
     def raw_write(self, instrument: str, command: str) -> None:
         self.instruments.get(instrument).raw_write(command)
+
+    def run_action(self, ref: str) -> None:
+        """Execute an instrument action, e.g. ``run_action(ref="dmm.reset")``."""
+        if not isinstance(ref, str) or "." not in ref:
+            raise ChannelError("action reference must be 'instrument.action'")
+        inst, name = ref.split(".", 1)
+        h = self.instruments.get(inst)
+        try:
+            h.run_action(name)
+        finally:
+            self.channels.forget_instrument(inst)
 
     def channel_info(self, name: str) -> dict:
         return self.channels.info(name)

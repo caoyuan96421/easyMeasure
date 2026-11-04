@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
+                               QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...common.codec import to_jsonable
@@ -239,16 +239,32 @@ class SetupPanel(QWidget):
         il.addWidget(self.inst)
         il.addLayout(ib)
         # raw channels of selected instrument
-        self.raw = _table(["Channel", "Access", "Type", "Shape", "Unit", "Description"])
+        self.raw = _table(["Channel", "Config", "Access", "Type", "Shape", "Unit", "Description"])
+        self.raw.setToolTip("config channels (⚙) are settings: set directly, never aliased or swept")
         rb = FlowLayout()
-        mk = QPushButton("Make alias…")
-        mk.clicked.connect(self._alias_from_raw)
-        rb.addWidget(mk)
-        rb.addStretch(1)
-        rbox = QGroupBox("Instrument channels")
+        self.mk_alias = QPushButton("Make alias…")
+        self.mk_alias.clicked.connect(self._alias_from_raw)
+        self.raw_get = QPushButton("Get")
+        self.raw_get.clicked.connect(lambda: self._raw_get())
+        self.raw_set = QPushButton("Set…")
+        self.raw_set.setToolTip("set a configuration channel")
+        self.raw_set.clicked.connect(self._raw_set)
+        for b in (self.mk_alias, self.raw_get, self.raw_set):
+            rb.addWidget(b)
+        self.raw.itemSelectionChanged.connect(self._raw_selection)
+        self.act = QListWidget()
+        self.act.setToolTip("instrument actions (commands without arguments)")
+        self.act.itemDoubleClicked.connect(lambda _: self._run_action())
+        self.act_run = QPushButton("▶ Run action")
+        self.act_run.clicked.connect(self._run_action)
+        rbox = QGroupBox("Instrument channels && actions")
         rl = QVBoxLayout(rbox)
-        rl.addWidget(self.raw)
+        rl.addWidget(self.raw, 3)
         rl.addLayout(rb)
+        al_ = QHBoxLayout()
+        al_.addWidget(self.act, 1)
+        al_.addWidget(self.act_run)
+        rl.addLayout(al_, 1)
         # aliases
         self.alias = _table(["Alias", "Target", "Min", "Max", "Ramp /s", "Step", "Scale",
                              "Offset", "Unit", "Last set"])
@@ -402,15 +418,71 @@ class SetupPanel(QWidget):
         name = self._sel_name(self.inst)
         inst = next((i for i in self.model.instruments() if i["name"] == name), None)
         chans = inst.get("channels", []) if inst else []
+        sel = self._sel_name(self.raw)
         self.raw.setRowCount(len(chans))
         for r, c in enumerate(chans):
             shape = c.get("shape")
-            vals = (c["name"], c["access"], c["dtype"],
+            vals = (c["name"], "⚙" if c.get("config") else "", c["access"], c["dtype"],
                     "scalar" if shape == [] else ("any" if shape is None else
                                                   "×".join("N" if s == -1 else str(s) for s in shape)),
                     c.get("unit", ""), c.get("description", ""))
             for k, v in enumerate(vals):
                 self.raw.setItem(r, k, QTableWidgetItem(str(v)))
+            if c["name"] == sel:
+                self.raw.selectRow(r)
+        acts = inst.get("actions", []) if inst else []
+        self.act.clear()
+        for a in acts:
+            it = QListWidgetItem(a["name"])
+            it.setToolTip(a.get("description", ""))
+            self.act.addItem(it)
+        self.act_run.setEnabled(bool(acts))
+        self._raw_selection()
+
+    def _raw_spec(self):
+        inst = self._sel_name(self.inst)
+        ch = self._sel_name(self.raw)
+        i = next((i for i in self.model.instruments() if i["name"] == inst), None)
+        c = next((c for c in (i or {}).get("channels", []) if c["name"] == ch), None)
+        return inst, c
+
+    def _raw_selection(self):
+        _, c = self._raw_spec()
+        self.mk_alias.setEnabled(c is not None and not c.get("config"))
+        self.raw_get.setEnabled(c is not None and "r" in c.get("access", ""))
+        self.raw_set.setEnabled(c is not None and bool(c.get("config")) and "w" in c.get("access", ""))
+
+    def _raw_get(self):
+        inst, c = self._raw_spec()
+        if c is not None:
+            self.m_chan.setEditText("%s.%s" % (inst, c["name"]))
+            self._manual_get()
+
+    def _raw_set(self):
+        inst, c = self._raw_spec()
+        if c is None:
+            return
+        ref = "%s.%s" % (inst, c["name"])
+
+        def ask(current):
+            from PySide6.QtWidgets import QInputDialog
+            txt, ok = QInputDialog.getText(self, "Set %s" % ref, "%s (%s)\nnew value:" % (
+                ref, c.get("description") or c["dtype"]), text=_short(current))
+            if ok and txt.strip():
+                self.m_chan.setEditText(ref)
+                self.m_value.setText(txt.strip())
+                self._manual_set()
+        self.conn.request("read_channel", {"name": ref}, on_ok=ask, on_err=lambda e: ask(""))
+
+    def _run_action(self):
+        inst = self._sel_name(self.inst)
+        it = self.act.currentItem()
+        if not inst or it is None:
+            return
+        ref = "%s.%s" % (inst, it.text())
+        self.msg.setText("running %s…" % ref)
+        self.conn.request("run_action", {"ref": ref}, on_ok=self._done("%s done" % ref),
+                          on_err=self._err(ref))
 
     # ------------------------------------------------------------- instruments --
     def _add_inst(self):
@@ -464,7 +536,7 @@ class SetupPanel(QWidget):
 
     def _edit_alias(self, a, new=None):
         is_new = a is None or new
-        dlg = AliasDialog(self.model.raw_channels(), a, parent=self)
+        dlg = AliasDialog(self.model.aliasable_channels(), a, parent=self)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
             args = dict(v, replace=not is_new)

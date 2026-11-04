@@ -55,7 +55,8 @@ SWEEP = {"name": "gui", "dimensions": [
      "record": ["I", "spectrum", "XY"]},
     {"points": 4, "sweep": [{"channel": "Vb", "start": -0.2, "stop": 0.2}], "record": ["T"]},
     {"points": 2, "sweep": [{"channel": "detuning", "start": 0, "stop": 0.1}], "record": []}],
-    "pre": {"constants": [{"channel": "output", "value": "ON"}], "record": ["T"], "hook": "log('x')"},
+    "pre": {"constants": [{"channel": "src.output", "value": "ON"}], "record": ["T"],
+            "hook": "log('x')"},
     "post": {"constants": [{"channel": "Vg", "value": 0.0}]}, "metadata": {"comment": "c"}}
 
 
@@ -66,7 +67,7 @@ def test_editor_roundtrip_and_validation(app, gui):
     d = ed.definition()
     assert [x["points"] for x in d["dimensions"]] == [15, 4, 2]
     assert d["dimensions"][0]["record"] == ["I", "spectrum", "XY"]
-    assert d["pre"]["constants"] == [{"channel": "output", "value": "ON"}]
+    assert d["pre"]["constants"] == [{"channel": "src.output", "value": "ON"}]
     assert d["metadata"]["comment"] == "c"
     ed.validate()
     assert pump(app, 5, lambda: "✔" in ed.status.text() or "✘" in ed.status.text())
@@ -287,3 +288,75 @@ def test_outdated_backend_warning(app, gui):
     w.conn.request("start_tray", on_ok=errs.append, on_err=errs.append)
     assert pump(app, 5, lambda: errs)
     assert errs[0]["running"] is False             # no desktop in the test environment
+
+
+def test_manual_panel(app, gui):
+    w, be, _, _ = gui
+    mp = w.manual
+    assert pump(app, 5, lambda: "Vg" in mp.rows)
+    # only aliases/composites that can be written, no config channels, no read-only
+    assert "detuning" in mp.rows and "I" not in mp.rows
+    assert not any("." in n for n in mp.rows)
+    vg = mp.rows["Vg"]
+    assert vg.slider is not None                   # min and max are known
+    assert mp.rows["B"].slider is not None
+    # spin box -> ramped write
+    vg.editor.setValue(0.3)
+    last = lambda: be.channels.last_value("Vg") if be.channels.last_value("Vg") is not None else 99
+    assert pump(app, 10, lambda: abs(last() - 0.3) < 1e-9 and not mp._pending.get("Vg"))
+    # slider click (not dragging) -> write
+    vg.slider.setValue(vg._to_slider(-0.5))
+    assert pump(app, 10, lambda: abs(last() + 0.5) < 1e-3 and not mp._pending.get("Vg"))
+    # coalescing: many requests while busy -> only the last one is applied at the end
+    for v in (0.1, 0.2, 0.25, 0.05):
+        mp.request_set("Vg", v)
+    assert pump(app, 15, lambda: not mp._pending.get("Vg") and not mp._queued)
+    assert be.channels.last_value("Vg") == pytest.approx(0.05)
+    # limit violation is reported, not applied
+    mp.request_set("Vg", 5.0)
+    assert pump(app, 5, lambda: "✘" in mp.status.text())
+    assert be.channels.last_value("Vg") == pytest.approx(0.05)
+    # expression of the present value
+    from easymeasure.common.exprs import Expression
+    assert Expression("x + 0.01", allowed_names=["x"]).evaluate({"x": 0.05}) == pytest.approx(0.06)
+    # filter
+    mp.filter.setText("v")
+    assert mp.rows["Vg"].label.isVisibleTo(mp) and not mp.rows["B"].label.isVisibleTo(mp)
+    mp.filter.clear()
+
+
+def test_actions_and_config_in_gui(app, gui):
+    w, be, _, _ = gui
+    sp = w.setup_panel
+    for r in range(sp.inst.rowCount()):
+        if sp.inst.item(r, 0).text() == "dmm":
+            sp.inst.selectRow(r)
+    pump(app, 0.2)
+    assert sp.act.count() == 2                    # reset, trigger
+    names = [sp.raw.item(r, 0).text() for r in range(sp.raw.rowCount())]
+    r = names.index("nplc")
+    assert sp.raw.item(r, 1).text() == "⚙"
+    sp.raw.selectRow(r)
+    pump(app, 0.1)
+    assert not sp.mk_alias.isEnabled() and sp.raw_set.isEnabled()
+    sp.raw.selectRow(names.index("reading"))
+    pump(app, 0.1)
+    assert sp.mk_alias.isEnabled() and not sp.raw_set.isEnabled()
+    be.write_channel("dmm.nplc", 7)
+    sp.act.setCurrentRow([sp.act.item(i).text() for i in range(sp.act.count())].index("reset"))
+    sp._run_action()
+    assert pump(app, 5, lambda: be.read_channel("dmm.nplc") == 1)
+    # aliasing a config channel is not offered
+    assert "dmm.nplc" not in w.model.aliasable_channels()
+    assert "dmm.nplc" in w.model.config_channels(writable=True)
+    # sweep editor: config channels in pre/post lists, actions insertable into hooks
+    ed = w.editor
+    ed.refresh_channels()
+    assert "lockin.sensitivity" in ed.pre.channels
+    acts = [ed.pre.action_box.itemText(i) for i in range(ed.pre.action_box.count())]
+    assert "dmm.reset" in acts and "lockin.auto_phase" in acts
+    ed.pre.action_box.setCurrentText("lockin.auto_phase")
+    ed.pre.append_action()
+    assert "action('lockin.auto_phase')" in ed.definition()["pre"]["hook"]
+    # sweep channel lists never contain config channels
+    assert not any(n.startswith("dmm.") for n in w.model.writable_channels())

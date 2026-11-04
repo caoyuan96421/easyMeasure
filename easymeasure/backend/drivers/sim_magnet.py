@@ -12,7 +12,7 @@ import threading
 import time
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 
@@ -25,9 +25,10 @@ class SimMagnet(SimDirectInstrument):
     CHANNELS = [
         ChannelSpec("field", "rw", "float", (), "T", "set target / read actual field"),
         ChannelSpec("target", "r", "float", (), "T"),
-        ChannelSpec("rate", "rw", "float", (), "T/min"),
+        ChannelSpec("rate", "rw", "float", (), "T/min", config=True),
         ChannelSpec("status", "r", "str", (), "", "RAMPING / HOLDING"),
     ]
+    ACTIONS = [ActionSpec("hold", "stop ramping at the present field")]
     DEFAULT_OPTIONS = dict(max_field=9.0, **FAULT_OPTION_DOC)
 
     def connect(self):
@@ -36,6 +37,12 @@ class SimMagnet(SimDirectInstrument):
             st = _STATE.setdefault(self.name, {"field": 0.0, "target": 0.0, "rate": 10.0,
                                                "t": time.monotonic()})
         self.st = st
+
+    def _action_hold(self):
+        self.gate()
+        st = self._update()
+        with _STATE_LOCK:
+            self.st["target"] = st["field"]
 
     def _update(self):
         with _STATE_LOCK:

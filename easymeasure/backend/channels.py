@@ -171,6 +171,13 @@ class ChannelManager:
 
     # -- definition --------------------------------------------------------------
     def add_alias(self, alias: Alias, replace: bool = False) -> None:
+        try:
+            _, spec = self.instruments.resolve(alias.target)
+        except ChannelError:
+            spec = None          # instrument not available yet: checked again on use
+        if spec is not None and spec.config:
+            raise ChannelError("%s is a configuration channel; configuration channels are set "
+                               "directly and cannot be aliased" % alias.target)
         with self._lock:
             if alias.name in self._composites or (alias.name in self._aliases and not replace):
                 raise ChannelError("channel name %r already in use" % alias.name)
@@ -260,11 +267,20 @@ class ChannelManager:
         h, spec = self.instruments.resolve(name)
         return {"name": name, "kind": "raw", "dtype": spec.dtype,
                 "shape": None if spec.shape is None else list(spec.shape),
-                "readable": spec.readable, "writable": spec.writable, "unit": spec.unit}
+                "readable": spec.readable, "writable": spec.writable and spec.config,
+                "unit": spec.unit, "config": spec.config}
 
     def _alias_spec(self, a: Alias) -> ChannelSpec:
         _, spec = self.instruments.resolve(a.target)
         return spec
+
+    def forget_instrument(self, instrument: str) -> None:
+        """Drop cached values of every alias on *instrument* (after an action such
+        as a reset, the instrument state is unknown and must be read back)."""
+        prefix = instrument + "."
+        for a in self.aliases():
+            if a.target.startswith(prefix):
+                self._last.pop(a.name, None)
 
     def describe(self) -> dict:
         out_a = []
@@ -320,8 +336,24 @@ class ChannelManager:
             return float(arr) if arr.ndim == 0 else arr
         if name.startswith("@"):
             raise ChannelError("%s is read-only" % name)
-        raise ChannelError("unknown channel %r (raw instrument channels must be "
-                           "aliased before they can be set)" % name)
+        spec = self._raw_config_spec(name)
+        if spec is not None:
+            if not spec.writable:
+                raise ChannelError("%s is read-only" % name)
+            from .instrument import coerce_value
+            return coerce_value(value, spec, "write")
+        raise ChannelError("unknown channel %r (instrument channels must be aliased before "
+                           "they can be set, unless they are configuration channels)" % name)
+
+    def _raw_config_spec(self, name: str):
+        """The spec of ``instrument.channel`` if it is a configuration channel."""
+        if "." not in name:
+            return None
+        try:
+            _, spec = self.instruments.resolve(name)
+        except ChannelError:
+            return None
+        return spec if spec.config else None
 
     @staticmethod
     def _to_float(name, value) -> float:
@@ -470,6 +502,12 @@ class ChannelManager:
     def set(self, name: str, value: Any, ramp: bool = True, abort_check: AbortCheck = None) -> Any:
         """Protected write to an alias or composite.  Returns the value set."""
         value = self.check_value(name, value)
+        if name not in self._composites and name not in self._aliases:
+            # configuration channel: written directly, no protection / ramping
+            h, spec = self.instruments.resolve(name)
+            h.write(spec.name, value)
+            self._notify(name, value)
+            return value
         with self._set_lock(name):
             if name in self._composites:
                 self._set_composite(self._composites[name], value, ramp, abort_check)

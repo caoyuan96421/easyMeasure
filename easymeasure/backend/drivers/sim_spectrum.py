@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 
@@ -19,11 +19,12 @@ class SimSpectrumAnalyzer(SimDirectInstrument):
     CHANNELS = [
         ChannelSpec("trace", "r", "float", (-1,), "a.u.", "spectrum trace"),
         ChannelSpec("frequencies", "r", "float", (-1,), "GHz", "frequency axis"),
-        ChannelSpec("start", "rw", "float", (), "GHz"),
-        ChannelSpec("stop", "rw", "float", (), "GHz"),
-        ChannelSpec("points", "rw", "float", (), "", "number of points (2..10001)"),
+        ChannelSpec("start", "rw", "float", (), "GHz", config=True),
+        ChannelSpec("stop", "rw", "float", (), "GHz", config=True),
+        ChannelSpec("points", "rw", "float", (), "", "number of points (2..10001)", config=True),
         ChannelSpec("peak", "r", "float", (), "GHz", "frequency of the strongest peak"),
     ]
+    ACTIONS = [ActionSpec("preset", "frequency span 3-9 GHz, 201 points")]
     DEFAULT_OPTIONS = dict(voltage="src.V3", field="magnet.field", **FAULT_OPTION_DOC)
 
     def connect(self):
@@ -31,6 +32,10 @@ class SimSpectrumAnalyzer(SimDirectInstrument):
         self.f_start = getattr(self, "f_start", 3.0)
         self.f_stop = getattr(self, "f_stop", 9.0)
         self.npts = getattr(self, "npts", 201)
+
+    def _action_preset(self):
+        self.gate()
+        self.f_start, self.f_stop, self.npts = 3.0, 9.0, 201
 
     def _freqs(self):
         return np.linspace(self.f_start, self.f_stop, int(self.npts))

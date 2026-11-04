@@ -7,7 +7,7 @@ simulated detectors respond to them.
 
 from __future__ import annotations
 
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimBusInstrument, get_or_create_device
 from .simbus import FaultInjector, SCPIDevice
 from .simworld import WORLD
@@ -45,9 +45,10 @@ class SimVoltageSource(SimBusInstrument):
     DESCRIPTION = "Simulated 4-channel DC voltage source (SCPI over SIM bus)"
     CHANNELS = [ChannelSpec("V%d" % i, "rw", "float", (), "V", "output voltage %d" % i)
                 for i in range(1, 5)] + [
-        ChannelSpec("output", "rw", "str", (), "", "ON/OFF"),
-        ChannelSpec("idn", "r", "str", (), "", "identification string"),
+        ChannelSpec("output", "rw", "str", (), "", "ON/OFF", config=True),
+        ChannelSpec("idn", "r", "str", (), "", "identification string", config=True),
     ]
+    ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue")]
     DEFAULT_OPTIONS = dict(gpib_addr=1, **FAULT_OPTION_DOC)
 
     def connect(self):
@@ -55,6 +56,9 @@ class SimVoltageSource(SimBusInstrument):
             self.bus_name(), self.gpib_addr,
             lambda: _SourceDevice(self.name, FaultInjector(self.options)))
         super().connect()
+
+    def _action_clear_status(self):
+        self.resource.write("*CLS")
 
     def read(self, channel):
         self.maybe_raise()

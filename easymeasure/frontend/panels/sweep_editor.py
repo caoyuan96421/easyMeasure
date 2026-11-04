@@ -268,8 +268,14 @@ class PhaseEditor(QWidget):
         from ..display import register_font
         register_font(self.hook, 1.0, monospace=True)
         self.hook.setPlaceholderText(
-            "# Python executed %s the sweep, e.g.\n# set('output', 'ON')\n# sleep(1)\n"
-            "# log('ready, T = %%g' %% get('T'))" % ("before" if phase == "pre" else "after"))
+            "# Python executed %s the sweep, e.g.\n# action('dmm.reset')\n# set('Tset', 4.2)\n"
+            "# sleep(1)\n# log('ready, T = %%g' %% get('T'))"
+            % ("before" if phase == "pre" else "after"))
+        self.action_box = QComboBox()
+        self.action_box.setToolTip("instrument actions (commands without arguments)")
+        self.add_action_btn = QPushButton("+ action")
+        self.add_action_btn.setToolTip("append the selected action to the hook code")
+        self.add_action_btn.clicked.connect(self.append_action)
         cbox = QGroupBox("Constants")
         cbox.setToolTip("set %s the sweep" % ("before" if phase == "pre" else "after"))
         cl = QVBoxLayout(cbox)
@@ -282,7 +288,13 @@ class PhaseEditor(QWidget):
         rbox.setToolTip("recorded once %s the sweep" % ("before" if phase == "pre" else "after"))
         QVBoxLayout(rbox).addWidget(self.record)
         hbox = QGroupBox("Hook code")
-        QVBoxLayout(hbox).addWidget(self.hook)
+        hl = QVBoxLayout(hbox)
+        hl.addWidget(self.hook)
+        ab = FlowLayout()
+        ab.addWidget(QLabel("Action"))
+        ab.addWidget(self.action_box)
+        ab.addWidget(self.add_action_btn)
+        hl.addLayout(ab)
         top = QSplitter(Qt.Horizontal)
         top.addWidget(cbox)
         top.addWidget(rbox)
@@ -294,6 +306,23 @@ class PhaseEditor(QWidget):
         lay.addWidget(order)
         lay.addWidget(top, 1)
         lay.addWidget(hbox, 1)
+
+    def set_actions(self, actions: List[str]) -> None:
+        cur = self.action_box.currentText()
+        self.action_box.clear()
+        self.action_box.addItems(actions)
+        if cur in actions:
+            self.action_box.setCurrentText(cur)
+        self.add_action_btn.setEnabled(bool(actions) and not self.hook.isReadOnly())
+
+    def append_action(self) -> None:
+        ref = self.action_box.currentText().strip()
+        if not ref:
+            return
+        text = self.hook.toPlainText()
+        if text and not text.endswith("\n"):
+            text += "\n"
+        self.hook.setPlainText(text + "action(%r)\n" % ref)
 
     def add_const(self, entry: Optional[dict] = None):
         entry = entry or {}
@@ -350,6 +379,8 @@ class PhaseEditor(QWidget):
             b.setEnabled(not ro)
         self.record.set_read_only(ro)
         self.hook.setReadOnly(ro)
+        self.add_action_btn.setEnabled(not ro and self.action_box.count() > 0)
+        self.action_box.setEnabled(not ro)
 
 
 class SweepEditor(QWidget):
@@ -468,9 +499,15 @@ class SweepEditor(QWidget):
         w, r = self._channel_lists()
         for d in self.dims:
             d.set_channels(w, r)
-        wall = self.model.writable_channels() if self.model else []
-        self.pre.set_channels(wall, r)
-        self.post.set_channels(wall, r)
+        # pre/post constants and one-off records may also use configuration channels
+        m = self.model
+        wall = (m.writable_channels() + m.config_channels(writable=True)) if m else []
+        rall = (r + m.config_channels()) if m else r
+        self.pre.set_channels(wall, rall)
+        self.post.set_channels(wall, rall)
+        acts = m.actions() if m else []
+        self.pre.set_actions(acts)
+        self.post.set_actions(acts)
         if self.read_only:
             self.set_read_only(True)
 

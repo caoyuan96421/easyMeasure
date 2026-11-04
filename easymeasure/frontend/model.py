@@ -84,6 +84,22 @@ class BackendModel(QObject):
                 out.append("%s.%s" % (inst["name"], c["name"]))
         return out
 
+    def aliasable_channels(self) -> List[str]:
+        """Instrument channels that may be aliased (everything but config channels)."""
+        return ["%s.%s" % (i["name"], c["name"]) for i in self.instruments()
+                for c in i.get("channels", []) if not c.get("config")]
+
+    def config_channels(self, writable: bool = False) -> List[str]:
+        """Configuration channels (``instrument.channel``), set directly, never swept."""
+        return ["%s.%s" % (i["name"], c["name"]) for i in self.instruments()
+                for c in i.get("channels", []) if c.get("config")
+                and ("w" in c.get("access", "rw") if writable else "r" in c.get("access", "rw"))]
+
+    def actions(self) -> List[str]:
+        """All instrument actions as ``instrument.action``."""
+        return ["%s.%s" % (i["name"], a["name"]) for i in self.instruments()
+                for a in i.get("actions", [])]
+
     def channel_meta(self, name: str) -> Optional[dict]:
         for a in self.aliases():
             if a["name"] == name:

@@ -9,7 +9,7 @@ thread with a deadline, retries/reconnects on errors, validates the returned
 data against the channel spec, and serialises access to (shared) ports.
 """
 
-from easymeasure.backend.instrument import ChannelSpec, Instrument
+from easymeasure.backend.instrument import ActionSpec, ChannelSpec, Instrument
 from easymeasure.common.errors import ChannelError
 
 
@@ -21,9 +21,14 @@ class MyPowerSupply(Instrument):
     CHANNELS = [
         ChannelSpec("voltage", "rw", "float", (), "V", "output voltage"),
         ChannelSpec("current", "r", "float", (), "A", "measured current"),
-        ChannelSpec("output", "rw", "str", (), "", "ON/OFF"),
+        # config=True: a setting (range, mode, output on/off ...), set directly in the
+        # GUI / sweep pre-post constants, never aliased or swept
+        ChannelSpec("output", "rw", "str", (), "", "ON/OFF", config=True),
         ChannelSpec("trace", "r", "float", (-1,), "A", "buffered current trace", timeout=30.0),
     ]
+
+    # actions: commands without arguments, implemented by _action_<name>()
+    ACTIONS = [ActionSpec("reset", "*RST"), ActionSpec("trigger", "*TRG")]
 
     # options are user-editable per instrument; port options (timeout, baudrate,
     # read_termination ...) and framework options (call_timeout, retries,
@@ -44,6 +49,12 @@ class MyPowerSupply(Instrument):
     # for shared ports: called whenever this instrument takes over the bus
     # def select(self, resource):
     #     resource.write("++addr %d" % self.options["gpib_addr"])
+
+    def _action_reset(self):
+        self.resource.write("*RST")
+
+    def _action_trigger(self):
+        self.resource.write("*TRG")
 
     def _read_voltage(self):
         return self.resource.query("VOLT?")        # strings are converted to float

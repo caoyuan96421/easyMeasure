@@ -9,7 +9,7 @@ magnetic field are taken from the simulated world, by default from
 from __future__ import annotations
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimBusInstrument, get_or_create_device
 from .simbus import FaultInjector, SCPIDevice
 from .simworld import WORLD
@@ -49,10 +49,13 @@ class SimDMM(SimBusInstrument):
     DESCRIPTION = "Simulated DMM measuring a simulated quantum dot (SCPI over SIM bus)"
     CHANNELS = [
         ChannelSpec("reading", "r", "float", (), "nA", "measured value"),
-        ChannelSpec("nplc", "rw", "float", (), "", "integration time (power line cycles)"),
-        ChannelSpec("function", "rw", "str", (), "", "CURR or VOLT"),
-        ChannelSpec("idn", "r", "str", (), "", "identification string"),
+        ChannelSpec("nplc", "rw", "float", (), "", "integration time (power line cycles)",
+                    config=True),
+        ChannelSpec("function", "rw", "str", (), "", "CURR or VOLT", config=True),
+        ChannelSpec("idn", "r", "str", (), "", "identification string", config=True),
     ]
+    ACTIONS = [ActionSpec("reset", "*RST: default settings (NPLC 1, current mode)"),
+               ActionSpec("trigger", "*TRG: start a measurement")]
     DEFAULT_OPTIONS = dict(gpib_addr=2, gate="src.V1", bias="src.V2", field="magnet.field",
                            **FAULT_OPTION_DOC)
 
@@ -62,6 +65,13 @@ class SimDMM(SimBusInstrument):
             self.bus_name(), self.gpib_addr,
             lambda: _DMMDevice(self.name, FaultInjector(o), o["gate"], o["bias"], o["field"]))
         super().connect()
+
+    def _action_reset(self):
+        self.resource.write("SENS:NPLC 1")
+        self.resource.write('FUNC "CURR"')
+
+    def _action_trigger(self):
+        self.resource.write("*TRG")
 
     def _read_reading(self):
         self.maybe_raise()

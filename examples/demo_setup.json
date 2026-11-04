@@ -90,14 +90,6 @@
       "unit": "V"
     },
     {
-      "name": "output",
-      "target": "src.output",
-      "allowed": [
-        "ON",
-        "OFF"
-      ]
-    },
-    {
       "name": "I",
       "target": "dmm.reading",
       "unit": "nA"

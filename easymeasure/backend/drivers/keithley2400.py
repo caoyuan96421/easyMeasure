@@ -7,7 +7,7 @@ Example of a hand-written driver for real hardware.  Address e.g.
 from __future__ import annotations
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec, Instrument
+from ..instrument import ActionSpec, ChannelSpec, Instrument
 
 
 class Keithley2400(Instrument):
@@ -15,10 +15,12 @@ class Keithley2400(Instrument):
     CHANNELS = [
         ChannelSpec("voltage", "rw", "float", (), "V", "source voltage"),
         ChannelSpec("current", "r", "float", (), "A", "measured current"),
-        ChannelSpec("compliance", "rw", "float", (), "A", "current compliance"),
-        ChannelSpec("output", "rw", "str", (), "", "ON / OFF"),
-        ChannelSpec("nplc", "rw", "float", ()),
+        ChannelSpec("compliance", "rw", "float", (), "A", "current compliance", config=True),
+        ChannelSpec("output", "rw", "str", (), "", "ON / OFF", config=True),
+        ChannelSpec("nplc", "rw", "float", (), config=True),
     ]
+    ACTIONS = [ActionSpec("clear_status", "*CLS"),
+               ActionSpec("beep", "short beep (find the instrument in the rack)")]
     DEFAULT_OPTIONS = {"timeout": 5.0, "reset": False}
 
     def connect(self):
@@ -31,6 +33,12 @@ class Keithley2400(Instrument):
         r.write(":SOUR:FUNC VOLT")
         r.write(":SENS:FUNC 'CURR'")
         r.write(":FORM:ELEM CURR")
+
+    def _action_clear_status(self):
+        self.resource.write("*CLS")
+
+    def _action_beep(self):
+        self.resource.write(":SYST:BEEP 1000, 0.2")
 
     def _read_voltage(self):
         return self.resource.query(":SOUR:VOLT?")

@@ -51,7 +51,7 @@ def test_validation_against_channels(demo):
     with pytest.raises(SweepDefinitionError, match="above maximum"):
         demo.validate_sweep(base)
     for sweep, msg in [({"channel": "I", "start": 0, "stop": 1}, "not writable"),
-                       ({"channel": "output", "start": 0, "stop": 1}, "string"),
+                       ({"channel": "src.output", "start": 0, "stop": 1}, "alias"),
                        ({"channel": "src.V1", "start": 0, "stop": 1}, "alias"),
                        ({"channel": "wave", "start": 0, "stop": 1}, "mapping is required"),
                        ({"channel": "nope", "start": 0, "stop": 1}, "nope")]:
@@ -73,7 +73,8 @@ def test_3d_sweep_with_vectors_images_and_phases(demo):
          "snake": True},
         {"points": 2, "sweep": [{"channel": "detuning", "start": 0, "stop": 0.2}], "record": ["T", "@time"],
          "record_after_inner": True}],
-        "pre": {"constants": [{"channel": "output", "value": "ON"}], "record": ["output", "B"],
+        "pre": {"constants": [{"channel": "src.output", "value": "ON"}],
+                "record": ["src.output", "lockin.sensitivity", "B"],
                 "hook": "state['pre'] = get('Vg')\nset_raw('awg.run', 'RUN')"},
         "post": {"constants": [{"channel": "Vg", "value": 0.0}], "record": ["Vg"],
                  "hook": "state['post'] = True"}}
@@ -88,7 +89,8 @@ def test_3d_sweep_with_vectors_images_and_phases(demo):
     assert ds.data["T"].shape == (2,)
     assert not np.isnan(ds.data["I"]).any()
     assert ds.points == 36
-    assert ds.pre["output"] == "ON" and "B" in ds.pre
+    assert ds.pre["src.output"] == "ON" and "B" in ds.pre
+    assert ds.pre["lockin.sensitivity"] == "1e-3"
     # post phase records *before* applying post constants (documented order)
     assert ds.post["Vg"] == pytest.approx(0.2)
     assert demo.scripts.state["post"] is True

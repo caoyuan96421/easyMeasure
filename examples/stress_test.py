@@ -42,7 +42,7 @@ def small_sweep(i):
     return {"name": "stress_%d" % i, "dimensions": [
         {"points": random.randint(5, 25), "sweep": [{"channel": "Vg", "start": -0.3, "stop": 0.3}],
          "record": random.sample(["I", "X", "XY", "spectrum", "image", "chaos_garbage",
-                                  "chaos_vector", "chaos_text"], 3)},
+                                  "chaos_vector", "chaos.text"], 3)},
         {"points": random.randint(1, 4), "sweep": [{"channel": "Vb", "start": -0.1, "stop": 0.1}],
          "record": ["T"]}],
         "on_read_error": "nan", "on_set_error": "skip",

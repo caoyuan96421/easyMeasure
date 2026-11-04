@@ -60,6 +60,9 @@ class ChannelSpec:
     unit: str = ""
     description: str = ""
     timeout: Optional[float] = None   # per-channel call deadline override
+    #: configuration channel (sensitivity, range, mode, ...): readable/writable on the
+    #: instrument, but never aliased or swept, which keeps channel lists short
+    config: bool = False
 
     def __post_init__(self):
         if self.access not in ("r", "w", "rw"):
@@ -85,7 +88,7 @@ class ChannelSpec:
         return {
             "name": self.name, "access": self.access, "dtype": self.dtype,
             "shape": None if self.shape is None else list(self.shape),
-            "unit": self.unit, "description": self.description,
+            "unit": self.unit, "description": self.description, "config": self.config,
         }
 
     @classmethod
@@ -93,7 +96,27 @@ class ChannelSpec:
         shape = d.get("shape", ())
         return cls(name=d["name"], access=d.get("access", "rw"), dtype=d.get("dtype", "float"),
                    shape=None if shape is None else tuple(shape), unit=d.get("unit", ""),
-                   description=d.get("description", ""), timeout=d.get("timeout"))
+                   description=d.get("description", ""), timeout=d.get("timeout"),
+                   config=bool(d.get("config", False)))
+
+
+@dataclass
+class ActionSpec:
+    """An instrument action: a command without arguments (trigger, reset, auto-range,
+    auto-phase ...).  Implemented by ``_action_<name>()`` or ``Instrument.action()``."""
+
+    name: str
+    description: str = ""
+    timeout: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "description": self.description}
+
+    @classmethod
+    def from_dict(cls, d) -> "ActionSpec":
+        if isinstance(d, str):
+            return cls(d)
+        return cls(d["name"], d.get("description", ""), d.get("timeout"))
 
 
 def coerce_value(value: Any, spec: ChannelSpec, direction: str = "read") -> Any:
@@ -170,6 +193,7 @@ class Instrument:
 
     DESCRIPTION = ""
     CHANNELS: List[ChannelSpec] = []
+    ACTIONS: List[ActionSpec] = []
     DEFAULT_OPTIONS: Dict[str, Any] = {}
     #: whether this driver's port may be shared with other instruments by default
     SHARED_RESOURCE = False
@@ -192,6 +216,16 @@ class Instrument:
     def get_channels(self) -> List[ChannelSpec]:
         """Return the channel list (may depend on options / connected hardware)."""
         return list(self.CHANNELS)
+
+    def get_actions(self) -> List[ActionSpec]:
+        """Return the action list (may depend on options / connected hardware)."""
+        return list(self.ACTIONS)
+
+    def action(self, name: str) -> None:
+        fn = getattr(self, "_action_" + name, None)
+        if fn is None:
+            raise ChannelError("%s has no action %s" % (self.name, name))
+        fn()
 
     def read(self, channel: str) -> Any:
         fn = getattr(self, "_read_" + channel, None)
@@ -282,6 +316,7 @@ class InstrumentHandle:
         self.state = "disconnected"   # disconnected | connected | error | hung
         self.last_error = ""
         self._channels: Dict[str, ChannelSpec] = {}
+        self._actions: Dict[str, ActionSpec] = {}
         self._worker: Optional[_Worker] = None
         self._worker_count = 0
         # serialises calls through the handle; FIFO so that a client polling in a
@@ -425,6 +460,12 @@ class InstrumentHandle:
                 if not isinstance(c, ChannelSpec):
                     c = ChannelSpec.from_dict(c)
                 self._channels[c.name] = c
+            acts = self._run(drv.get_actions, timeout, transaction=False)
+            self._actions = {}
+            for a in acts or []:
+                if not isinstance(a, ActionSpec):
+                    a = ActionSpec.from_dict(a)
+                self._actions[a.name] = a
             self.state = "connected"
             self.last_error = ""
             self._needs_reconnect = False
@@ -495,6 +536,31 @@ class InstrumentHandle:
                 return {}
         return dict(self._channels)
 
+    @property
+    def actions(self) -> Dict[str, ActionSpec]:
+        if not self._actions and not self._channels:
+            try:
+                return {a.name: a for a in getattr(self._driver_cls, "ACTIONS", [])}
+            except Exception:
+                return {}
+        return dict(self._actions)
+
+    def run_action(self, name: str) -> None:
+        """Execute an action (guarded like any other call: deadline, retries)."""
+        act = self.actions.get(name)
+        if act is None and not self._channels and self.state != "connected":
+            try:
+                self.connect()
+            except Exception:
+                pass
+            act = self.actions.get(name)
+        if act is None:
+            raise ChannelError("instrument %s has no action %r" % (self.name, name))
+        spec = ChannelSpec("action:" + name, "w", "str", (), timeout=act.timeout)
+        # never retried automatically: an action (trigger, reset) is not idempotent
+        self._guarded("action %s" % name, spec, lambda drv: drv.action(name), retries=0)
+        log.info("%s: action %s executed", self.name, name)
+
     def spec(self, channel: str) -> ChannelSpec:
         """Pure lookup (never does I/O, so it is safe for status queries)."""
         spec = self.channels.get(channel)
@@ -541,20 +607,21 @@ class InstrumentHandle:
         now = time.monotonic()
         return {k: round(v[1] - now, 1) for k, v in self._breaker.items() if v[1] > now}
 
-    def _guarded(self, what: str, spec: ChannelSpec, fn: Callable[[Instrument], Any]) -> Any:
+    def _guarded(self, what: str, spec: ChannelSpec, fn: Callable[[Instrument], Any],
+                 retries: Optional[int] = None) -> Any:
         timeout = spec.timeout or self.call_timeout
         self._breaker_check(what)
         try:
-            result = self._guarded_inner(what, spec, fn, timeout)
+            result = self._guarded_inner(what, spec, fn, timeout, retries)
         except InstrumentTimeout:
             self._breaker_update(what, True)
             raise
         self._breaker_update(what, False)
         return result
 
-    def _guarded_inner(self, what, spec, fn, timeout) -> Any:
+    def _guarded_inner(self, what, spec, fn, timeout, retries=None) -> Any:
         last_exc: Optional[BaseException] = None
-        attempts = 1 + max(0, self.retries)
+        attempts = 1 + max(0, self.retries if retries is None else retries)
         b = self._breaker.get(what)
         if b is not None and b[0] >= self.breaker_threshold:
             attempts = 1          # half-open trial after a cooldown: a single attempt
@@ -689,6 +756,7 @@ class InstrumentHandle:
             "stats": dict(self.stats),
             "quarantined": self.breaker_state(),
             "channels": [c.to_dict() for c in self.channels.values()],
+            "actions": [a.to_dict() for a in self.actions.values()],
         }
 
 

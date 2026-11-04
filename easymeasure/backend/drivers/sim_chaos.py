@@ -24,7 +24,7 @@ import time
 import numpy as np
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 
 
@@ -38,8 +38,12 @@ class SimChaos(SimDirectInstrument):
         ChannelSpec("slow", "r", "float", (), ""),
         ChannelSpec("crash", "r", "float", (), "", "raises SystemExit etc."),
         ChannelSpec("flaky_set", "w", "float", (), ""),
-        ChannelSpec("text", "rw", "str", (), ""),
+        ChannelSpec("text", "rw", "str", (), "", config=True),
     ]
+    ACTIONS = [ActionSpec("ok", "an action that works"),
+               ActionSpec("fail", "an action that always raises"),
+               ActionSpec("hang", "an action that never returns"),
+               ActionSpec("crash", "an action that raises SystemExit")]
     DEFAULT_OPTIONS = dict(slow_time=1.5, flaky_rate=0.5, call_timeout=3.0,
                            **FAULT_OPTION_DOC)
 
@@ -47,6 +51,20 @@ class SimChaos(SimDirectInstrument):
         self.gate()
         self.val = getattr(self, "val", 0.0)
         self.txt = getattr(self, "txt", "hello")
+
+    def _action_ok(self):
+        self.gate()
+        self.actions_done = getattr(self, "actions_done", 0) + 1
+
+    def _action_fail(self):
+        raise IOError("simulated action failure")
+
+    def _action_hang(self):
+        while True:
+            time.sleep(1.0)
+
+    def _action_crash(self):
+        raise SystemExit(2)
 
     def read(self, channel):
         rng = self.fi.rng

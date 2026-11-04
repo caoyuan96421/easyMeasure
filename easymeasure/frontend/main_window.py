@@ -18,6 +18,7 @@ from .connection import BackendConnection
 from .model import BackendModel
 from .panels.data_panel import FileDataView, LiveDataView
 from .panels.log_panel import LogPanel
+from .panels.manual_panel import ManualPanel
 from .panels.monitor_panel import MonitorPanel
 from .panels.queue_panel import QueuePanel
 from .panels.setup_panel import SetupPanel
@@ -181,6 +182,14 @@ class MainWindow(QMainWindow):
         md.setObjectName("monitor_dock")
         md.setWidget(self.monitor)
         self.addDockWidget(Qt.RightDockWidgetArea, md)
+        # manual control, directly below the monitor
+        self.manual = ManualPanel(self.conn, self.model)
+        mand = QDockWidget("Manual", self)
+        mand.setObjectName("manual_dock")
+        mand.setWidget(self.manual)
+        self.addDockWidget(Qt.RightDockWidgetArea, mand)
+        self.splitDockWidget(md, mand, Qt.Vertical)
+        self.manual_dock = mand
         self.log_panel = LogPanel(self.conn)
         ld = QDockWidget("Log", self)
         ld.setObjectName("log_dock")
@@ -188,6 +197,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, ld)
         self.resizeDocks([md], [380], Qt.Horizontal)
         self.resizeDocks([ld], [170], Qt.Vertical)
+        self.resizeDocks([md, self.manual_dock], [420, 320], Qt.Vertical)
 
         # toolbar
         tb = QToolBar("main")
@@ -234,6 +244,7 @@ class MainWindow(QMainWindow):
             b.addAction(act)
         v = self.menuBar().addMenu("&View")
         v.addAction(md.toggleViewAction())
+        v.addAction(mand.toggleViewAction())
         v.addAction(ld.toggleViewAction())
         self.running_action = QAction("Running sweep view", self, checkable=True)
         self.running_action.toggled.connect(self._show_running)

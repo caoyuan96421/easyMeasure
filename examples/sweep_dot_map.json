@@ -35,7 +35,7 @@
     "hook": "log('starting diamond map at T = %.3f K' % get('T'))",
     "constants": [
       {
-        "channel": "output",
+        "channel": "src.output",
         "value": "ON"
       }
     ],

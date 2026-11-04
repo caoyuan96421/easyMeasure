@@ -11,7 +11,7 @@ import time
 import numpy as np
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 
@@ -21,10 +21,12 @@ class SimCamera(SimDirectInstrument):
     CHANNELS = [
         ChannelSpec("image", "r", "float", (-1, -1), "counts", "full frame"),
         ChannelSpec("total", "r", "float", (), "counts", "integrated intensity"),
-        ChannelSpec("exposure", "rw", "float", (), "s"),
-        ChannelSpec("width", "rw", "float", (), "px"),
-        ChannelSpec("height", "rw", "float", (), "px"),
+        ChannelSpec("exposure", "rw", "float", (), "s", config=True),
+        ChannelSpec("width", "rw", "float", (), "px", config=True),
+        ChannelSpec("height", "rw", "float", (), "px", config=True),
     ]
+    ACTIONS = [ActionSpec("snap", "take (and discard) one frame"),
+               ActionSpec("cooler_on", "start the sensor cooler", timeout=5.0)]
     DEFAULT_OPTIONS = dict(x_source="src.V3", y_source="src.V4", simulate_exposure=False,
                            **FAULT_OPTION_DOC)
 
@@ -33,6 +35,14 @@ class SimCamera(SimDirectInstrument):
         self.exposure = getattr(self, "exposure", 0.01)
         self.w = getattr(self, "w", 48)
         self.h = getattr(self, "h", 32)
+
+    def _action_snap(self):
+        self.gate()
+        self._image()
+
+    def _action_cooler_on(self):
+        self.gate()
+        self.cooler = True
 
     def _image(self):
         if self.options.get("simulate_exposure"):

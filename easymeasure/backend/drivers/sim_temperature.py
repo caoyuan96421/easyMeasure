@@ -21,7 +21,7 @@ class SimTemperatureController(SimDirectInstrument):
         ChannelSpec("setpoint", "rw", "float", (), "K"),
         ChannelSpec("temperature", "r", "float", (), "K"),
         ChannelSpec("heater", "r", "float", (), "%"),
-        ChannelSpec("time_constant", "rw", "float", (), "s"),
+        ChannelSpec("time_constant", "rw", "float", (), "s", config=True),
     ]
     DEFAULT_OPTIONS = dict(base_temperature=1.5, **FAULT_OPTION_DOC)
 

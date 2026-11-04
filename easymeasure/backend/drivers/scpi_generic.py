@@ -9,8 +9,11 @@ Example options::
          "unit": "V"},
         {"name": "I", "access": "r", "get": ":MEAS:CURR?", "unit": "A", "index": 1},
         {"name": "trace", "access": "r", "get": ":TRAC:DATA?", "shape": [-1]},
-        {"name": "output", "access": "rw", "dtype": "str", "get": ":OUTP?", "set": ":OUTP {value}"}
-     ]}
+        {"name": "output", "access": "rw", "dtype": "str", "get": ":OUTP?", "set": ":OUTP {value}",
+         "config": true}
+     ],
+     "actions": [{"name": "trigger", "command": "*TRG"},
+                 {"name": "reset", "command": ["*RST", "*CLS"]}]}
 
 ``index`` picks one element of a comma separated reply.  Vector channels parse
 comma separated replies into arrays.  Works with any port type (VISA, serial,
@@ -22,13 +25,13 @@ from __future__ import annotations
 from typing import List
 
 from ...common.errors import ChannelError
-from ..instrument import ChannelSpec, Instrument
+from ..instrument import ActionSpec, ChannelSpec, Instrument
 
 
 class SCPIGeneric(Instrument):
     DESCRIPTION = "Generic SCPI instrument defined by option 'channels'"
     CHANNELS: List[ChannelSpec] = []
-    DEFAULT_OPTIONS = {"channels": [], "init": [], "idn_contains": "", "timeout": 3.0,
+    DEFAULT_OPTIONS = {"channels": [], "actions": [], "init": [], "idn_contains": "", "timeout": 3.0,
                        "read_termination": "\n", "write_termination": "\n"}
 
     def connect(self):
@@ -54,8 +57,22 @@ class SCPIGeneric(Instrument):
             shape = c.get("shape", [])
             out.append(ChannelSpec(c["name"], access, c.get("dtype", "float"),
                                    None if shape is None else tuple(shape), c.get("unit", ""),
-                                   c.get("description", ""), c.get("timeout")))
+                                   c.get("description", ""), c.get("timeout"),
+                                   config=bool(c.get("config", False))))
         return out
+
+    def get_actions(self):
+        return [ActionSpec(a["name"], a.get("description", a.get("command", "")), a.get("timeout"))
+                for a in self.options.get("actions", [])]
+
+    def action(self, name):
+        for a in self.options.get("actions", []):
+            if a.get("name") == name:
+                for cmd in ([a["command"]] if isinstance(a.get("command"), str)
+                            else a.get("command", [])):
+                    self.resource.write(cmd)
+                return
+        raise ChannelError("no action %s" % name)
 
     def read(self, channel):
         c = self._defs.get(channel)

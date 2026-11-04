@@ -10,7 +10,9 @@ Scripts are plain Python run in the backend with a small API in their namespace:
 ``wait_until(f, timeout, interval)``  poll ``f()`` until true
 ``check()``            honour pause / abort
 ``log(msg)``/``print`` write to the backend log
-``instrument(name)``   guarded instrument proxy: ``.raw_query``, ``.raw_write``, ``.call``
+``instrument(name)``   guarded instrument proxy: ``.raw_query``, ``.raw_write``, ``.call``,
+                       ``.action``
+``action(ref)``        run an instrument action, e.g. ``action('dmm.reset')``
 ``run_sweep(defn)``    run a sweep definition synchronously (returns status)
 ``np``, ``math``, ``time``  modules
 ``state``              a dict persisting between scripts in the same backend
@@ -56,6 +58,9 @@ class _InstrumentProxy:
 
     def call(self, method: str, *args, **kwargs):
         return self._h.call(method, *args, **kwargs)
+
+    def action(self, name: str) -> None:
+        self._h.run_action(name)
 
     def read(self, channel: str):
         return self._h.read(channel)
@@ -108,6 +113,16 @@ class ScriptRunner:
         def _instrument(n):
             return _InstrumentProxy(self.instruments.get(n))
 
+        def _action(ref):
+            ctl.check()
+            if not isinstance(ref, str) or "." not in ref:
+                raise ScriptError("action() needs 'instrument.action'")
+            inst, name = ref.split(".", 1)
+            try:
+                self.instruments.get(inst).run_action(name)
+            finally:
+                self.channels.forget_instrument(inst)
+
         def _run_sweep(defn):
             if self.run_sweep is None:
                 raise ScriptError("run_sweep not available here")
@@ -118,7 +133,7 @@ class ScriptRunner:
             "get": _get, "set": _set, "set_raw": _set_raw, "sleep": ctl.sleep,
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
             "warn": slog.warning, "print": _print, "instrument": _instrument,
-            "run_sweep": _run_sweep, "np": np, "math": math, "time": time,
+            "run_sweep": _run_sweep, "action": _action, "np": np, "math": math, "time": time,
             "state": self.state, "AbortRequested": AbortRequested,
         }
 
