@@ -229,6 +229,9 @@ class Server:
             log.warning("port %d busy, using an ephemeral port", port)
             self._sock.bind((host, 0))
         self._sock.listen(16)
+        # closing a listening socket does not wake a blocked accept() on every OS:
+        # poll so that stop() always ends the accept thread
+        self._sock.settimeout(0.5)
         self.port = self._sock.getsockname()[1]
         self.runtime_file = Path(runtime_file) if runtime_file else paths.runtime_file()
         self._clients: Dict[int, _Client] = {}
@@ -280,6 +283,8 @@ class Server:
             self._sock.close()
         except OSError:
             pass
+        if threading.current_thread() is not self._accept_thread and self._accept_thread.is_alive():
+            self._accept_thread.join(2.0)
         with self._clients_lock:
             clients = list(self._clients.values())
         for c in clients:
@@ -303,12 +308,15 @@ class Server:
         while not self._stop.is_set():
             try:
                 sock, addr = self._sock.accept()
+            except socket.timeout:
+                continue            # periodic wake-up to notice stop()
             except OSError:
                 if self._stop.is_set():
                     return
                 time.sleep(0.1)
                 continue
             try:
+                sock.settimeout(None)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 c = _Client(self, sock, addr)
                 c.start()

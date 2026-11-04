@@ -189,3 +189,17 @@ def test_review_control_commands_not_starved_by_hung_instrument(server, demo):
         c.call("queue_state")
         c.call("abort")
         assert time.time() - t < 1.0
+
+
+def test_stop_leaves_no_threads(demo, tmp_path):
+    before = {t.ident for t in threading.enumerate()}
+    for i in range(3):
+        srv = Server(demo, port=0, runtime_file=tmp_path / ("rt%d.json" % i))
+        srv.start()
+        with client_for(srv) as c:
+            c.call("ping")
+        srv.stop()
+    time.sleep(0.5)
+    left = [t.name for t in threading.enumerate() if t.ident not in before
+            and t.name in ("accept",) or t.name.startswith("client-")]
+    assert left == [], left

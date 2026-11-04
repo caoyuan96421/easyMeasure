@@ -72,6 +72,14 @@ def main(argv=None) -> int:
         server.serve_forever()
     finally:
         backend.close()
+    # Everything is closed and flushed.  Drivers that hung forever were abandoned on
+    # daemon threads; tearing down the interpreter around them can crash inside
+    # native extensions, so leave immediately.
+    import logging
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
     return 0
 
 

@@ -43,3 +43,20 @@ def demo(backend):
 
 def load_example(name):
     return json.loads((EXAMPLES / name).read_text())
+
+
+def pytest_unconfigure(config):
+    """The robustness tests deliberately abandon driver threads that hang forever.
+    Interpreter teardown around such threads can crash inside native extensions
+    (Qt/numpy/h5py) after all tests have finished, so exit directly with the
+    session's status (the summary has already been printed)."""
+    import sys
+    status = getattr(config, "_em_exitstatus", None)
+    if status is not None:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(int(status))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    session.config._em_exitstatus = exitstatus
