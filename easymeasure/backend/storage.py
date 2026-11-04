@@ -174,6 +174,7 @@ class DataSet:
         self.footer: Optional[dict] = None
         self.points = 0
         self.last_index: Optional[Tuple[int, Tuple[int, ...]]] = None
+        self.last_by_dim: Dict[int, Tuple[int, ...]] = {}
         self.lock = threading.RLock()
         for k, d in enumerate(self.dims):
             self.filled[k] = np.zeros(self.shape[k:], dtype=bool)
@@ -266,6 +267,7 @@ class DataSet:
             if k == 0:
                 self.points += 1
             self.last_index = (k, idx)
+            self.last_by_dim[k] = idx
 
     def apply_frame(self, ftype: int, obj: dict) -> None:
         if ftype == POINT:
@@ -291,6 +293,7 @@ class DataSet:
                 "footer": self.footer, "points": self.points,
                 "last_index": None if self.last_index is None else
                 [self.last_index[0], list(self.last_index[1])],
+                "last_by_dim": {str(k): list(v) for k, v in self.last_by_dim.items()},
             }
 
     @classmethod
@@ -307,6 +310,8 @@ class DataSet:
         ds.points = int(snap.get("points", 0))
         li = snap.get("last_index")
         ds.last_index = None if li is None else (int(li[0]), tuple(li[1]))
+        for k, idx in (snap.get("last_by_dim") or {}).items():
+            ds.last_by_dim[int(k)] = tuple(idx)
         return ds
 
     # -- loading ---------------------------------------------------------------

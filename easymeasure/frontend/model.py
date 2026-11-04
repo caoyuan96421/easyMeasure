@@ -1,0 +1,94 @@
+"""Client-side cache of the backend state, shared by all panels."""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from PySide6.QtCore import QObject, QTimer, Signal
+
+from .connection import BackendConnection
+
+
+class BackendModel(QObject):
+    """Holds the latest ``get_state`` result and refreshes it on change events."""
+
+    stateChanged = Signal(dict)
+    queueChanged = Signal(dict)
+    message = Signal(str, str)        # (level, text) for the status bar
+
+    def __init__(self, conn: BackendConnection, parent=None):
+        super().__init__(parent)
+        self.conn = conn
+        self.state: dict = {}
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(150)
+        self._refresh_timer.timeout.connect(self.refresh)
+        conn.connected.connect(lambda _: self.refresh())
+        conn.event.connect(self._on_event)
+        conn.request_failed.connect(lambda cmd, err: self.message.emit("error", "%s: %s" % (cmd, err)))
+
+    def refresh(self) -> None:
+        self.conn.request("get_state", on_ok=self._got_state,
+                          on_err=lambda e: self.message.emit("error", "get_state: %s" % e))
+
+    def schedule_refresh(self) -> None:
+        self._refresh_timer.start()
+
+    def _got_state(self, st) -> None:
+        if not isinstance(st, dict):
+            return
+        self.state = st
+        self.stateChanged.emit(st)
+        if "queue" in st:
+            self.queueChanged.emit(st["queue"])
+
+    def _on_event(self, kind: str, data) -> None:
+        if kind in ("changed", "settings"):
+            self.schedule_refresh()
+        elif kind == "queue" and isinstance(data, dict):
+            self.state["queue"] = data
+            self.queueChanged.emit(data)
+        elif kind == "sweep_warning":
+            self.message.emit("warning", str(data.get("message")))
+        elif kind == "ppt":
+            self.message.emit("info", "slide added to %s" % data.get("path"))
+
+    # ---- convenience accessors -------------------------------------------------
+    def aliases(self) -> List[dict]:
+        return list((self.state.get("channels") or {}).get("aliases", []))
+
+    def composites(self) -> List[dict]:
+        return list((self.state.get("channels") or {}).get("composites", []))
+
+    def instruments(self) -> List[dict]:
+        return list(self.state.get("instruments", []))
+
+    def writable_channels(self, numeric_only: bool = False) -> List[str]:
+        out = []
+        for a in self.aliases():
+            if a.get("writable") and not (numeric_only and a.get("dtype") == "str"):
+                out.append(a["name"])
+        out += [c["name"] for c in self.composites()]
+        return out
+
+    def readable_channels(self) -> List[str]:
+        out = [a["name"] for a in self.aliases() if a.get("readable", True)]
+        out += [c["name"] for c in self.composites()]
+        return out
+
+    def raw_channels(self) -> List[str]:
+        out = []
+        for inst in self.instruments():
+            for c in inst.get("channels", []):
+                out.append("%s.%s" % (inst["name"], c["name"]))
+        return out
+
+    def channel_meta(self, name: str) -> Optional[dict]:
+        for a in self.aliases():
+            if a["name"] == name:
+                return a
+        for c in self.composites():
+            if c["name"] == name:
+                return dict(c, dtype="float", shape=[])
+        return None

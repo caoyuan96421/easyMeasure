@@ -22,13 +22,14 @@ def axes_for(ds, name: str) -> List[dict]:
     for dim in range(k, ds.ndim):
         label, coords = ds.sweep_axis(dim)
         unit = (ds.header.get("units") or {}).get(label, "")
-        out.append({"id": "d%d" % dim, "kind": "sweep", "dim": dim,
+        out.append({"id": "d%d" % dim, "kind": "sweep", "dim": dim, "name": label, "unit": unit,
                     "label": label + (" (%s)" % unit if unit else ""),
                     "size": ds.shape[dim], "coords": coords})
     if arr is not None:
         vshape = arr.shape[ds.ndim - k:]
         for j, n in enumerate(vshape):
-            out.append({"id": "v%d" % j, "kind": "value", "dim": j,
+            out.append({"id": "v%d" % j, "kind": "value", "dim": j, "unit": "",
+                        "name": "%s[axis %d]" % (name, j),
                         "label": "%s[axis %d]" % (name, j), "size": n,
                         "coords": np.arange(n, dtype=float)})
     return out
@@ -38,7 +39,11 @@ def latest_indices(ds, name: str) -> Dict[str, int]:
     """Indices of the most recently written point, for 'follow' mode."""
     out: Dict[str, int] = {}
     k = ds.dim_of.get(name, 0)
-    li = ds.last_index
+    li = None
+    if getattr(ds, "last_by_dim", None) and k in ds.last_by_dim:
+        li = (k, ds.last_by_dim[k])      # newest point that actually has this channel
+    elif ds.last_index is not None:
+        li = ds.last_index
     if li is not None:
         lk, idx = li
         # idx covers dims lk..D-1; we need dims k..D-1

@@ -474,7 +474,10 @@ class ChannelManager:
                 abort_check()
             elapsed = time.monotonic() - t0
             step_i += 1
-            frac_t = 1.0 if duration <= 0 else min(1.0, elapsed / duration)
+            # step k moves to where the ramp should be one tick later; slow writes
+            # can only delay progress (never exceed the rate on average)
+            frac_t = 1.0 if duration <= 0 else \
+                min(1.0, step_i * RAMP_INTERVAL / duration, (elapsed + RAMP_INTERVAL) / duration)
             frac_s = min(1.0, step_i / min_steps)
             frac = min(frac_t, frac_s)
             if x_path is not None:
