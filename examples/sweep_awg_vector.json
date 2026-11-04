@@ -1,0 +1,38 @@
+{
+  "name": "awg_waveform_amplitude",
+  "dimensions": [
+    {
+      "points": 21,
+      "sweep": [
+        {
+          "channel": "wave",
+          "start": 0,
+          "stop": 2,
+          "mapping": "x*np.sin(np.linspace(0, 2*np.pi, 128))"
+        },
+        {
+          "channel": "Vg",
+          "start": -0.2,
+          "stop": 0.2
+        }
+      ],
+      "record": [
+        "awg_rms",
+        "I"
+      ]
+    }
+  ],
+  "pre": {
+    "hook": "set_raw('awg.run', 'RUN')",
+    "constants": [],
+    "record": []
+  },
+  "post": {
+    "hook": "set_raw('awg.run', 'STOP')",
+    "constants": [],
+    "record": []
+  },
+  "metadata": {
+    "comment": "vector-valued sweep channel (mapping mandatory)"
+  }
+}

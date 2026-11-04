@@ -1,0 +1,55 @@
+{
+  "name": "spectrum_vs_field",
+  "dimensions": [
+    {
+      "points": 41,
+      "sweep": [
+        {
+          "channel": "B",
+          "start": -1,
+          "stop": 1,
+          "mapping": "start + (stop-start)*t**2"
+        }
+      ],
+      "record": [
+        "spectrum",
+        "peak"
+      ],
+      "pre_delay": 0.02
+    },
+    {
+      "points": 5,
+      "sweep": [
+        {
+          "channel": "Vx",
+          "values": [
+            -0.4,
+            -0.2,
+            0.0,
+            0.2,
+            0.4
+          ]
+        }
+      ],
+      "record": []
+    }
+  ],
+  "pre": {
+    "hook": "",
+    "constants": [],
+    "record": []
+  },
+  "post": {
+    "constants": [
+      {
+        "channel": "B",
+        "value": 0.0
+      }
+    ],
+    "record": [],
+    "hook": ""
+  },
+  "metadata": {
+    "comment": "1-D trace per point -> 3-D data; non-uniform field steps via mapping"
+  }
+}

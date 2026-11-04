@@ -1,0 +1,70 @@
+{
+  "name": "coulomb_diamonds",
+  "dimensions": [
+    {
+      "points": 101,
+      "sweep": [
+        {
+          "channel": "Vg",
+          "start": -0.6,
+          "stop": 0.6
+        }
+      ],
+      "record": [
+        "I",
+        "X"
+      ],
+      "pre_delay": 0.0
+    },
+    {
+      "points": 41,
+      "sweep": [
+        {
+          "channel": "Vb",
+          "start": -0.3,
+          "stop": 0.3
+        }
+      ],
+      "record": [
+        "T",
+        "@elapsed"
+      ]
+    }
+  ],
+  "pre": {
+    "hook": "log('starting diamond map at T = %.3f K' % get('T'))",
+    "constants": [
+      {
+        "channel": "output",
+        "value": "ON"
+      }
+    ],
+    "record": [
+      "T",
+      "B"
+    ]
+  },
+  "post": {
+    "record": [
+      "T"
+    ],
+    "constants": [
+      {
+        "channel": "Vg",
+        "value": 0.0
+      },
+      {
+        "channel": "Vb",
+        "value": 0.0
+      }
+    ],
+    "hook": ""
+  },
+  "on_read_error": "nan",
+  "on_set_error": "abort",
+  "run_post_on_abort": true,
+  "metadata": {
+    "sample": "simulated dot",
+    "comment": "2-D map, live heat map"
+  }
+}

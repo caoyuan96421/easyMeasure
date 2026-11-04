@@ -1,0 +1,65 @@
+{
+  "name": "camera_scan",
+  "dimensions": [
+    {
+      "points": 11,
+      "sweep": [
+        {
+          "channel": "Vx",
+          "start": -0.6,
+          "stop": 0.6
+        }
+      ],
+      "record": [
+        "image",
+        "brightness"
+      ],
+      "snake": true
+    },
+    {
+      "points": 9,
+      "sweep": [
+        {
+          "channel": "Vy",
+          "start": -0.6,
+          "stop": 0.6
+        }
+      ],
+      "record": []
+    },
+    {
+      "points": 2,
+      "sweep": [
+        {
+          "channel": "Tset",
+          "values": [
+            1.5,
+            4.0
+          ]
+        }
+      ],
+      "record": [
+        "T"
+      ],
+      "pre_delay": 1.0
+    }
+  ],
+  "pre": {
+    "hook": "",
+    "constants": [],
+    "record": []
+  },
+  "post": {
+    "constants": [
+      {
+        "channel": "Tset",
+        "value": 1.5
+      }
+    ],
+    "record": [],
+    "hook": ""
+  },
+  "metadata": {
+    "comment": "2-D image per point -> 5-D data; snake scan"
+  }
+}

@@ -78,7 +78,12 @@ def _plot_channel(fig, ax, ds, name, cmap):
         ax.set_ylabel(axes[y]["label"])
     others = [a for a in axes.values() if a["id"] not in (x, y)]
     if others:
-        bits = ["%s=%d" % (a["label"], fixed.get(a["id"], 0)) for a in others]
+        bits = []
+        for a in others:
+            i = int(fixed.get(a["id"], 0))
+            c = a.get("coords")
+            val = ("%.4g" % c[i]) if c is not None and i < len(c) else "?"
+            bits.append("%s=%s [#%d]" % (a.get("name", a["label"]), val, i))
         ax.set_title(name + "  [" + ", ".join(bits) + "]", fontsize=8)
     else:
         ax.set_title(name, fontsize=9)

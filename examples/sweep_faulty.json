@@ -1,0 +1,41 @@
+{
+  "name": "faulty_hardware_demo",
+  "dimensions": [
+    {
+      "points": 51,
+      "sweep": [
+        {
+          "channel": "Vg",
+          "start": -0.5,
+          "stop": 0.5
+        }
+      ],
+      "record": [
+        "I",
+        "X",
+        "spectrum",
+        "chaos_garbage",
+        "chaos_vector"
+      ]
+    },
+    {
+      "points": 11,
+      "sweep": [
+        {
+          "channel": "Vb",
+          "start": -0.2,
+          "stop": 0.2
+        }
+      ],
+      "record": [
+        "T",
+        "chaos_text"
+      ]
+    }
+  ],
+  "on_read_error": "nan",
+  "on_set_error": "skip",
+  "metadata": {
+    "comment": "use with faulty_setup.json"
+  }
+}
