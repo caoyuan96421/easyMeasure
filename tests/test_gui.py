@@ -275,3 +275,15 @@ def test_font_size_and_narrow_window(app, gui):
     w.resize(640, 520)
     pump(app, 0.3)
     assert w.width() <= 700
+
+
+def test_outdated_backend_warning(app, gui):
+    w, be, _, _ = gui
+    w._on_connected({"version": "0.1.0", "pid": 1})          # old backend: no code stamp
+    assert "OLDER" in w.conn_label.text()
+    from easymeasure import CODE_STAMP
+    w._on_connected({"version": "0.1.0", "pid": 1, "code_stamp": CODE_STAMP})
+    errs = []
+    w.conn.request("start_tray", on_ok=errs.append, on_err=errs.append)
+    assert pump(app, 5, lambda: errs)
+    assert errs[0]["running"] is False             # no desktop in the test environment

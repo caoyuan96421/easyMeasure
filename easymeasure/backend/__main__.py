@@ -63,22 +63,15 @@ def main(argv=None) -> int:
             signal.signal(s, _sig)
         except (ValueError, OSError):
             pass
-    tray = None
     if not args.no_tray:
         try:
-            from ..tray import spawn
-            tray = spawn()          # separate process: can never affect the backend
-        except Exception:
-            tray = None
+            backend.start_tray()    # separate process: can never affect the backend
+        except Exception as exc:
+            print("tray icon not started: %s" % exc, file=sys.stderr)
     try:
         server.serve_forever()
     finally:
         backend.close()
-        if tray is not None and tray.poll() is None:
-            try:
-                tray.terminate()
-            except Exception:
-                pass
     return 0
 
 

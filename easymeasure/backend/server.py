@@ -35,7 +35,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Optional
 
-from .. import __version__
+from .. import CODE_STAMP, __version__
 from ..common import codec, paths
 from ..common.errors import EasyMeasureError, ProtocolError
 from .logsys import get_logger
@@ -180,6 +180,7 @@ class _Client:
             self.authed = True
             self.name = str(msg.get("client", "?"))
             self.send({"type": "welcome", "version": __version__, "pid": os.getpid(),
+                       "code_stamp": CODE_STAMP, "tray": self.server.backend.tray_running(),
                        "started": self.server.backend.started})
             log.info("client %s (%s) connected", self.id, self.name)
             self.server._attach(self)

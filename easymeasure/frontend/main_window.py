@@ -226,6 +226,8 @@ class MainWindow(QMainWindow):
             m.addAction(act)
         b = self.menuBar().addMenu("&Backend")
         for text, fn in (("Start backend", self.start_backend), ("Reconnect", self._reconnect),
+                         ("Restart backend…", self.restart_backend),
+                         ("Show tray icon", self.show_tray),
                          ("Shut down backend…", self.shutdown_backend)):
             act = QAction(text, self)
             act.triggered.connect(fn)
@@ -272,8 +274,8 @@ class MainWindow(QMainWindow):
         if not self.conn.is_connected:
             self.start_backend()
 
-    def start_backend(self):
-        if self.conn.is_connected:
+    def start_backend(self, force: bool = False):
+        if self.conn.is_connected and not force:
             self._message("info", "backend already running")
             return
         from ..client import start_backend_detached
@@ -305,6 +307,44 @@ class MainWindow(QMainWindow):
     def _on_connected(self, welcome):
         self.start_action.setVisible(False)
         self._message("info", "connected to backend %s" % welcome.get("version"))
+        from .. import CODE_STAMP
+        stamp = welcome.get("code_stamp")
+        if stamp is None or float(stamp) < CODE_STAMP - 1:
+            # the backend process was started before the code was updated
+            self.conn_label.setText(" connected — backend runs OLDER code: Backend → Restart ")
+            self.conn_label.setStyleSheet("color: #e39a1b")
+            self._message("warning", "the running backend uses older code than this GUI; "
+                                     "use Backend → Restart backend when no sweep is running")
+
+    def show_tray(self):
+        self.conn.request("start_tray", on_ok=lambda r: self._message(
+            "info", "tray icon running" if r.get("running") else "tray icon: %s" % r.get("reason")),
+            on_err=lambda e: self._message("error", "this backend cannot show a tray icon "
+                                                    "(restart it to update): %s" % e))
+
+    def restart_backend(self):
+        """Shut the backend down and start a fresh one (setup restored)."""
+        if QMessageBox.question(self, "Restart backend",
+                                "Restart the backend? Instruments are reconnected and the current "
+                                "setup is restored. Not possible while a sweep is running.") \
+                != QMessageBox.Yes:
+            return
+
+        def stopped(_):
+            self._message("info", "backend stopping, starting a new one…")
+            wait = QTimer(self)
+            t0 = time.monotonic()
+
+            def check():
+                from ..backend.server import backend_alive, read_runtime_file
+                info = read_runtime_file()
+                if (not info or not backend_alive(info, 0.2)) or time.monotonic() - t0 > 15:
+                    wait.stop()
+                    self.start_backend(force=True)
+            wait.timeout.connect(check)
+            wait.start(300)
+        self.conn.request("shutdown", {"force": False}, on_ok=stopped,
+                          on_err=lambda e: QMessageBox.warning(self, "Restart backend", e))
 
     def _on_disconnected(self):
         self._message("warning", "lost connection to backend – retrying")

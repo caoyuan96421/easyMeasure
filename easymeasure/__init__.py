@@ -13,3 +13,25 @@ The package is split into:
 """
 
 __version__ = "0.1.0"
+
+
+def code_stamp() -> float:
+    """Newest modification time of the package sources.
+
+    The GUI compares its own stamp with the backend's to warn when the running
+    backend still executes older code (e.g. after a ``git pull``)."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    newest = 0.0
+    for d, _, files in os.walk(root):
+        for f in files:
+            if f.endswith(".py"):
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(d, f)))
+                except OSError:
+                    pass
+    return newest
+
+
+#: stamp of the code this process imported (computed once, at import time)
+CODE_STAMP = code_stamp()

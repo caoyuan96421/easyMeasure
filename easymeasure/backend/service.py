@@ -57,7 +57,7 @@ class Backend:
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
-        "shutdown",
+        "shutdown", "start_tray",
     )
 
     def __init__(self, settings: Optional[dict] = None, home: Optional[Path] = None,
@@ -96,6 +96,7 @@ class Backend:
         self.ring.add_listener(self._on_log)
         self.monitor.start()
         self.started = time.time()
+        self._tray = None
         self._shutdown_cb: Optional[Callable[[], None]] = None
         self._post_threads: List[threading.Thread] = []
         log.info("backend started (home %s, data %s)", self.home, self.settings["data_dir"])
@@ -510,6 +511,30 @@ class Backend:
     def set_shutdown_callback(self, cb: Callable[[], None]) -> None:
         self._shutdown_cb = cb
 
+    # ------------------------------------------------------------------- tray --
+    def tray_running(self) -> bool:
+        return self._tray is not None and self._tray.poll() is None
+
+    def start_tray(self) -> dict:
+        """Start the system-tray helper process (no-op if it is already running)."""
+        if self.tray_running():
+            return {"running": True, "pid": self._tray.pid}
+        from ..tray import spawn
+        log_path = self.home / "logs" / "tray.log"
+        proc, reason = spawn(log_path=log_path)
+        self._tray = proc
+        if proc is None:
+            log.info("tray icon not started: %s", reason)
+            return {"running": False, "reason": reason}
+        log.info("tray helper started (pid %d, log %s)", proc.pid, log_path)
+
+        def watch(p=proc):
+            code = p.wait()
+            if not getattr(self, "_closing", False):
+                log.warning("tray helper exited with code %s (see %s)", code, log_path)
+        threading.Thread(target=watch, name="tray-watch", daemon=True).start()
+        return {"running": True, "pid": proc.pid}
+
     def shutdown(self, force: bool = False) -> str:
         if self.runner is not None and not force:
             raise ChannelError("a sweep is running; abort it first or use force")
@@ -521,6 +546,13 @@ class Backend:
 
     def close(self) -> None:
         """Stop everything (used by the server on exit and by tests)."""
+        self._closing = True
+        tray, self._tray = self._tray, None
+        if tray is not None and tray.poll() is None:
+            try:
+                tray.terminate()
+            except Exception:
+                pass
         try:
             self.queue.abort_all()
             self.queue.shutdown()

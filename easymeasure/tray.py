@@ -253,37 +253,92 @@ class TrayController:
         QApplication.quit()
 
 
+def _tray_log(msg: str) -> None:
+    try:
+        with open(paths.log_dir() / "tray.log", "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="easymeasure-tray")
     ap.add_argument("--home", default=None)
     args = ap.parse_args(argv)
     if args.home:
         os.environ["EASYMEASURE_HOME"] = args.home
+    import faulthandler
+    try:
+        _fh = open(paths.log_dir() / "tray.log", "a", encoding="utf-8")
+        faulthandler.enable(_fh)
+    except OSError:
+        pass
+
+    def _excepthook(t, v, tb):
+        import traceback
+        _tray_log("unhandled error:\n" + "".join(traceback.format_exception(t, v, tb)))
+    sys.excepthook = _excepthook
+    if os.name == "nt":
+        try:   # own identity for notifications (instead of "Python")
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("easyMeasure.Backend")
+        except Exception:
+            pass
     app = QApplication(sys.argv[:1])
+    app.setApplicationName("easyMeasure backend")
+    app.setApplicationDisplayName("easyMeasure backend")
     app.setQuitOnLastWindowClosed(False)
+    # one tray icon per backend state directory
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    import hashlib
+    key = "easymeasure-tray-" + hashlib.sha1(str(paths.home_dir()).encode()).hexdigest()[:12]
+    probe = QLocalSocket()
+    probe.connectToServer(key)
+    if probe.waitForConnected(300):
+        _tray_log("another tray icon is already running; exiting")
+        return 0
+    QLocalServer.removeServer(key)
+    lock = QLocalServer()
+    lock.listen(key)
     if not QSystemTrayIcon.isSystemTrayAvailable():
+        _tray_log("no system tray available on this desktop; exiting")
         return 0
     from .frontend.connection import BackendConnection
     conn = BackendConnection()
     tray = QSystemTrayIcon()
     ctl = TrayController(conn, tray)
     tray.show()
+    _tray_log("tray icon shown (pid %d)" % os.getpid())
+    first = {"done": False}
+
+    def announce(_welcome):
+        if not first["done"]:
+            first["done"] = True
+            # visible even when Windows hides the icon in the overflow area
+            tray.showMessage("easyMeasure", "Backend is running (pid %s). Its icon is in the "
+                             "notification area; if hidden, click ^ on the taskbar."
+                             % _welcome.get("pid"), make_icon("idle"), 6000)
+    conn.connected.connect(announce)
     conn.start()
     app._tray_controller = ctl
+    app._tray_lock = lock
     return app.exec()
 
 
-def spawn(home: Optional[str] = None) -> Optional[subprocess.Popen]:
-    """Start the tray helper for this backend (no-op without a desktop session)."""
+def spawn(home: Optional[str] = None, log_path: Optional[Path] = None):
+    """Start the tray helper for this backend.
+
+    Returns ``(Popen or None, reason)``.  The helper's own output goes to
+    *log_path* so problems are never silent."""
     if os.environ.get("EASYMEASURE_NO_TRAY"):
-        return None
+        return None, "disabled by EASYMEASURE_NO_TRAY"
     if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or
                                                  os.environ.get("WAYLAND_DISPLAY")):
-        return None
+        return None, "no desktop session"
     try:
         import PySide6  # noqa: F401
     except ImportError:
-        return None
+        return None, "PySide6 not installed"
     exe = Path(sys.executable)
     if os.name == "nt" and exe.with_name("pythonw.exe").exists():
         exe = exe.with_name("pythonw.exe")
@@ -291,15 +346,33 @@ def spawn(home: Optional[str] = None) -> Optional[subprocess.Popen]:
     env = dict(os.environ)
     if home:
         env["EASYMEASURE_HOME"] = home
-    env.pop("QT_QPA_PLATFORM", None) if env.get("QT_QPA_PLATFORM") == "offscreen" else None
-    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-              close_fds=True, env=env)
+    if env.get("QT_QPA_PLATFORM") == "offscreen":
+        env.pop("QT_QPA_PLATFORM")
+    pkg_root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
+    out = subprocess.DEVNULL
+    if log_path is not None:
+        try:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            out = open(log_path, "a", encoding="utf-8")
+            out.write("%s starting tray helper: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                         " ".join(cmd)))
+            out.flush()
+        except OSError:
+            out = subprocess.DEVNULL
+    kw = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True, env=env)
     if os.name == "nt":
         kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
-        return subprocess.Popen(cmd, **kw)
-    except Exception:
-        return None
+        return subprocess.Popen(cmd, **kw), "started"
+    except Exception as exc:
+        return None, "cannot start tray helper: %s" % exc
+    finally:
+        if out is not subprocess.DEVNULL:
+            try:
+                out.close()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
