@@ -190,6 +190,12 @@ the slide in `<name>_pending.pptx` instead of losing it.
 
 ## GUI
 
+The window is split in two: instruments, sweep editor and queue on the left, data
+(live view and any loaded files) on the right, the monitor on the far right and the
+log at the bottom. The read-only *Running sweep* view can be shown from the *View* menu.
+
+![layout](docs/screenshots/layout.png)
+
 | | |
 |---|---|
 | ![setup](docs/screenshots/setup.png) | ![editor](docs/screenshots/sweep_editor.png) |
@@ -200,10 +206,11 @@ the slide in `<name>_pending.pptx` instead of losing it.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
   file, validate against the backend, queue. **Running sweep** shows the
   executing definition read-only.
-* **Queue** – controls, queued items (reorder/remove), history, script editor.
+* **Queue** – controls, queued items (reorder/remove), history (*Rerun selected*
+  queues the same sweep/script again, *Open data* opens its file), script editor.
 * **Live data / data files** – N-D plot grid: choose X and Y among all sweep and
   value axes, other axes become sliders (*follow latest* tracks new data); curve,
-  stacked curves or heat map; drag the histogram to set levels, pick colormaps.
+  stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.
   Redraws are coalesced, so fast sweeps don't load the GUI.
 * **Monitor** dock and **Log** dock.
 

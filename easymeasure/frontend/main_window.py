@@ -10,7 +10,7 @@ from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
+                               QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
                                QTabBar, QTabWidget, QToolBar, QWidget)
 
 from .. import __version__
@@ -88,23 +88,31 @@ class MainWindow(QMainWindow):
         self._autostart = autostart_backend
         self._started_backend = False
 
-        # central tabs
-        self.tabs = QTabWidget()
-        self.tabs.setTabsClosable(True)
-        self.tabs.tabCloseRequested.connect(self._close_tab)
+        # central area: left = control (instruments / sweep editor / queue),
+        # right = data (live view + loaded files); monitor dock on the far right
         self.setup_panel = SetupPanel(self.conn, self.model)
         self.editor = SweepEditor(self.conn, self.model)
         self.running = RunningSweepView(self.conn, self.model)
         self.queue_panel = QueuePanel(self.conn, self.model)
         self.live = LiveDataView(self.conn)
+        self.left_tabs = QTabWidget()
         for w, name in ((self.setup_panel, "Instruments && channels"), (self.editor, "Sweep editor"),
-                        (self.running, "Running sweep"), (self.queue_panel, "Queue"),
-                        (self.live, "Live data")):
-            self.tabs.addTab(w, name)
-        self._fixed_tabs = self.tabs.count()
-        for i in range(self._fixed_tabs):
-            self.tabs.tabBar().setTabButton(i, QTabBar.ButtonPosition.RightSide, None)
-        self.setCentralWidget(self.tabs)
+                        (self.queue_panel, "Queue")):
+            self.left_tabs.addTab(w, name)
+        self.data_tabs = QTabWidget()
+        self.data_tabs.setTabsClosable(True)
+        self.data_tabs.tabCloseRequested.connect(self._close_tab)
+        self.data_tabs.addTab(self.live, "Live data")
+        self.data_tabs.tabBar().setTabButton(0, QTabBar.ButtonPosition.RightSide, None)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.left_tabs)
+        self.splitter.addWidget(self.data_tabs)
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setStretchFactor(1, 3)
+        self.splitter.setChildrenCollapsible(False)
+        self.setCentralWidget(self.splitter)
+        self.queue_panel.rerunRequested.connect(self._rerun)
+        self.queue_panel.openDataRequested.connect(self.open_data)
         self.live.copyDefinition.connect(self._copy_to_editor)
         self.running.copyDefinition.connect(self._copy_to_editor)
         self.live.pptRequested.connect(self._ppt_for_view)
@@ -167,6 +175,10 @@ class MainWindow(QMainWindow):
         v = self.menuBar().addMenu("&View")
         v.addAction(md.toggleViewAction())
         v.addAction(ld.toggleViewAction())
+        self.running_action = QAction("Running sweep view", self, checkable=True)
+        self.running_action.toggled.connect(self._show_running)
+        v.addAction(self.running_action)
+        self.running_action.setChecked(self.qsettings.value("show_running", False, type=bool))
 
         # status bar
         self.state_label = QLabel("")
@@ -187,8 +199,11 @@ class MainWindow(QMainWindow):
             try:
                 self.restoreGeometry(geo)
                 self.restoreState(self.qsettings.value("windowState"))
+                self.splitter.restoreState(self.qsettings.value("splitter"))
             except Exception:
                 pass
+        else:
+            QTimer.singleShot(0, lambda: self.splitter.setSizes([560, 840]))
         self.conn.start()
         if autostart_backend:
             QTimer.singleShot(1500, self._autostart_if_needed)
@@ -256,7 +271,7 @@ class MainWindow(QMainWindow):
                               "run %s %s %s" % (data.get("run"), data.get("status"),
                                                 data.get("error") or ""))
         elif kind == "sweep_start":
-            self.tabs.setCurrentWidget(self.live) if self.tabs.currentWidget() is self.editor else None
+            self.data_tabs.setCurrentWidget(self.live)
 
     # ------------------------------------------------------------------ data --
     def open_data(self, path: Optional[str] = None):
@@ -270,8 +285,9 @@ class MainWindow(QMainWindow):
         view = FileDataView(path)
         view.copyDefinition.connect(self._copy_to_editor)
         view.pptRequested.connect(self._ppt_for_view)
-        i = self.tabs.addTab(view, os.path.basename(path))
-        self.tabs.setCurrentIndex(i)
+        i = self.data_tabs.addTab(view, os.path.basename(path))
+        self.data_tabs.setTabToolTip(i, path)
+        self.data_tabs.setCurrentIndex(i)
 
     def browse_runs(self):
         def got(runs):
@@ -289,14 +305,38 @@ class MainWindow(QMainWindow):
 
     def _copy_to_editor(self, definition):
         self.editor.load_definition(definition)
-        self.tabs.setCurrentWidget(self.editor)
+        self.left_tabs.setCurrentWidget(self.editor)
 
     def _close_tab(self, i):
-        if i < self._fixed_tabs:
+        w = self.data_tabs.widget(i)
+        if w is self.live:
             return
-        w = self.tabs.widget(i)
-        self.tabs.removeTab(i)
+        self.data_tabs.removeTab(i)
         w.deleteLater()
+
+    def _show_running(self, on: bool):
+        """The read-only 'Running sweep' view is optional (View menu)."""
+        idx = self.left_tabs.indexOf(self.running)
+        if on and idx < 0:
+            self.left_tabs.insertTab(2, self.running, "Running sweep")
+            self.running.refresh()
+        elif not on and idx >= 0:
+            self.left_tabs.removeTab(idx)
+        self.qsettings.setValue("show_running", on)
+
+    def _rerun(self, item: dict):
+        """Queue a copy of a finished/failed/aborted item from the history."""
+        kind = item.get("kind")
+        if kind == "sweep" and item.get("definition"):
+            new = {"kind": "sweep", "definition": item["definition"]}
+        elif kind == "script" and item.get("code") is not None:
+            new = {"kind": "script", "code": item["code"], "name": item.get("name", "script")}
+        else:
+            self._message("error", "this history item cannot be rerun")
+            return
+        self.conn.request("queue_add", {"item": new, "start": True},
+                          on_ok=lambda i: self._message("info", "rerun queued as item #%s" % i),
+                          on_err=lambda e: QMessageBox.warning(self, "Rerun", e))
 
     # ------------------------------------------------------------------- PPT --
     def _ppt_backend(self, path: Optional[str]):
@@ -348,5 +388,6 @@ class MainWindow(QMainWindow):
         # Only the GUI goes away; the backend (and any running sweep) is untouched.
         self.qsettings.setValue("geometry", self.saveGeometry())
         self.qsettings.setValue("windowState", self.saveState())
+        self.qsettings.setValue("splitter", self.splitter.saveState())
         self.conn.stop()
         super().closeEvent(ev)

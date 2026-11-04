@@ -82,7 +82,7 @@ def test_live_sweep_reopen_and_file_view(app, gui):
     w.editor.load_definition(SWEEP)
     w.editor._queue(True)
     assert pump(app, 10, lambda: w.live.ds is not None and w.live.ds.points > 5)
-    w.tabs.setCurrentWidget(w.live)
+    w.data_tabs.setCurrentWidget(w.live)
     pump(app, 0.5)
     # cycle through plot modes on the N-D spectrum data
     p = next(p for p in w.live.plots if p.channel == "spectrum")
@@ -108,7 +108,7 @@ def test_live_sweep_reopen_and_file_view(app, gui):
         ref = DataSet.load(item["path"])
         np.testing.assert_allclose(w2.live.ds.data["I"], ref.data["I"])  # mirror == file
         w2.open_data(item["path"])
-        view = w2.tabs.currentWidget()
+        view = w2.data_tabs.currentWidget()
         assert pump(app, 10, lambda: view.ds is not None)
         assert view.ds.points == 120
         w2.running.refresh()
@@ -175,3 +175,42 @@ def test_ndplot_standalone_modes(app):
     w._maybe_refresh(force=True)
     assert "cannot plot" not in w.info.text()
     w.close()
+
+
+def test_layout_rerun_and_1d_plot(app, gui):
+    w, be, _, _ = gui
+    # two panes: control tabs left, data tabs right; running view hidden by default
+    assert w.splitter.count() == 2
+    assert w.left_tabs.indexOf(w.setup_panel) >= 0 and w.left_tabs.indexOf(w.queue_panel) >= 0
+    assert w.data_tabs.indexOf(w.live) == 0
+    assert w.left_tabs.indexOf(w.running) == -1
+    w.running_action.setChecked(True)
+    assert w.left_tabs.indexOf(w.running) >= 0
+    w.running_action.setChecked(False)
+    assert w.left_tabs.indexOf(w.running) == -1
+    # run a 1-D sweep and rerun it from the history
+    d = {"name": "one_d", "dimensions": [{"points": 5, "sweep": [{"channel": "Vg", "start": 0,
+                                                                   "stop": 0.1}], "record": ["I"]}]}
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(30)
+    qp = w.queue_panel
+    assert pump(app, 5, lambda: qp.history.rowCount() == 1)
+    assert not qp.rerun_btn.isEnabled()
+    qp.history.selectRow(0)
+    pump(app, 0.1)
+    assert qp.rerun_btn.isEnabled() and qp.open_btn.isEnabled()
+    qp.rerun_btn.click()
+    assert pump(app, 10, lambda: len(be.queue_state()["history"]) == 2 and
+                be.queue_state()["state"] == "idle")
+    hist = be.queue_state()["history"]
+    assert hist[-1]["status"] == "finished" and hist[-1]["name"] == "one_d"
+    assert hist[-1]["run"] != hist[0]["run"]
+    # 1-D data: Y is grayed out, not "(none)"
+    p = w.live.plots[0]
+    assert pump(app, 5, lambda: p.channel == "I" and len(p._axes) == 1)
+    assert not p.y_box.isEnabled() and p.y_box.count() == 0
+    assert "cannot plot" not in p.info.text()
+    # open the data file from the history
+    qp.history.selectRow(0)
+    qp.open_btn.click()
+    assert pump(app, 5, lambda: w.data_tabs.count() == 2)

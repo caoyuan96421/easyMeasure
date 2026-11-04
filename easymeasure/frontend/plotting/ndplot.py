@@ -78,11 +78,14 @@ class NDPlotWidget(QWidget):
         self.offset.setToolTip("vertical offset between stacked curves (0 = automatic)")
         self.offset.setPrefix("offset ")
         top = QHBoxLayout()
+        self._labels = {}
         for w, label in ((self.channel_box, "Channel"), (self.mode_box, None), (self.x_box, "X"),
                          (self.y_box, "Y"), (self.cmap_box, None)):
             if label:
-                top.addWidget(QLabel(label))
+                self._labels[label] = QLabel(label)
+                top.addWidget(self._labels[label])
             top.addWidget(w)
+        self.y_box.setMinimumContentsLength(6)
         top.addWidget(self.offset)
         top.addWidget(self.follow)
         top.addWidget(self.autolevel)
@@ -206,8 +209,12 @@ class NDPlotWidget(QWidget):
                               for d in range(k, self.ds.ndim)]
             for a in self._axes:
                 self.x_box.addItem(a["label"], a["id"])
-                self.y_box.addItem(a["label"], a["id"])
-            self.y_box.insertItem(0, "(none)", None)
+            if len(self._axes) >= 2:
+                # a second axis exists: Y can be any axis, or none (curve + sliders)
+                for a in self._axes:
+                    self.y_box.addItem(a["label"], a["id"])
+                self.y_box.insertItem(0, "(none)", None)
+            # (1-D data: Y stays empty and is grayed out in _layout_changed)
             if self._axes and self.ds is not None and self.channel in self.ds.data:
                 x, y = ndview.default_view(self.ds, self.channel)
                 self.x_box.setCurrentIndex(max(0, self.x_box.findData(x)))
@@ -215,7 +222,7 @@ class NDPlotWidget(QWidget):
             elif len(self._axes) >= 2:
                 self.x_box.setCurrentIndex(0)
                 self.y_box.setCurrentIndex(2)
-            else:
+            elif self.y_box.count():
                 self.y_box.setCurrentIndex(0)
         finally:
             self._building = False
@@ -264,6 +271,13 @@ class NDPlotWidget(QWidget):
             self._sliders[a["id"]] = s
             self._slider_labels[a["id"]] = val
             row += 1
+        # Y is meaningless for 1-D data and in curve mode: gray it out
+        y_usable = len(self._axes) >= 2 and self.mode_box.currentText() != "Curve"
+        self.y_box.setEnabled(y_usable)
+        self._labels["Y"].setEnabled(y_usable)
+        self.y_box.setToolTip("" if y_usable else
+                              ("the data has a single axis" if len(self._axes) < 2
+                               else "not used in curve mode"))
         heat = mode == "Heatmap"
         self.hist.setVisible(heat)
         self.image.setVisible(heat)

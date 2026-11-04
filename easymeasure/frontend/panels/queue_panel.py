@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
@@ -19,6 +19,9 @@ SCRIPT_HELP = ("# get(name), set(name, value), set_raw('inst.ch', v), sleep(s),\
 
 
 class QueuePanel(QWidget):
+    rerunRequested = Signal(dict)     # a history item (sweep definition or script)
+    openDataRequested = Signal(str)   # path of a run's data file
+
     def __init__(self, conn, model, parent=None):
         super().__init__(parent)
         self.conn = conn
@@ -64,8 +67,25 @@ class QueuePanel(QWidget):
         self.history.setHorizontalHeaderLabels(["#", "Kind", "Name", "Status", "Ended", "Run / error"])
         self.history.horizontalHeader().setStretchLastSection(True)
         self.history.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.history.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history.setSelectionMode(QTableWidget.SingleSelection)
+        self._hist_items = []
+        self.rerun_btn = QPushButton("⟳ Rerun selected")
+        self.rerun_btn.setToolTip("queue the selected sweep or script again (same definition) and start")
+        self.rerun_btn.clicked.connect(self._rerun)
+        self.open_btn = QPushButton("Open data")
+        self.open_btn.setToolTip("open the data file of the selected run")
+        self.open_btn.clicked.connect(self._open_data)
+        self.history.itemSelectionChanged.connect(self._hist_selection)
+        self._hist_selection()
+        hb = QHBoxLayout()
+        hb.addWidget(self.rerun_btn)
+        hb.addWidget(self.open_btn)
+        hb.addStretch(1)
         hbox = QGroupBox("History")
-        QVBoxLayout(hbox).addWidget(self.history)
+        hl = QVBoxLayout(hbox)
+        hl.addWidget(self.history)
+        hl.addLayout(hb)
 
         self.script = QPlainTextEdit()
         f = QFont("monospace")
@@ -136,6 +156,29 @@ class QueuePanel(QWidget):
                               on_ok=lambda i: self.msg.setText("script queued as #%s" % i),
                               on_err=lambda e: self.msg.setText("✘ %s" % e))
 
+    def _selected_history(self):
+        r = self.history.currentRow()
+        if not self.history.selectedItems() or not 0 <= r < len(self._hist_items):
+            return None
+        return self._hist_items[r]
+
+    def _hist_selection(self):
+        it = self._selected_history()
+        self.rerun_btn.setEnabled(it is not None and (
+            (it.get("kind") == "sweep" and bool(it.get("definition"))) or
+            (it.get("kind") == "script" and it.get("code") is not None)))
+        self.open_btn.setEnabled(it is not None and bool(it.get("path")))
+
+    def _rerun(self):
+        it = self._selected_history()
+        if it is not None:
+            self.rerunRequested.emit(it)
+
+    def _open_data(self):
+        it = self._selected_history()
+        if it is not None and it.get("path"):
+            self.openDataRequested.emit(it["path"])
+
     @staticmethod
     def _info(item):
         if item.get("kind") == "sweep":
@@ -163,6 +206,10 @@ class QueuePanel(QWidget):
             for c, v in enumerate((it["id"], it["kind"], it.get("name", ""), self._info(it))):
                 self.queued.setItem(r, c, QTableWidgetItem(str(v)))
         hist = list(reversed(q.get("history", [])))
+        sel = self._selected_history()
+        sel_id = sel.get("id") if sel else None
+        self._hist_items = hist
+        self.history.blockSignals(True)
         self.history.setRowCount(len(hist))
         for r, it in enumerate(hist):
             ended = time.strftime("%H:%M:%S", time.localtime(it["ended"])) if it.get("ended") else ""
@@ -177,3 +224,9 @@ class QueuePanel(QWidget):
                 if c == 5 and it.get("path"):
                     cell.setToolTip(it["path"])
                 self.history.setItem(r, c, cell)
+        self.history.clearSelection()
+        for r, it in enumerate(hist):
+            if sel_id is not None and it.get("id") == sel_id:
+                self.history.selectRow(r)        # keep the selection across refreshes
+        self.history.blockSignals(False)
+        self._hist_selection()
