@@ -201,6 +201,15 @@ class FakeSCPI:
         self.alive = False
         self.srv.close()
 
+    def wait_for(self, predicate, timeout=3.0):
+        """Writes have no reply: give the server thread time to record them."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate(list(self.received)):
+                return list(self.received)
+            time.sleep(0.02)
+        return list(self.received)
+
 
 def test_keithley_actions_and_config_over_tcp(backend):
     fake = FakeSCPI("KEITHLEY INSTRUMENTS INC.,MODEL 2400,1,C30", {
@@ -218,7 +227,7 @@ def test_keithley_actions_and_config_over_tcp(backend):
         be.write_channel("smu.nplc", 10)
         assert be.read_channel("smu.current") == pytest.approx(1.2e-6)
         assert be.read_channel("smu.output") == "ON"
-        rx = fake.received
+        rx = fake.wait_for(lambda r: ":OUTP ON" in r and any(x.startswith(":SENS:CURR:NPLC") for x in r))
         assert "*CLS" in rx and any(r.startswith(":SYST:BEEP") for r in rx)
         assert ":OUTP ON" in rx and any(r.startswith(":SENS:CURR:NPLC 10") for r in rx)
         with pytest.raises(EasyMeasureError):
@@ -248,8 +257,9 @@ def test_scpi_generic_actions_and_config_over_tcp(backend):
         assert be.read_channel("psu.I") == pytest.approx(0.2)
         be.define_alias(name="Vpsu", target="psu.V", min=0, max=5)
         be.write_channel("Vpsu", 2.0, ramp=False)
-        rx = fake.received
-        for cmd in ("SYST:REM", "*TRG", "*RST", "*CLS", "OUTP ON", "VOLT 2"):
+        want = ("SYST:REM", "*TRG", "*RST", "*CLS", "OUTP ON", "VOLT 2")
+        rx = fake.wait_for(lambda r: all(c in r for c in want))
+        for cmd in want:
             assert cmd in rx, (cmd, rx)
         assert rx.index("*RST") < rx.index("*CLS")
         with pytest.raises(EasyMeasureError):

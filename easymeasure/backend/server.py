@@ -44,8 +44,15 @@ from .service import Backend
 log = get_logger("server")
 
 DEFAULT_PORT = 47811
-MAX_QUEUE_BYTES = 256 * 1024 * 1024
+# Per-client backlog limits.  Droppable events (monitor values, sweep points, log
+# lines) are dropped above MAX_QUEUE_BYTES (the client is told to resync later).
+# A client whose backlog exceeds HOPELESS_BYTES, or that has not accepted any data
+# for STALL_TIMEOUT seconds, is disconnected; a GUI reconnects and resyncs by itself.
+# Without these limits a frozen GUI would make the backend buffer without bound.
+MAX_QUEUE_BYTES = 16 * 1024 * 1024
+HOPELESS_BYTES = 64 * 1024 * 1024
 MAX_QUEUE_MSGS = 20000
+STALL_TIMEOUT = 60.0
 _DROPPABLE = {"monitor", "log", "sweep_point"}
 PREAUTH_MAX_FRAME = 64 * 1024
 AUTH_TIMEOUT = 10.0
@@ -73,6 +80,7 @@ class _Client:
         self._qbytes = 0
         self._qlock = threading.RLock()
         self._dropping = False
+        self._send_started = None      # set while a sendall() is in progress
         self.dropped = 0
         self.name = "?"
         self._reader = threading.Thread(target=self._read_loop, name="client-rx-%s" % self.id,
@@ -101,6 +109,8 @@ class _Client:
         # NB: never log while holding _qlock - log records are themselves sent to
         # clients and would re-enter here.
         started_dropping = hopeless = False
+        started = self._send_started
+        stalled = started is not None and time.monotonic() - started > STALL_TIMEOUT
         with self._qlock:
             over = self._qbytes + len(frame) > MAX_QUEUE_BYTES or self._q.qsize() > MAX_QUEUE_MSGS
             if droppable and (over or self._dropping):
@@ -108,7 +118,7 @@ class _Client:
                 if not self._dropping:
                     self._dropping = True
                     started_dropping = True
-            elif over and not droppable and self._qbytes > 2 * MAX_QUEUE_BYTES:
+            elif stalled or (not droppable and self._qbytes + len(frame) > HOPELESS_BYTES):
                 hopeless = True
             else:
                 self._qbytes += len(frame)
@@ -116,7 +126,9 @@ class _Client:
         if started_dropping:
             log.warning("client %s is too slow, dropping events", self.id)
         if hopeless:
-            log.error("client %s hopelessly behind, disconnecting", self.id)
+            log.error("client %s is not reading (%s), disconnecting it",
+                      self.id, "stalled for %.0f s" % (time.monotonic() - started) if stalled
+                      else "%.0f MB backlog" % (self._qbytes / 1e6))
             self.close()
 
     def _write_loop(self):
@@ -131,7 +143,9 @@ class _Client:
                         self._q.qsize() < MAX_QUEUE_MSGS // 4
                     if resync:
                         self._dropping = False
+                self._send_started = time.monotonic()
                 self.sock.sendall(frame)
+                self._send_started = None
                 if resync:
                     self.sock.sendall(codec.encode({"type": "event", "event": "resync",
                                                     "data": {"dropped": self.dropped}}))

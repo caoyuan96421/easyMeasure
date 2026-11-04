@@ -203,3 +203,36 @@ def test_stop_leaves_no_threads(demo, tmp_path):
     left = [t.name for t in threading.enumerate() if t.ident not in before
             and t.name in ("accept",) or t.name.startswith("client-")]
     assert left == [], left
+
+
+def test_frozen_client_is_disconnected_and_memory_bounded(server, demo, monkeypatch):
+    """A client that stops reading must not make the backend buffer without bound."""
+    import easymeasure.backend.server as srvmod
+    monkeypatch.setattr(srvmod, "MAX_QUEUE_BYTES", 200_000)
+    monkeypatch.setattr(srvmod, "HOPELESS_BYTES", 1_000_000)
+    monkeypatch.setattr(srvmod, "STALL_TIMEOUT", 1.0)
+    s = socket.create_connection(("127.0.0.1", server.port))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    s.sendall(codec.encode({"type": "hello", "token": server.token, "client": "frozen"}))
+    time.sleep(0.3)
+    assert any(c["name"] == "frozen" for c in server.clients())
+    with client_for(server, "healthy") as c:
+        c.call("queue_add", item={"kind": "sweep", "definition": long_sweep(200, 0.005)},
+               start=True)
+        peak = 0
+        while demo.queue.state != "idle" or not demo.queue_state()["history"]:
+            with server._clients_lock:
+                peak = max([peak] + [cl._qbytes for cl in server._clients.values()
+                                     if cl.name == "frozen"])
+            time.sleep(0.05)
+        assert c.call("ping")                          # healthy client unaffected
+    assert peak < 2_000_000                            # backlog stays bounded
+    # a client whose socket write has been blocked longer than STALL_TIMEOUT is dropped
+    with server._clients_lock:
+        frozen = [cl for cl in server._clients.values() if cl.name == "frozen"]
+    if frozen:
+        frozen[0]._send_started = time.monotonic() - 5.0
+        frozen[0].send({"type": "event", "event": "queue", "data": {}})
+        time.sleep(0.2)
+    assert not any(x["name"] == "frozen" for x in server.clients())
+    s.close()

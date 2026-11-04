@@ -288,10 +288,14 @@ disk failure during a sweep, a frozen client, a SIGKILLed frontend process, a
 backend restart under a live GUI, and the GUI panels themselves.
 
 The stress test runs a backend process with the faulty setup while six clients
-hammer it with reads, out-of-limit writes, sweeps, scripts, pause/abort,
-malformed requests, abrupt disconnects, plus a frozen client and a client
-sending random bytes; it then checks the backend is alive and every data file
-loads.
+hammer it with reads, out-of-limit writes, configuration-channel writes, every
+instrument action (including ones that fail, hang forever or raise `SystemExit`),
+sweeps (some with actions in their hooks), scripts, pause/abort, malformed requests
+and abrupt disconnects, plus a frozen client and a client sending random bytes. At
+the end it checks that the backend is alive and responsive, every protected value is
+within its limits, a normal sweep still completes, every data file loads, and it
+reports the backend's memory over time (it levels off; a client that stops reading is
+disconnected instead of being buffered for without bound).
 
 ## Several clients at once
 
