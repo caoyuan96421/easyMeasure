@@ -174,3 +174,38 @@ def test_ppt_generation(demo, tmp_path):
     demo.make_ppt()                        # manual button
     from pptx import Presentation
     assert len(Presentation(str(ppt)).slides) == 2
+
+
+def test_ppt_append_while_file_locked(demo, tmp_path, monkeypatch):
+    """A .pptx open (= locked) in PowerPoint is updated through PowerPoint itself;
+    if that is impossible the slide goes to a _pending file instead of being lost."""
+    from easymeasure.report import pptx_report
+    d = {"name": "locked", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"]}]}
+    demo.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert demo.queue.wait_idle(30)
+    ds = demo.last_dataset
+    ppt = tmp_path / "open.pptx"
+    pptx_report.append_run_slide(ppt, ds)                     # create it normally
+    real_replace = pptx_report._replace
+
+    def locked(src, dst):
+        if dst == ppt:
+            raise PermissionError(13, "file is open in PowerPoint")
+        real_replace(src, dst)
+    monkeypatch.setattr(pptx_report, "_replace", locked)
+    monkeypatch.setattr(pptx_report, "_sleep", lambda s: None)
+    inserted = []
+
+    def fake_powerpoint(target, single):
+        from pptx import Presentation
+        assert target == ppt and Presentation(str(single)).slides.__len__() == 1
+        inserted.append(single)
+        return True
+    monkeypatch.setattr(pptx_report, "_insert_via_powerpoint", fake_powerpoint)
+    assert pptx_report.append_run_slide(ppt, ds) == ppt and len(inserted) == 1
+    # PowerPoint not available: slide kept in a pending file, temp files cleaned up
+    monkeypatch.setattr(pptx_report, "_insert_via_powerpoint", lambda t, s: False)
+    out = pptx_report.append_run_slide(ppt, ds)
+    assert out.name == "open_pending.pptx" and out.exists()
+    assert sorted(p.name for p in tmp_path.glob("open*")) == ["open.pptx", "open_pending.pptx"]

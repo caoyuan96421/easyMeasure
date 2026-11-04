@@ -8,10 +8,10 @@ from typing import Optional
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
-                               QTabBar, QTabWidget, QToolBar, QWidget)
+                               QScrollArea, QSpinBox, QTabBar, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from .. import __version__
 from .connection import BackendConnection
@@ -23,13 +23,52 @@ from .panels.queue_panel import QueuePanel
 from .panels.setup_panel import SetupPanel
 from .panels.sweep_editor import RunningSweepView, SweepEditor
 from .plotting import colormaps
+from . import display
+from .widgets import install_resize_friendly_defaults, shrinkable_label
 from .workers import run_in_background
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: dict, parent=None):
+    """Display settings (local to this computer) + backend settings (if connected)."""
+
+    def __init__(self, settings: Optional[dict], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Backend settings")
+        self.setWindowTitle("Settings")
+        self.backend_settings = settings
+        lay = QVBoxLayout(self)
+
+        # ---- display -------------------------------------------------------
+        disp = QGroupBox("Display (this computer)")
+        df = QFormLayout(disp)
+        self._orig_pt = display.font_pt()
+        self.font_pt = QDoubleSpinBox()
+        self.font_pt.setRange(0, 32)
+        self.font_pt.setDecimals(1)
+        self.font_pt.setSingleStep(0.5)
+        self.font_pt.setSpecialValueText("system default")
+        self.font_pt.setSuffix(" pt")
+        self.font_pt.setValue(self._orig_pt)
+        self.font_pt.setToolTip("font size of all widgets and plot axes, applied immediately")
+        self.font_pt.valueChanged.connect(display.apply_font)
+        self.scale = QSpinBox()
+        self.scale.setRange(50, 300)
+        self.scale.setSingleStep(10)
+        self.scale.setSuffix(" %")
+        self.scale.setValue(display.ui_scale_percent())
+        self.scale.setToolTip("scales everything (widgets, icons, plots); takes effect after "
+                              "restarting the GUI")
+        note = shrinkable_label(QLabel("Font size applies immediately. The overall scale takes "
+                                       "effect when the GUI is restarted (the backend keeps running)."))
+        note.setStyleSheet("color: gray")
+        df.addRow("Font size", self.font_pt)
+        df.addRow("Overall scale", self.scale)
+        df.addRow(note)
+        lay.addWidget(disp)
+
+        # ---- backend -------------------------------------------------------
+        bk = QGroupBox("Backend")
+        form = QFormLayout(bk)
+        settings = settings or {}
         self.data_dir = QLineEdit(settings.get("data_dir") or "")
         self.ppt = QLineEdit(settings.get("ppt_path") or "")
         browse = QPushButton("…")
@@ -37,7 +76,7 @@ class SettingsDialog(QDialog):
         ppt_row = QHBoxLayout()
         ppt_row.addWidget(self.ppt, 1)
         ppt_row.addWidget(browse)
-        self.auto_ppt = QCheckBox("append a slide automatically when a sweep ends (also on error/abort)")
+        self.auto_ppt = QCheckBox("append a slide automatically when a sweep ends")
         self.auto_ppt.setChecked(bool(settings.get("auto_ppt", True)))
         self.h5 = QCheckBox("export an HDF5 copy of every run")
         self.h5.setChecked(bool(settings.get("export_hdf5", True)))
@@ -50,7 +89,6 @@ class SettingsDialog(QDialog):
         self.drivers = QLineEdit(os.pathsep.join(settings.get("driver_paths") or []))
         self.drivers.setPlaceholderText("extra driver directories, separated by '%s'" % os.pathsep)
         self.cmap = QLineEdit(settings.get("ppt_colormap", "viridis"))
-        form = QFormLayout(self)
         form.addRow("Data directory", self.data_dir)
         form.addRow("PowerPoint file", ppt_row)
         form.addRow("", self.auto_ppt)
@@ -58,10 +96,26 @@ class SettingsDialog(QDialog):
         form.addRow("fsync interval", self.fsync)
         form.addRow("Driver paths", self.drivers)
         form.addRow("PPT colormap", self.cmap)
+        if self.backend_settings is None:
+            bk.setEnabled(False)
+            bk.setTitle("Backend (not connected)")
+        lay.addWidget(bk)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        lay.addWidget(bb)
+
+    def reject(self):
+        display.apply_font(self._orig_pt)          # undo the live preview
+        super().reject()
+
+    def save_display(self) -> bool:
+        """Persist display settings; returns True if a restart is needed."""
+        st = display.settings()
+        st.setValue("ui_font_pt", self.font_pt.value())
+        restart = self.scale.value() != display.ui_scale_percent()
+        st.setValue("ui_scale", self.scale.value())
+        return restart
 
     def _browse_ppt(self):
         p, _ = QFileDialog.getSaveFileName(self, "PowerPoint file", self.ppt.text() or "results.pptx",
@@ -80,6 +134,9 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, conn: Optional[BackendConnection] = None, autostart_backend: bool = False):
         super().__init__()
+        app = QApplication.instance()
+        install_resize_friendly_defaults(app)
+        display.apply_saved_font()
         self.setWindowTitle("easyMeasure %s" % __version__)
         self.resize(1500, 950)
         self.qsettings = QSettings("easyMeasure", "gui")
@@ -96,9 +153,10 @@ class MainWindow(QMainWindow):
         self.queue_panel = QueuePanel(self.conn, self.model)
         self.live = LiveDataView(self.conn)
         self.left_tabs = QTabWidget()
+        self._scrolled = {}
         for w, name in ((self.setup_panel, "Instruments && channels"), (self.editor, "Sweep editor"),
                         (self.queue_panel, "Queue")):
-            self.left_tabs.addTab(w, name)
+            self.left_tabs.addTab(self._scroll(w), name)
         self.data_tabs = QTabWidget()
         self.data_tabs.setTabsClosable(True)
         self.data_tabs.tabCloseRequested.connect(self._close_tab)
@@ -203,7 +261,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         else:
-            QTimer.singleShot(0, lambda: self.splitter.setSizes([560, 840]))
+            QTimer.singleShot(0, lambda: self.splitter.setSizes(
+                [int(self.splitter.width() * 0.42), int(self.splitter.width() * 0.58)]))
         self.conn.start()
         if autostart_backend:
             QTimer.singleShot(1500, self._autostart_if_needed)
@@ -305,7 +364,7 @@ class MainWindow(QMainWindow):
 
     def _copy_to_editor(self, definition):
         self.editor.load_definition(definition)
-        self.left_tabs.setCurrentWidget(self.editor)
+        self.left_tabs.setCurrentWidget(self.left_widget(self.editor))
 
     def _close_tab(self, i):
         w = self.data_tabs.widget(i)
@@ -314,11 +373,26 @@ class MainWindow(QMainWindow):
         self.data_tabs.removeTab(i)
         w.deleteLater()
 
+    def _scroll(self, w):
+        """Wrap a panel so the window can be made smaller than the panel's content
+        (scroll bars appear instead of the window refusing to shrink)."""
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QScrollArea.NoFrame)
+        sa.setWidget(w)
+        sa.setMinimumSize(60, 45)
+        self._scrolled[w] = sa
+        return sa
+
+    def left_widget(self, w):
+        return self._scrolled.get(w, w)
+
     def _show_running(self, on: bool):
         """The read-only 'Running sweep' view is optional (View menu)."""
-        idx = self.left_tabs.indexOf(self.running)
+        holder = self._scrolled.get(self.running) or self._scroll(self.running)
+        idx = self.left_tabs.indexOf(holder)
         if on and idx < 0:
-            self.left_tabs.insertTab(2, self.running, "Running sweep")
+            self.left_tabs.insertTab(2, holder, "Running sweep")
             self.running.refresh()
         elif not on and idx >= 0:
             self.left_tabs.removeTab(idx)
@@ -371,18 +445,27 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- settings --
     def edit_settings(self):
-        def got(settings):
+        def open_dialog(settings):
             dlg = SettingsDialog(settings, self)
-            if dlg.exec():
-                vals = dlg.values()
-                if vals.get("data_dir") is None:
-                    vals.pop("data_dir")
-                self.qsettings.setValue("ppt_path", vals.get("ppt_path", ""))
-                self.conn.request("set_settings", vals,
-                                  on_ok=lambda _: self._message("info", "settings saved"),
-                                  on_err=lambda e: QMessageBox.warning(self, "Settings", e))
-        self.conn.request("get_settings", on_ok=got,
-                          on_err=lambda e: QMessageBox.warning(self, "Settings", e))
+            if not dlg.exec():
+                return
+            if dlg.save_display():
+                QMessageBox.information(self, "Settings", "The new overall scale takes effect when "
+                                        "the GUI is restarted. The backend keeps running.")
+            if settings is None:
+                return
+            vals = dlg.values()
+            if vals.get("data_dir") is None:
+                vals.pop("data_dir")
+            self.qsettings.setValue("ppt_path", vals.get("ppt_path", ""))
+            self.conn.request("set_settings", vals,
+                              on_ok=lambda _: self._message("info", "settings saved"),
+                              on_err=lambda e: QMessageBox.warning(self, "Settings", e))
+        if self.conn.is_connected:
+            self.conn.request("get_settings", on_ok=open_dialog,
+                              on_err=lambda e: open_dialog(None))
+        else:
+            open_dialog(None)
 
     def closeEvent(self, ev):
         # Only the GUI goes away; the backend (and any running sweep) is untouched.

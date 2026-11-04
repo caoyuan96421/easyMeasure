@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, Q
 
 from ..plotting import colormaps
 
+from ..widgets import FlowLayout, shrinkable_label
+
 HISTORY = 3000
 
 
@@ -27,13 +29,13 @@ class MonitorTile(QFrame):
         self.latest = None
         self.dirty = False
         self.kind = None
-        self.title = QLabel("<b>%s</b>" % name)
-        self.value = QLabel("—")
-        self.value.setStyleSheet("font-size: 16pt; font-family: monospace")
+        self.title = shrinkable_label(QLabel("<b>%s</b>" % name), wrap=False)
+        self.value = shrinkable_label(QLabel("—"), wrap=False)
+        from ..display import register_font
+        register_font(self.value, 1.7, monospace=True)
         self.value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.err = QLabel("")
+        self.err = shrinkable_label(QLabel(""))
         self.err.setStyleSheet("color: #d55")
-        self.err.setWordWrap(True)
         rm = QPushButton("✕")
         rm.setFixedWidth(24)
         rm.setToolTip("stop monitoring")
@@ -47,7 +49,10 @@ class MonitorTile(QFrame):
         head.addWidget(self.span)
         head.addWidget(rm)
         self.plot = pg.PlotWidget()
-        self.plot.setMinimumHeight(110)
+        from ..plotting.style import style_axes
+        style_axes(self.plot.getPlotItem())
+        self.plot.setMinimumHeight(90)
+        self.plot.setMinimumWidth(100)
         self.plot.setMaximumHeight(170)
         self.plot.showGrid(x=True, y=True, alpha=0.2)
         self.curve = self.plot.plot([], [], pen=pg.mkPen("c", width=1.2))
@@ -132,15 +137,16 @@ class MonitorPanel(QWidget):
         self.tiles: Dict[str, MonitorTile] = {}
         self.channel = QComboBox()
         self.channel.setEditable(True)
-        self.channel.setMinimumContentsLength(10)
+        self.channel.setMinimumContentsLength(6)
         self.interval = QDoubleSpinBox()
         self.interval.setRange(0.05, 3600)
+        self.interval.setDecimals(2)
         self.interval.setValue(1.0)
         self.interval.setSuffix(" s")
         add = QPushButton("Monitor")
         add.clicked.connect(self._add)
-        top = QHBoxLayout()
-        top.addWidget(self.channel, 1)
+        top = FlowLayout()
+        top.addWidget(self.channel)
         top.addWidget(self.interval)
         top.addWidget(add)
         self.host = QWidget()

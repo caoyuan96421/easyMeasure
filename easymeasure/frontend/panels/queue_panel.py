@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (QCheckBox, QGroupBox, QHBoxLayout, QHeaderView, Q
                                QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+from ..widgets import FlowLayout, shrinkable_label
+
 STATUS_COLORS = {"finished": "#3a3", "error": "#d44", "aborted": "#c80", "running": "#38f",
                  "queued": "#888"}
 
@@ -37,9 +39,8 @@ class QueuePanel(QWidget):
         self.stop_on_error = QCheckBox("stop queue on error")
         self.stop_on_error.toggled.connect(
             lambda v: self.conn.request("queue_options", {"stop_on_error": v}))
-        top = QHBoxLayout()
+        top = FlowLayout()
         top.addWidget(self.state_label)
-        top.addStretch(1)
         for b in btns:
             top.addWidget(b)
         top.addWidget(self.stop_on_error)
@@ -49,7 +50,7 @@ class QueuePanel(QWidget):
         self.queued.horizontalHeader().setStretchLastSection(True)
         self.queued.setSelectionBehavior(QTableWidget.SelectRows)
         self.queued.setEditTriggers(QTableWidget.NoEditTriggers)
-        qb = QHBoxLayout()
+        qb = FlowLayout()
         for text, fn in (("▲ up", lambda: self._move(-1)), ("▼ down", lambda: self._move(1)),
                          ("Remove", self._remove), ("Clear queue", lambda: self._cmd("queue_clear"))):
             b = QPushButton(text)
@@ -58,7 +59,7 @@ class QueuePanel(QWidget):
         qb.addStretch(1)
         qbox = QGroupBox("Queued")
         ql = QVBoxLayout(qbox)
-        self.current = QLabel("current: —")
+        self.current = shrinkable_label(QLabel("current: —"))
         ql.addWidget(self.current)
         ql.addWidget(self.queued)
         ql.addLayout(qb)
@@ -78,7 +79,7 @@ class QueuePanel(QWidget):
         self.open_btn.clicked.connect(self._open_data)
         self.history.itemSelectionChanged.connect(self._hist_selection)
         self._hist_selection()
-        hb = QHBoxLayout()
+        hb = FlowLayout()
         hb.addWidget(self.rerun_btn)
         hb.addWidget(self.open_btn)
         hb.addStretch(1)
@@ -88,26 +89,24 @@ class QueuePanel(QWidget):
         hl.addLayout(hb)
 
         self.script = QPlainTextEdit()
-        f = QFont("monospace")
-        f.setStyleHint(QFont.Monospace)
-        self.script.setFont(f)
+        from ..display import register_font
+        register_font(self.script, 1.0, monospace=True)
         self.script.setPlainText(SCRIPT_HELP + "set('Vg', 0.1)\nsleep(1)\nlog('I = %g' % get('I'))\n")
         self.script_name = QLineEdit("script")
         b1 = QPushButton("Add script to queue")
         b2 = QPushButton("Run now (front of queue)")
         b1.clicked.connect(lambda: self._add_script(False))
         b2.clicked.connect(lambda: self._add_script(True))
-        sb = QHBoxLayout()
+        sb = FlowLayout()
         sb.addWidget(QLabel("Name"))
         sb.addWidget(self.script_name)
-        sb.addStretch(1)
         sb.addWidget(b1)
         sb.addWidget(b2)
         sbox = QGroupBox("Script")
         sl = QVBoxLayout(sbox)
         sl.addWidget(self.script)
         sl.addLayout(sb)
-        self.msg = QLabel("")
+        self.msg = shrinkable_label(QLabel(""))
         split = QSplitter(Qt.Vertical)
         split.addWidget(qbox)
         split.addWidget(hbox)

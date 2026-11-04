@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from ...common.codec import to_jsonable
 
+from ..widgets import FlowLayout, shrinkable_label
+
 STATE_COLORS = {"connected": "#3a3", "error": "#d44", "hung": "#d4d", "disconnected": "#888"}
 
 
@@ -223,7 +225,7 @@ class SetupPanel(QWidget):
         # instruments
         self.inst = _table(["Name", "Driver", "Address", "State", "Calls", "Errors", "Timeouts",
                             "Last error"])
-        ib = QHBoxLayout()
+        ib = FlowLayout()
         for text, fn in (("Add…", self._add_inst), ("Edit…", self._edit_inst),
                          ("Reconnect", lambda: self._inst_cmd("reconnect_instrument")),
                          ("Disconnect", lambda: self._inst_cmd("disconnect_instrument")),
@@ -238,46 +240,46 @@ class SetupPanel(QWidget):
         il.addLayout(ib)
         # raw channels of selected instrument
         self.raw = _table(["Channel", "Access", "Type", "Shape", "Unit", "Description"])
-        rb = QHBoxLayout()
+        rb = FlowLayout()
         mk = QPushButton("Make alias…")
         mk.clicked.connect(self._alias_from_raw)
         rb.addWidget(mk)
         rb.addStretch(1)
-        rbox = QGroupBox("Channels of selected instrument")
+        rbox = QGroupBox("Instrument channels")
         rl = QVBoxLayout(rbox)
         rl.addWidget(self.raw)
         rl.addLayout(rb)
         # aliases
         self.alias = _table(["Alias", "Target", "Min", "Max", "Ramp /s", "Step", "Scale",
                              "Offset", "Unit", "Last set"])
-        ab = QHBoxLayout()
+        ab = FlowLayout()
         for text, fn in (("Add…", lambda: self._edit_alias(None)), ("Edit…", self._edit_alias_sel),
                          ("Remove", self._remove_alias)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             ab.addWidget(b)
         ab.addStretch(1)
-        abox = QGroupBox("Aliases (protected channels)")
+        abox = QGroupBox("Aliases")
         al = QVBoxLayout(abox)
         al.addWidget(self.alias)
         al.addLayout(ab)
         # composites
         self.comp = _table(["Composite", "Targets", "Read", "Min", "Max", "Ramp /s", "Last set"])
-        cb = QHBoxLayout()
+        cb = FlowLayout()
         for text, fn in (("Add…", lambda: self._edit_comp(None)), ("Edit…", self._edit_comp_sel),
                          ("Remove", self._remove_comp)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             cb.addWidget(b)
         cb.addStretch(1)
-        cbox = QGroupBox("Composite channels")
+        cbox = QGroupBox("Composites")
         cl = QVBoxLayout(cbox)
         cl.addWidget(self.comp)
         cl.addLayout(cb)
         # manual control
         self.m_chan = QComboBox()
         self.m_chan.setEditable(True)
-        self.m_chan.setMinimumContentsLength(14)
+        self.m_chan.setMinimumContentsLength(10)
         self.m_value = QLineEdit()
         self.m_value.setPlaceholderText("value (number, text, or JSON list)")
         self.m_ramp = QCheckBox("ramp")
@@ -286,20 +288,22 @@ class SetupPanel(QWidget):
         set_b = QPushButton("Set")
         get_b.clicked.connect(self._manual_get)
         set_b.clicked.connect(self._manual_set)
-        self.m_result = QLabel("")
+        self.m_result = shrinkable_label(QLabel(""))
         self.m_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.m_value.setMinimumWidth(80)
         mbox = QGroupBox("Manual control")
-        ml = QHBoxLayout(mbox)
+        mv = QVBoxLayout(mbox)
+        ml = FlowLayout()
         for w in (self.m_chan, self.m_value, self.m_ramp, get_b, set_b):
             ml.addWidget(w)
-        ml.addWidget(self.m_result, 1)
+        mv.addLayout(ml)
+        mv.addWidget(self.m_result)
         # setup files
         sv = QPushButton("Save setup…")
         ld = QPushButton("Load setup…")
         sv.clicked.connect(self._save_setup)
         ld.clicked.connect(self._load_setup)
-        self.msg = QLabel("")
-        self.msg.setWordWrap(True)
+        self.msg = shrinkable_label(QLabel(""))
         fb = QHBoxLayout()
         fb.addWidget(sv)
         fb.addWidget(ld)
@@ -311,6 +315,8 @@ class SetupPanel(QWidget):
         bottom = QSplitter(Qt.Horizontal)
         bottom.addWidget(abox)
         bottom.addWidget(cbox)
+        for t in (self.inst, self.raw, self.alias, self.comp):
+            t.setMinimumWidth(120)
         split = QSplitter(Qt.Vertical)
         split.addWidget(top)
         split.addWidget(bottom)

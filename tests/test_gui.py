@@ -33,6 +33,8 @@ def pump(app, seconds, until=None):
 
 @pytest.fixture
 def gui(app, demo, tmp_path):
+    from PySide6.QtCore import QSettings
+    QSettings("easyMeasure", "gui").clear()      # no state from earlier sessions
     srv = Server(demo, port=0, runtime_file=tmp_path / "rt.json")
     srv.start()
     from easymeasure.frontend.connection import BackendConnection
@@ -181,13 +183,13 @@ def test_layout_rerun_and_1d_plot(app, gui):
     w, be, _, _ = gui
     # two panes: control tabs left, data tabs right; running view hidden by default
     assert w.splitter.count() == 2
-    assert w.left_tabs.indexOf(w.setup_panel) >= 0 and w.left_tabs.indexOf(w.queue_panel) >= 0
+    assert w.left_tabs.indexOf(w.left_widget(w.setup_panel)) >= 0 and w.left_tabs.indexOf(w.left_widget(w.queue_panel)) >= 0
     assert w.data_tabs.indexOf(w.live) == 0
-    assert w.left_tabs.indexOf(w.running) == -1
+    assert w.left_tabs.indexOf(w.left_widget(w.running)) == -1
     w.running_action.setChecked(True)
-    assert w.left_tabs.indexOf(w.running) >= 0
+    assert w.left_tabs.indexOf(w.left_widget(w.running)) >= 0
     w.running_action.setChecked(False)
-    assert w.left_tabs.indexOf(w.running) == -1
+    assert w.left_tabs.indexOf(w.left_widget(w.running)) == -1
     # run a 1-D sweep and rerun it from the history
     d = {"name": "one_d", "dimensions": [{"points": 5, "sweep": [{"channel": "Vg", "start": 0,
                                                                    "stop": 0.1}], "record": ["I"]}]}
@@ -214,3 +216,62 @@ def test_layout_rerun_and_1d_plot(app, gui):
     qp.history.selectRow(0)
     qp.open_btn.click()
     assert pump(app, 5, lambda: w.data_tabs.count() == 2)
+
+
+def test_tray_controller(app, demo, tmp_path):
+    """The tray indicator follows the backend state (tested without a real tray)."""
+    from easymeasure.frontend.connection import BackendConnection
+    from easymeasure.tray import TrayController, make_icon
+    srv = Server(demo, port=0, runtime_file=tmp_path / "rt.json")
+    srv.start()
+    conn = BackendConnection(runtime_file=tmp_path / "rt.json")
+    ctl = TrayController(conn, tray=None)
+    conn.start()
+    try:
+        assert pump(app, 10, lambda: conn.is_connected and ctl.state == "idle")
+        assert "idle" in ctl.tooltip() and "pid" in ctl.tooltip()
+        d = {"name": "traytest", "dimensions": [{"points": 60, "sweep": [
+            {"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"], "pre_delay": 0.02}]}
+        demo.queue_add({"kind": "sweep", "definition": d}, start=True)
+        assert pump(app, 10, lambda: ctl.state == "running" and "traytest" in ctl.status_text())
+        assert ctl.pause_act.isEnabled() and ctl.abort_act.isEnabled()
+        assert be_idle(app, demo, ctl)
+        assert not make_icon("running").isNull()
+        srv.stop()
+        assert pump(app, 5, lambda: ctl.state == "offline")
+        assert "not reachable" in ctl.status_text()
+    finally:
+        ctl.timer.stop()
+        conn.stop()
+        srv.stop()
+
+
+def be_idle(app, demo, ctl):
+    assert demo.queue.wait_idle(30)
+    return pump(app, 5, lambda: ctl.state == "idle" and ctl.run is None)
+
+
+def test_font_size_and_narrow_window(app, gui):
+    from easymeasure.frontend import display
+    from easymeasure.frontend.main_window import SettingsDialog
+    w, be, _, _ = gui
+    base = app.font().pointSizeF()
+    try:
+        display.apply_font(base + 4)
+        pump(app, 0.2)
+        assert abs(app.font().pointSizeF() - (base + 4)) < 0.01
+        # monospace editors follow the size too
+        assert w.log_panel.text.font().pointSizeF() > base + 2
+        # the settings dialog works offline (display section only) and previews live
+        dlg = SettingsDialog(None, w)
+        dlg.font_pt.setValue(base + 6)
+        assert abs(app.font().pointSizeF() - (base + 6)) < 0.01
+        dlg.reject()                       # cancel restores the previous size
+        pump(app, 0.1)
+    finally:
+        display.apply_font(0)
+    # the window can be made small without widgets fighting it
+    assert w.minimumSizeHint().width() < 700 and w.minimumSizeHint().height() < 600
+    w.resize(640, 520)
+    pump(app, 0.3)
+    assert w.width() <= 700

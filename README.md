@@ -54,6 +54,17 @@ python -m easymeasure.frontend
 Or just `python -m easymeasure.frontend --start-backend` — it launches a
 detached backend (restoring the last session's setup) if none is running.
 
+While the backend runs, a **tray icon** shows its state (green idle, blue running,
+orange paused, red error, gray unreachable) with the current run and progress in the
+tooltip; its menu opens the GUI, pauses / resumes / aborts, opens the data folder or
+log and shuts the backend down, and a notification appears when a run ends. The tray
+is a separate helper process (`easymeasure.tray`), so it can never affect the backend;
+start the backend with `--no-tray` to disable it.
+
+On Windows: `setup_venv.bat` creates `.venv` and installs everything,
+`run_demo_backend.bat` starts a backend with the simulated instruments and
+`run_gui.bat` starts the GUI.
+
 In the GUI: *Sweep editor → Load…* `examples/sweep_dot_map.json` → *Add & start*,
 then watch *Live data*. Close the GUI mid-sweep and reopen it: the sweep keeps
 running and the live view resynchronises.
@@ -185,8 +196,13 @@ ds.data["I"]; ds.setpoints[0]["Vg"]; ds.header["definition"]; ds.status
 When a run ends — normally, by error or by abort — a slide (plots of the
 recorded channels + run summary) is appended to the configured `.pptx`
 (*File → Settings*). The *Add slide to PPT* buttons do it on demand for the
-running run or any loaded data file. A locked file (open in PowerPoint) gets
-the slide in `<name>_pending.pptx` instead of losing it.
+running run or any loaded data file.
+
+The file may be open in PowerPoint: on Windows the slide is inserted into the open
+presentation through PowerPoint itself (needs `pywin32`, installed automatically on
+Windows) and the presentation is saved. Only if that is impossible (file locked by a
+sync client or open on another computer) does the slide go to
+`<name>_pending.pptx`, so it is never lost.
 
 ## GUI
 
@@ -213,6 +229,9 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.
   Redraws are coalesced, so fast sweeps don't load the GUI.
 * **Monitor** dock and **Log** dock.
+* **File → Settings → Display**: font size (applied immediately, also to plot axes)
+  and an overall UI scale (50–300 %, applied on the next GUI start) to suit any
+  screen resolution. The window can be made small: toolbars wrap, panels scroll.
 
 Nothing in the GUI blocks on the backend: every request is asynchronous with a
 callback, files load and slides render in worker threads.

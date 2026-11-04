@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QM
 
 from ...backend.storage import DataSet
 from ..plotting.ndplot import NDPlotWidget
+from ..widgets import FlowLayout, shrinkable_label
 from ..workers import run_in_background
 
 
@@ -35,7 +36,7 @@ class DataView(QWidget):
         self.ds: Optional[DataSet] = None
         self.live = live
         self.plots: List[NDPlotWidget] = []
-        self.title = QLabel("<b>no data</b>")
+        self.title = shrinkable_label(QLabel("<b>no data</b>"))
         self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.progress = QProgressBar()
         self.progress.setVisible(live)
@@ -43,15 +44,19 @@ class DataView(QWidget):
         self.eta = QLabel("")
         self.add_btn = QPushButton("Add plot")
         self.cols = QSpinBox()
-        self.cols.setRange(1, 4)
-        self.cols.setValue(2)
+        self.cols.setRange(0, 4)
+        self.cols.setValue(0)
         self.cols.setPrefix("columns: ")
+        self.cols.setSpecialValueText("columns: auto")
+        self.cols.setToolTip("number of plot columns (auto = by available width)")
+        self._eff_cols = None
         self.ppt_btn = QPushButton("Add slide to PPT")
         self.copy_btn = QPushButton("Copy sweep to editor")
         self.info_btn = QPushButton("Details")
         self.info_btn.setCheckable(True)
-        bar = QHBoxLayout()
-        bar.addWidget(self.title, 1)
+        self.progress.setMaximumWidth(160)
+        bar = FlowLayout()
+        self.bar = bar
         bar.addWidget(self.eta)
         bar.addWidget(self.progress)
         bar.addWidget(self.cols)
@@ -65,11 +70,17 @@ class DataView(QWidget):
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         self.details.setVisible(False)
+        from PySide6.QtWidgets import QScrollArea
+        grid_scroll = QScrollArea()
+        grid_scroll.setWidgetResizable(True)
+        grid_scroll.setFrameShape(QScrollArea.NoFrame)
+        grid_scroll.setWidget(self.grid_host)       # scrolls instead of squashing plots
         split = QSplitter(Qt.Vertical)
-        split.addWidget(self.grid_host)
+        split.addWidget(grid_scroll)
         split.addWidget(self.details)
         split.setStretchFactor(0, 5)
         lay = QVBoxLayout(self)
+        lay.addWidget(self.title)
         lay.addLayout(bar)
         lay.addWidget(split, 1)
         self.add_btn.clicked.connect(lambda: self.add_plot())
@@ -122,10 +133,22 @@ class DataView(QWidget):
             p.deleteLater()
             self._relayout()
 
+    def _effective_cols(self) -> int:
+        n = self.cols.value()
+        if n > 0:
+            return n
+        return max(1, min(4, len(self.plots) or 1, self.width() // 420))
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.cols.value() == 0 and self._effective_cols() != self._eff_cols:
+            self._relayout()
+
     def _relayout(self, *_):
         while self.grid.count():
             self.grid.takeAt(0)
-        n = self.cols.value()
+        n = self._effective_cols()
+        self._eff_cols = n
         for i, p in enumerate(self.plots):
             self.grid.addWidget(p, i // n, i % n)
 
@@ -250,7 +273,7 @@ class FileDataView(DataView):
         self.path = path
         self.title.setText("loading %s ..." % path)
         self.reload_btn = QPushButton("Reload")
-        self.layout().itemAt(0).layout().insertWidget(1, self.reload_btn)
+        self.bar.insertWidget(0, self.reload_btn)
         self.reload_btn.clicked.connect(self.load)
         self.load()
 

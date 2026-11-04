@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
 
 from ...common.codec import to_jsonable
 
+from ..widgets import FlowLayout, shrinkable_label
+
 SPECIAL_RECORD = ["@time", "@elapsed"]
 
 
@@ -156,15 +158,18 @@ class DimensionEditor(QWidget):
         self.points.setRange(1, 10_000_000)
         self.points.setValue(11)
         self.pre = QDoubleSpinBox()
-        self.pre.setRange(0, 1e6)
+        self.pre.setRange(0, 1e5)
         self.pre.setDecimals(4)
         self.pre.setSuffix(" s")
         self.post = QDoubleSpinBox()
-        self.post.setRange(0, 1e6)
+        self.post.setRange(0, 1e5)
         self.post.setDecimals(4)
         self.post.setSuffix(" s")
-        self.snake = QCheckBox("snake (alternate direction)")
-        self.after = QCheckBox("record after inner dimensions")
+        self.snake = QCheckBox("snake scan")
+        self.snake.setToolTip("alternate the sweep direction on every pass")
+        self.after = QCheckBox("record after inner dims")
+        self.after.setToolTip("record this dimension's channels after the inner dimensions "
+                              "have run instead of before")
         self.label = QLineEdit()
         form = QFormLayout()
         form.addRow("Points", self.points)
@@ -180,22 +185,26 @@ class DimensionEditor(QWidget):
         rm.clicked.connect(self._remove_rows)
         self._row_buttons = [add, rm]
         self.record = CheckList()
-        sweep_box = QGroupBox("Swept channels (set at every step of this dimension)")
+        sweep_box = QGroupBox("Swept channels")
+        sweep_box.setToolTip("channels set at every step of this dimension")
         sl = QVBoxLayout(sweep_box)
         sl.addWidget(self.table)
-        hb = QHBoxLayout()
+        hb = FlowLayout()
         hb.addWidget(add)
         hb.addWidget(rm)
-        hb.addStretch(1)
         sl.addLayout(hb)
         rec_box = QGroupBox("Recorded channels")
         rl = QVBoxLayout(rec_box)
         rl.addWidget(self.record)
-        top = QHBoxLayout()
-        top.addLayout(form, 1)
-        top.addWidget(rec_box, 1)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)   # labels go above fields when narrow
+        form_box = QWidget()
+        form_box.setLayout(form)
+        top = QSplitter(Qt.Horizontal)
+        top.addWidget(form_box)
+        top.addWidget(rec_box)
+        top.setChildrenCollapsible(False)
         lay = QVBoxLayout(self)
-        lay.addLayout(top)
+        lay.addWidget(top)
         lay.addWidget(sweep_box, 1)
 
     def _remove_rows(self):
@@ -256,31 +265,34 @@ class PhaseEditor(QWidget):
         self._btns = [add, rm]
         self.record = CheckList()
         self.hook = QPlainTextEdit()
-        self.hook.setFont(_mono())
+        from ..display import register_font
+        register_font(self.hook, 1.0, monospace=True)
         self.hook.setPlaceholderText(
             "# Python executed %s the sweep, e.g.\n# set('output', 'ON')\n# sleep(1)\n"
             "# log('ready, T = %%g' %% get('T'))" % ("before" if phase == "pre" else "after"))
-        cbox = QGroupBox("Constants (set %s the sweep)" % ("before" if phase == "pre" else "after"))
+        cbox = QGroupBox("Constants")
+        cbox.setToolTip("set %s the sweep" % ("before" if phase == "pre" else "after"))
         cl = QVBoxLayout(cbox)
         cl.addWidget(self.consts)
-        hb = QHBoxLayout()
+        hb = FlowLayout()
         hb.addWidget(add)
         hb.addWidget(rm)
-        hb.addStretch(1)
         cl.addLayout(hb)
-        rbox = QGroupBox("Record once (%s the sweep)" % ("before" if phase == "pre" else "after"))
+        rbox = QGroupBox("Record once")
+        rbox.setToolTip("recorded once %s the sweep" % ("before" if phase == "pre" else "after"))
         QVBoxLayout(rbox).addWidget(self.record)
         hbox = QGroupBox("Hook code")
         QVBoxLayout(hbox).addWidget(self.hook)
-        top = QHBoxLayout()
-        top.addWidget(cbox, 2)
-        top.addWidget(rbox, 1)
+        top = QSplitter(Qt.Horizontal)
+        top.addWidget(cbox)
+        top.addWidget(rbox)
+        top.setChildrenCollapsible(False)
         lay = QVBoxLayout(self)
-        order = QLabel("Order: hook → constants → record" if phase == "pre"
-                       else "Order: record → constants → hook (always runs, also after errors/abort)")
+        order = shrinkable_label(QLabel("Order: hook → constants → record" if phase == "pre"
+                       else "Order: record → constants → hook (always runs, also after errors/abort)"))
         order.setStyleSheet("color: gray")
         lay.addWidget(order)
-        lay.addLayout(top, 1)
+        lay.addWidget(top, 1)
         lay.addWidget(hbox, 1)
 
     def add_const(self, entry: Optional[dict] = None):
@@ -358,27 +370,31 @@ class SweepEditor(QWidget):
         self.on_read.setToolTip("what to do when a recording fails after all retries")
         self.on_set = QComboBox()
         self.on_set.addItems(["abort", "skip"])
-        self.post_on_abort = QCheckBox("run post-sweep actions on abort")
+        self.post_on_abort = QCheckBox("post actions on abort")
+        self.post_on_abort.setToolTip("run the post-sweep record/constants/hook also when aborted")
         self.post_on_abort.setChecked(True)
-        self.ppt = QCheckBox("append slide to PPT when done")
+        self.ppt = QCheckBox("PPT slide when done")
+        self.ppt.setToolTip("append a summary slide to the configured PowerPoint file")
         self.ppt.setChecked(True)
         head = QFormLayout()
-        row1 = QHBoxLayout()
-        row1.addWidget(self.name, 1)
-        row1.addWidget(QLabel("on read error"))
-        row1.addWidget(self.on_read)
-        row1.addWidget(QLabel("on set error"))
-        row1.addWidget(self.on_set)
-        head.addRow("Name", row1)
-        row2 = QHBoxLayout()
-        row2.addWidget(self.comment, 1)
-        row2.addWidget(self.post_on_abort)
-        row2.addWidget(self.ppt)
-        head.addRow("Comment", row2)
+        head.addRow("Name", self.name)
+        head.addRow("Comment", self.comment)
+        opts = FlowLayout()
+        for lab, w in (("on read error", self.on_read), ("on set error", self.on_set)):
+            box = QWidget()
+            hl = QHBoxLayout(box)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.addWidget(QLabel(lab))
+            hl.addWidget(w)
+            opts.addWidget(box)
+        opts.addWidget(self.post_on_abort)
+        opts.addWidget(self.ppt)
+        head.addRow(opts)
 
         # dimensions
         self.dim_list = QListWidget()
         self.dim_list.setMaximumWidth(220)
+        self.dim_list.setMinimumWidth(70)
         self.dim_stack = QStackedWidget()
         self.dim_list.currentRowChanged.connect(self.dim_stack.setCurrentIndex)
         self.dims: List[DimensionEditor] = []
@@ -392,7 +408,7 @@ class SweepEditor(QWidget):
         b_dn.clicked.connect(lambda: self.move_dimension(+1))
         self._dim_buttons = [b_add, b_rm, b_up, b_dn]
         left = QVBoxLayout()
-        lab = QLabel("Dimensions\n(1 = innermost / fastest)")
+        lab = shrinkable_label(QLabel("Dim 1 = innermost (fastest)"))
         lab.setStyleSheet("color: gray")
         left.addWidget(lab)
         left.addWidget(self.dim_list, 1)
@@ -411,8 +427,7 @@ class SweepEditor(QWidget):
         self.tabs.addTab(self.post, "Post-sweep")
 
         # buttons
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
+        self.status = shrinkable_label(QLabel(""))
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.btn_new = QPushButton("New")
         self.btn_load = QPushButton("Load…")
@@ -428,11 +443,9 @@ class SweepEditor(QWidget):
         self.btn_validate.clicked.connect(self.validate)
         self.btn_queue.clicked.connect(lambda: self._queue(False))
         self.btn_run.clicked.connect(lambda: self._queue(True))
-        bar = QHBoxLayout()
-        for b in (self.btn_new, self.btn_load, self.btn_from_data, self.btn_save):
-            bar.addWidget(b)
-        bar.addStretch(1)
-        for b in (self.btn_validate, self.btn_queue, self.btn_run):
+        bar = FlowLayout()
+        for b in (self.btn_new, self.btn_load, self.btn_from_data, self.btn_save,
+                  self.btn_validate, self.btn_queue, self.btn_run):
             bar.addWidget(b)
         lay = QVBoxLayout(self)
         lay.addLayout(head)
@@ -647,7 +660,7 @@ class RunningSweepView(QWidget):
     def __init__(self, conn, model, parent=None):
         super().__init__(parent)
         self.conn = conn
-        self.label = QLabel("No sweep running.")
+        self.label = shrinkable_label(QLabel("No sweep running."))
         self.editor = SweepEditor(conn, model, read_only=True)
         copy = QPushButton("Copy to editor")
         copy.clicked.connect(lambda: self.copyDefinition.emit(self.editor.definition()))

@@ -46,6 +46,7 @@ from .logsys import get_logger
 log = get_logger("channels")
 
 RAMP_INTERVAL = 0.05  # seconds between ramp steps
+TRUST_LAST_S = 2.0    # a value we set less than this long ago is not read back
 
 AbortCheck = Optional[Callable[[], None]]
 
@@ -163,6 +164,7 @@ class ChannelManager:
         self._aliases: Dict[str, Alias] = {}
         self._composites: Dict[str, Composite] = {}
         self._last: Dict[str, Any] = {}        # last value written per alias/composite
+        self._last_time: Dict[str, float] = {}
         self._lock = threading.RLock()
         self._set_locks: Dict[str, threading.RLock] = {}
         self.listeners: List[Callable[[str, Any], None]] = []
@@ -405,6 +407,11 @@ class ChannelManager:
                 else:
                     return None
             return arr
+        # a value we wrote ourselves moments ago (e.g. the previous sweep step) is
+        # trusted; anything older is verified by reading the instrument back
+        fresh = ok(self._last.get(a.name))
+        if fresh is not None and time.monotonic() - self._last_time.get(a.name, -1e9) < TRUST_LAST_S:
+            return fresh
         if spec.readable:
             try:
                 h, _ = self.instruments.resolve(a.target)
@@ -488,6 +495,7 @@ class ChannelManager:
             self._last.pop(a.name, None)
             raise
         self._last[a.name] = value
+        self._last_time[a.name] = time.monotonic()
 
     @staticmethod
     def _has_ramp(a: Alias) -> bool:

@@ -25,10 +25,8 @@ class LogPanel(QWidget):
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setMaximumBlockCount(5000)
-        f = QFont("monospace")
-        f.setStyleHint(QFont.Monospace)
-        f.setPointSize(9)
-        self.text.setFont(f)
+        from ..display import register_font
+        register_font(self.text, 0.95, monospace=True)
         top = QHBoxLayout()
         top.addWidget(self.level)
         top.addWidget(self.filter, 1)

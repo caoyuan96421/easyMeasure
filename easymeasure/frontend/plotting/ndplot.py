@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout
                                QLabel, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from ...common import ndview
+from ..widgets import FlowLayout, shrinkable_label
 from . import colormaps
+from .style import style_axes
 
 pg.setConfigOptions(antialias=False, imageAxisOrder="col-major")
 
@@ -76,20 +78,49 @@ class NDPlotWidget(QWidget):
         self.offset.setDecimals(6)
         self.offset.setRange(-1e12, 1e12)
         self.offset.setToolTip("vertical offset between stacked curves (0 = automatic)")
-        self.offset.setPrefix("offset ")
-        top = QHBoxLayout()
+        self.offset.setPrefix("stack offset ")
+        top = FlowLayout()
+        self._top = top
         self._labels = {}
-        for w, label in ((self.channel_box, "Channel"), (self.mode_box, None), (self.x_box, "X"),
-                         (self.y_box, "Y"), (self.cmap_box, None)):
+        self.channel_box.setToolTip("recorded channel to show")
+        self.mode_box.setToolTip("Auto: heat map for 2 axes, curve for 1")
+        for w, label in ((self.channel_box, None), (self.mode_box, None), (self.x_box, "X"),
+                         (self.y_box, "Y")):
             if label:
+                # keep each label with its combo box when the toolbar wraps
+                box = QWidget()
+                hl = QHBoxLayout(box)
+                hl.setContentsMargins(0, 0, 0, 0)
+                hl.setSpacing(3)
                 self._labels[label] = QLabel(label)
-                top.addWidget(self._labels[label])
-            top.addWidget(w)
-        self.y_box.setMinimumContentsLength(6)
-        top.addWidget(self.offset)
-        top.addWidget(self.follow)
-        top.addWidget(self.autolevel)
-        top.addStretch(1)
+                hl.addWidget(self._labels[label])
+                hl.addWidget(w)
+                top.addWidget(box)
+            else:
+                top.addWidget(w)
+        for cb, n in ((self.channel_box, 8), (self.mode_box, 5), (self.x_box, 6),
+                      (self.y_box, 6), (self.cmap_box, 8)):
+            cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            cb.setMinimumContentsLength(n)
+        # less frequently used options live in a small popup to keep the bar short
+        from PySide6.QtWidgets import QFormLayout, QMenu, QToolButton, QWidgetAction
+        self.opts_btn = QToolButton()
+        self.opts_btn.setText("⚙")
+        self.opts_btn.setToolTip("colormap, levels, follow, stacked-curve offset")
+        self.opts_btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.opts_btn)
+        panel = QWidget()
+        pf = QFormLayout(panel)
+        pf.setContentsMargins(8, 6, 8, 6)
+        pf.addRow("Colormap", self.cmap_box)
+        pf.addRow(self.offset)
+        pf.addRow(self.follow)
+        pf.addRow(self.autolevel)
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(panel)
+        menu.addAction(wa)
+        self.opts_btn.setMenu(menu)
+        top.addWidget(self.opts_btn)
         if closable:
             from PySide6.QtWidgets import QToolButton
             close = QToolButton()
@@ -108,10 +139,13 @@ class NDPlotWidget(QWidget):
         self.hist.setImageItem(self.image)
         self.glw.addItem(self.hist, row=0, col=1)
         self.hist.sigLevelChangeFinished.connect(self._levels_dragged)
+        style_axes(self.plot)
+        style_axes(self.hist)
+        self.glw.setMinimumSize(160, 120)
         self.curves: List[pg.PlotDataItem] = []
-        self.readout = QLabel(" ")
+        self.readout = shrinkable_label(QLabel(" "), wrap=False)
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.info = QLabel(" ")
+        self.info = shrinkable_label(QLabel(" "), wrap=False)
         self.info.setStyleSheet("color: gray")
 
         self.slider_box = QGridLayout()
@@ -264,7 +298,7 @@ class NDPlotWidget(QWidget):
             s.setRange(0, max(0, a["size"] - 1))
             s.valueChanged.connect(self._slider_moved)
             val = QLabel("")
-            val.setMinimumWidth(110)
+            val.setMinimumWidth(60)
             self.slider_box.addWidget(lab, row, 0)
             self.slider_box.addWidget(s, row, 1)
             self.slider_box.addWidget(val, row, 2)
@@ -278,17 +312,31 @@ class NDPlotWidget(QWidget):
         self.y_box.setToolTip("" if y_usable else
                               ("the data has a single axis" if len(self._axes) < 2
                                else "not used in curve mode"))
+        self._fit_height()
         heat = mode == "Heatmap"
         self.hist.setVisible(heat)
         self.image.setVisible(heat)
-        self.offset.setVisible(mode == "Stacked curves")
-        self.cmap_box.setVisible(mode != "Curve")
-        self.autolevel.setVisible(heat)
+        self.offset.setEnabled(mode == "Stacked curves")
+        self.cmap_box.setEnabled(mode != "Curve")
+        self.autolevel.setEnabled(heat)
         self._auto_levels = self.autolevel.isChecked()
         self._clear_curves()
         self.plot.enableAutoRange()
         self._dirty = True
         self._maybe_refresh(force=True)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        m = self.layout().contentsMargins()
+        w = max(50, self.width() - m.left() - m.right())
+        need = (self._top.heightForWidth(w) + self.glw.minimumHeight()
+                + len(self._sliders) * (self.fontMetrics().height() + 12)
+                + self.info.sizeHint().height() + 3 * self.layout().spacing() + m.top() + m.bottom())
+        if abs(need - self.minimumHeight()) > 2:
+            self.setMinimumHeight(need)
 
     def _slider_moved(self, *_):
         s = self.sender()

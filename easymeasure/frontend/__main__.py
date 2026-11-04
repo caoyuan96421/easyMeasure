@@ -24,6 +24,8 @@ def main(argv=None) -> int:
         os.environ["EASYMEASURE_HOME"] = os.path.abspath(args.home)
     from PySide6.QtWidgets import QApplication
     import pyqtgraph as pg
+    from .display import prepare_environment
+    prepare_environment()          # UI scale / high-DPI policy: before the QApplication
     app = QApplication([sys.argv[0]] + qt_args)
     app.setApplicationName("easyMeasure")
     app.setStyle("Fusion")

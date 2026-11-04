@@ -27,6 +27,8 @@ def main(argv=None) -> int:
     ap.add_argument("--restore", action="store_true",
                     help="restore the automatically saved setup of the last session")
     ap.add_argument("--quiet", action="store_true", help="no console logging")
+    ap.add_argument("--no-tray", action="store_true",
+                    help="do not show the system-tray indicator")
     ap.add_argument("--force", action="store_true",
                     help="start even if another backend seems to be running")
     args = ap.parse_args(argv)
@@ -61,10 +63,22 @@ def main(argv=None) -> int:
             signal.signal(s, _sig)
         except (ValueError, OSError):
             pass
+    tray = None
+    if not args.no_tray:
+        try:
+            from ..tray import spawn
+            tray = spawn()          # separate process: can never affect the backend
+        except Exception:
+            tray = None
     try:
         server.serve_forever()
     finally:
         backend.close()
+        if tray is not None and tray.poll() is None:
+            try:
+                tray.terminate()
+            except Exception:
+                pass
     return 0
 
 
