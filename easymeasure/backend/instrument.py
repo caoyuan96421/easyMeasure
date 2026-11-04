@@ -398,6 +398,9 @@ class InstrumentHandle:
         except BaseException as exc:
             self.state = "error"
             self.last_error = str(exc)
+            # make sure the next call tries to connect again instead of using a
+            # half-initialised driver
+            self._needs_reconnect = True
             log.error("instrument %s failed to connect: %s", self.name, exc)
             if isinstance(exc, EasyMeasureError):
                 raise
@@ -447,8 +450,9 @@ class InstrumentHandle:
     # -- channel info -------------------------------------------------------
     @property
     def channels(self) -> Dict[str, ChannelSpec]:
-        if not self._channels and self.driver is None:
-            # offline: describe the static channel list of the driver class
+        if not self._channels:
+            # never connected successfully: describe the static channel list of the
+            # driver class (dynamic drivers may refine it once connected)
             try:
                 return {c.name: c for c in getattr(self._driver_cls, "CHANNELS", [])}
             except Exception:
@@ -457,6 +461,13 @@ class InstrumentHandle:
 
     def spec(self, channel: str) -> ChannelSpec:
         spec = self.channels.get(channel)
+        if spec is None and not self._channels and self.state != "connected":
+            # dynamic channel list not known yet (initial connect failed): try again
+            try:
+                self.connect()
+            except Exception:
+                pass
+            spec = self.channels.get(channel)
         if spec is None:
             raise ChannelError("instrument %s has no channel %r" % (self.name, channel))
         return spec

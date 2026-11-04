@@ -254,3 +254,42 @@ def test_circuit_breaker(mgr):
     assert time.monotonic() - t < 0.05        # fails fast
     assert h.read("v") == 1.0                 # other channels unaffected
     assert "read hang" in h.describe()["quarantined"]
+
+
+def test_recovers_after_failed_initial_connect(mgr):
+    class Shy(Instrument):
+        CHANNELS = [ChannelSpec("x", "r")]
+        tries = 0
+
+        def connect(self):
+            Shy.tries += 1
+            if Shy.tries < 3:
+                raise IOError("no reply to *IDN?")
+
+        def _read_x(self):
+            return 5.0
+    mgr.drivers.register("shy", Shy)
+    h = mgr.add("s", "shy", options={"retries": 2, "retry_delay": 0})
+    assert h.state == "error"
+    assert h.read("x") == 5.0          # reconnects on demand
+    assert h.state == "connected"
+
+
+def test_dynamic_channels_after_failed_connect(mgr):
+    class Dyn(Instrument):
+        ok = False
+
+        def connect(self):
+            if not Dyn.ok:
+                raise IOError("offline")
+
+        def get_channels(self):
+            return [ChannelSpec("y", "r")]
+
+        def _read_y(self):
+            return 2.0
+    mgr.drivers.register("dyn", Dyn)
+    h = mgr.add("d", "dyn")
+    assert h.state == "error"
+    Dyn.ok = True
+    assert h.read("y") == 2.0
