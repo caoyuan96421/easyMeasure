@@ -306,6 +306,17 @@ of them. Requests are executed concurrently, but each instrument serialises its 
 calls, and the run queue executes one item at a time. There is no locking between
 users: two GUIs can both edit the queue or set channels, the last action wins.
 
+Clients choose which events are pushed to them. The GUI subscribes to everything.
+Scripts and notebooks (`BackendClient`) get only status events by default (queue
+changes, sweep start/end, warnings) and can ask for more with
+`client.subscribe(["monitor", "sweep_point"])` or `"*"`; the tray uses the tiny
+`sweep_progress` event. Events nobody subscribed to are not even encoded.
+
+Idle connections are never closed. A client is only disconnected when the backend
+has data waiting for it and its socket has accepted nothing for 60 s, or more than
+64 MB are waiting (a frozen GUI); live data for a slow client is dropped above 16 MB
+and the client is told to resynchronise. GUIs reconnect by themselves.
+
 ## Using it from Python
 
 ```python

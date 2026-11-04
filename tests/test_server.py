@@ -40,7 +40,7 @@ def long_sweep(points=300, delay=0.005):
 
 def test_basic_commands_and_events(server):
     events = []
-    with client_for(server) as c:
+    with BackendClient("127.0.0.1", server.port, server.token, events="*") as c:
         c.on_event = lambda k, d: events.append(k)
         assert "pong" in c.call("ping")
         assert c.call("read_channel", name="Vg") == 0.0
@@ -236,3 +236,54 @@ def test_frozen_client_is_disconnected_and_memory_bounded(server, demo, monkeypa
         time.sleep(0.2)
     assert not any(x["name"] == "frozen" for x in server.clients())
     s.close()
+
+
+def test_event_subscriptions(server, demo):
+    """Scripts get status events only by default; '*' gets everything; the
+    subscription can be changed at runtime."""
+    got = {"default": [], "all": []}
+    demo.monitor_add("Vg", 0.1)
+    c1 = client_for(server, "script")
+    c2 = BackendClient("127.0.0.1", server.port, server.token, name="gui-like", events="*")
+    c1.on_event = lambda k, d: got["default"].append(k)
+    c2.on_event = lambda k, d: got["all"].append(k)
+    try:
+        c1.call("queue_add", item={"kind": "sweep", "definition": long_sweep(10, 0)}, start=True)
+        assert demo.queue.wait_idle(30)
+        time.sleep(0.5)
+        d, a = set(got["default"]), set(got["all"])
+        assert {"queue", "sweep_start", "sweep_end"} <= d
+        assert not d & {"sweep_point", "sweep_progress", "monitor", "log"}
+        assert {"sweep_point", "sweep_progress", "monitor", "log"} <= a
+        c1.subscribe(["monitor"])
+        time.sleep(0.5)
+        got["default"].clear()
+        time.sleep(0.6)
+        assert set(got["default"]) == {"monitor"}
+    finally:
+        c1.close()
+        c2.close()
+        demo.monitor_remove("Vg")
+
+
+def test_idle_non_reading_client_is_never_dropped(server, demo, monkeypatch):
+    """A notebook/script connection that just sits there (never reads) is kept,
+    even with sweeps running and monitors active: it is only sent small status
+    events, so its socket never blocks."""
+    import easymeasure.backend.server as srvmod
+    monkeypatch.setattr(srvmod, "STALL_TIMEOUT", 0.5)
+    demo.monitor_add("spectrum", 0.05)
+    s = socket.create_connection(("127.0.0.1", server.port))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    s.sendall(codec.encode({"type": "hello", "token": server.token, "client": "idle-notebook"}))
+    try:
+        with client_for(server, "driver") as c:
+            for _ in range(2):
+                c.call("queue_add", item={"kind": "sweep", "definition": long_sweep(60, 0.005)},
+                       start=True)
+                assert demo.queue.wait_idle(60)
+            time.sleep(1.5)
+        assert any(x["name"] == "idle-notebook" for x in server.clients())
+    finally:
+        s.close()
+        demo.monitor_remove("spectrum")

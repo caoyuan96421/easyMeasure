@@ -35,8 +35,11 @@ class BackendConnection(QObject):
     event = Signal(str, object)       # (kind, data)
     request_failed = Signal(str, str)  # (cmd, error) for requests without on_err
 
-    def __init__(self, runtime_file: Optional[Path] = None, parent=None):
+    def __init__(self, runtime_file: Optional[Path] = None, parent=None,
+                 client_name: str = "gui", events="*"):
         super().__init__(parent)
+        self.client_name = client_name
+        self.events = events if events == "*" else list(events)
         self._runtime_file = runtime_file
         self._sock = QTcpSocket(self)
         self._sock.readyRead.connect(self._on_ready_read)
@@ -91,7 +94,8 @@ class BackendConnection(QObject):
         self._sock.connectToHost(info.get("host", "127.0.0.1"), int(info["port"]))
 
     def _on_socket_connected(self) -> None:
-        self._send({"type": "hello", "token": self._token, "client": "gui"})
+        self._send({"type": "hello", "token": self._token, "client": self.client_name,
+                    "events": self.events})
 
     def _on_socket_disconnected(self) -> None:
         was = self.is_connected

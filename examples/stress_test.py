@@ -173,7 +173,9 @@ def main():
     def frozen_client():
         s = socket.create_connection(("127.0.0.1", port))
         s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-        s.sendall(codec.encode({"type": "hello", "token": token, "client": "frozen"}))
+        # a frozen GUI: subscribed to everything, never reads
+        s.sendall(codec.encode({"type": "hello", "token": token, "client": "frozen",
+                                "events": "*"}))
         while not stop.is_set():
             time.sleep(0.5)        # never reads
         s.close()

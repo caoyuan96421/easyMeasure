@@ -154,7 +154,7 @@ class TrayController:
             self.run = {"run": data.get("run"), "name": hdr.get("name", "")}
             self.progress = None
             self._update()
-        elif kind == "sweep_point" and isinstance(data, dict):
+        elif kind in ("sweep_point", "sweep_progress") and isinstance(data, dict):
             self.progress = data.get("progress")
         elif kind == "sweep_end" and isinstance(data, dict):
             status = data.get("status", "")
@@ -304,7 +304,8 @@ def main(argv=None) -> int:
         _tray_log("no system tray available on this desktop; exiting")
         return 0
     from .frontend.connection import BackendConnection
-    conn = BackendConnection()
+    from .backend.server import DEFAULT_EVENTS
+    conn = BackendConnection(client_name="tray", events=list(DEFAULT_EVENTS) + ["sweep_progress"])
     tray = QSystemTrayIcon()
     ctl = TrayController(conn, tray)
     tray.show()

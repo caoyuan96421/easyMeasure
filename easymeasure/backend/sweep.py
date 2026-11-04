@@ -603,9 +603,11 @@ class SweepRunner:
             self.dataset.apply_point(k, idx, values, errors)
         except Exception as exc:
             log.error("run %d: cannot assemble point %s: %s", self.run_number, idx, exc)
+        progress = self.progress()
         self._emit("sweep_point", {"run": self.run_number, "k": k, "i": list(idx),
-                                   "v": values, "e": errors,
-                                   "progress": self.progress()})
+                                   "v": values, "e": errors, "progress": progress})
+        # tiny event for clients that only show progress (tray, scripts)
+        self._emit("sweep_progress", {"run": self.run_number, "progress": progress})
         if dim["post_delay"]:
             self.control.sleep(dim["post_delay"])
 

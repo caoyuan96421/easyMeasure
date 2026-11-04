@@ -53,7 +53,11 @@ MAX_QUEUE_BYTES = 16 * 1024 * 1024
 HOPELESS_BYTES = 64 * 1024 * 1024
 MAX_QUEUE_MSGS = 20000
 STALL_TIMEOUT = 60.0
-_DROPPABLE = {"monitor", "log", "sweep_point"}
+_DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress"}
+#: events a client gets when it does not say otherwise (scripts, notebooks): the
+#: small status events only - no monitor values, sweep data or log lines
+DEFAULT_EVENTS = ("queue", "item_end", "sweep_start", "sweep_end", "sweep_paused",
+                  "sweep_resumed", "sweep_warning", "ppt", "changed", "settings")
 PREAUTH_MAX_FRAME = 64 * 1024
 AUTH_TIMEOUT = 10.0
 # commands that never touch instrument I/O: served by their own small pool so that
@@ -80,6 +84,7 @@ class _Client:
         self._qbytes = 0
         self._qlock = threading.RLock()
         self._dropping = False
+        self.events = None             # set at authentication (None = everything)
         self._send_started = None      # set while a sendall() is in progress
         self.dropped = 0
         self.name = "?"
@@ -92,7 +97,24 @@ class _Client:
         self._reader.start()
         self._writer.start()
 
+    # -- subscriptions -----------------------------------------------------------
+    def set_events(self, events) -> None:
+        """``"*"`` = every event; otherwise an iterable of event names."""
+        if events == "*" or events is None:
+            self.events = None
+        elif isinstance(events, (list, tuple, set)):
+            self.events = {str(e) for e in events} | {"resync"}
+        else:
+            raise ProtocolError("events must be '*' or a list of event names")
+
+    def wants(self, kind: str) -> bool:
+        return self.events is None or kind in self.events
+
     # -- sending ---------------------------------------------------------------
+    def send_frame(self, frame: bytes, droppable: bool = False) -> None:
+        """Queue an already encoded frame (events are encoded once for all clients)."""
+        self._enqueue(frame, droppable)
+
     def send(self, msg: dict, droppable: bool = False) -> None:
         if not self.alive:
             return
@@ -106,6 +128,11 @@ class _Client:
                                       "kind": "ProtocolError"})
             else:
                 return
+        self._enqueue(frame, droppable)
+
+    def _enqueue(self, frame: bytes, droppable: bool) -> None:
+        if not self.alive:
+            return
         # NB: never log while holding _qlock - log records are themselves sent to
         # clients and would re-enter here.
         started_dropping = hopeless = False
@@ -193,6 +220,7 @@ class _Client:
                 raise ProtocolError("authentication failed")
             self.authed = True
             self.name = str(msg.get("client", "?"))
+            self.set_events(msg.get("events", DEFAULT_EVENTS))
             self.send({"type": "welcome", "version": __version__, "pid": os.getpid(),
                        "code_stamp": CODE_STAMP, "tray": self.server.backend.tray_running(),
                        "started": self.server.backend.started})
@@ -201,6 +229,10 @@ class _Client:
             return
         if t == "req":
             self.server.submit(self, msg)
+        elif t == "subscribe":
+            self.set_events(msg.get("events", DEFAULT_EVENTS))
+            self.send({"type": "subscribed", "events": sorted(self.events) if self.events is not None
+                       else "*"})
         elif t == "bye":
             self.close()
         elif t == "ping":
@@ -382,18 +414,21 @@ class Server:
                          "kind": "RuntimeError"})
 
     def _on_event(self, kind: str, payload) -> None:
-        msg = {"type": "event", "event": kind, "data": payload}
-        droppable = kind in _DROPPABLE
         with self._clients_lock:
-            clients = list(self._clients.values())
+            clients = [c for c in self._clients.values() if c.wants(kind)]
         if not clients:
-            return
+            return                     # nobody subscribed: not even encoded
         try:
-            frame_msg = msg
-            for c in clients:
-                c.send(frame_msg, droppable=droppable)
-        except Exception:
-            pass
+            frame = codec.encode({"type": "event", "event": kind, "data": payload})
+        except Exception as exc:
+            log.error("cannot encode %s event: %s", kind, exc)
+            return
+        droppable = kind in _DROPPABLE
+        for c in clients:
+            try:
+                c.send_frame(frame, droppable=droppable)
+            except Exception:
+                pass
 
 
 def read_runtime_file(path: Optional[Path] = None) -> Optional[dict]:

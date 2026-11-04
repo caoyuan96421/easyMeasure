@@ -3,7 +3,12 @@
     from easymeasure.client import BackendClient
     c = BackendClient.connect()            # uses ~/.easymeasure/backend.json
     c.call("read_channel", name="Vg")
-    c.on_event = lambda kind, data: print(kind)
+    c.on_event = lambda kind, data: print(kind)   # status events (queue, sweep start/end ...)
+    c.subscribe(["monitor"])                      # ... or ask for more, "*" for everything
+
+An idle client is never disconnected.  A client is only dropped when the backend
+has data waiting for it and its socket has accepted nothing for 60 s (a frozen
+GUI); the reader thread here always drains the socket, so that cannot happen.
 
 The GUI uses its own Qt-native, non-blocking client
 (:mod:`easymeasure.frontend.connection`); this one blocks the calling thread.
@@ -27,7 +32,7 @@ from ..common.errors import ProtocolError, RemoteError
 
 class BackendClient:
     def __init__(self, host: str, port: int, token: str, name: str = "client",
-                 timeout: float = 5.0):
+                 timeout: float = 5.0, events=None):
         self.host, self.port, self.token = host, int(port), token
         self.sock = socket.create_connection((host, self.port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -42,7 +47,10 @@ class BackendClient:
         self.welcome: Optional[dict] = None
         self._rx = threading.Thread(target=self._read_loop, name="client-rx", daemon=True)
         self._rx.start()
-        self._send({"type": "hello", "token": token, "client": name})
+        hello = {"type": "hello", "token": token, "client": name}
+        if events is not None:
+            hello["events"] = events if events == "*" else list(events)
+        self._send(hello)
         if not self._welcome.wait(timeout):
             self.close()
             raise ProtocolError("no welcome from backend")
@@ -50,13 +58,20 @@ class BackendClient:
             self.close()
             raise ProtocolError("authentication failed")
 
+    def subscribe(self, events) -> None:
+        """Choose the pushed events: ``"*"`` for all (monitor values, sweep data, log
+        lines ...) or a list of names.  The default is status events only."""
+        self._send({"type": "subscribe", "events": events if events == "*" else list(events)})
+
     @classmethod
-    def connect(cls, runtime_file: Optional[Path] = None, name: str = "client") -> "BackendClient":
+    def connect(cls, runtime_file: Optional[Path] = None, name: str = "client",
+                events=None) -> "BackendClient":
         from ..backend.server import read_runtime_file
         info = read_runtime_file(runtime_file)
         if not info:
             raise ConnectionError("no running backend found (%s)" % (runtime_file or paths.runtime_file()))
-        return cls(info.get("host", "127.0.0.1"), info["port"], info["token"], name=name)
+        return cls(info.get("host", "127.0.0.1"), info["port"], info["token"], name=name,
+                   events=events)
 
     def _send(self, msg: dict) -> None:
         frame = codec.encode(msg)
