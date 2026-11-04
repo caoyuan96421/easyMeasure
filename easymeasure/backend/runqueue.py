@@ -23,7 +23,7 @@ from typing import Callable, Deque, Dict, List, Optional
 
 from ..common.errors import AbortRequested, ChannelError, EasyMeasureError
 from .logsys import get_logger
-from .resources import PRIO_MEASUREMENT, set_thread_priority
+from .resources import PRIO_MEASUREMENT, set_abort_check, set_thread_priority
 from .sweep import RunControl, normalize_definition
 
 log = get_logger("queue")
@@ -218,6 +218,7 @@ class RunQueue:
     # -- worker ----------------------------------------------------------------------
     def _loop(self) -> None:
         set_thread_priority(PRIO_MEASUREMENT)
+        set_abort_check(self.control.check_abort)
         while True:
             try:
                 with self._cv:

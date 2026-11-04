@@ -39,6 +39,7 @@ array of shape ``(N_k, ..., N_{D-1}) + value_shape``.  Special record channel:
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 import math
 import threading
 import time
@@ -288,6 +289,11 @@ class RunControl:
         self._abort.clear()
         self.resume()
 
+    def check_abort(self) -> None:
+        """Non-blocking: raise AbortRequested if an abort was requested."""
+        if self._abort.is_set():
+            raise AbortRequested("aborted by user")
+
     @property
     def aborted(self) -> bool:
         return self._abort.is_set()
@@ -347,6 +353,7 @@ class SweepRunner:
         self.status = "pending"
         self.error = ""
         self.read_failures = 0
+        self.storage_errors = 0
         self._pass_counts = [0] * len(self.shape)
 
     # -- helpers ------------------------------------------------------------------
@@ -362,11 +369,53 @@ class SweepRunner:
         try:
             self.journal.write(ftype, obj, sync=sync)
         except Exception as exc:
-            # Never lose the measurement because of storage: keep running in memory,
-            # but tell the user loudly.
-            log.error("DATA STORAGE FAILURE for run %d: %s", self.run_number, exc)
-            self._emit("sweep_warning", {"run": self.run_number, "message": "storage failure: %s" % exc})
-            self.journal = None
+            # Never lose the measurement because of storage: the journal keeps the
+            # frame and retries; the sweep goes on with the data also in memory.
+            self.storage_errors += 1
+            if self.storage_errors == 1 or self.storage_errors % 100 == 0:
+                log.error("DATA STORAGE PROBLEM for run %d (%d so far): %s",
+                          self.run_number, self.storage_errors, exc)
+                self._emit("sweep_warning", {"run": self.run_number,
+                                             "message": "storage problem: %s" % exc})
+
+    def _close_journal(self) -> None:
+        j = self.journal
+        if j is None:
+            return
+        try:
+            j.close()
+        except Exception as exc:
+            log.error("run %d: closing journal failed: %s", self.run_number, exc)
+        lost = j.pending or j.dropped
+        if not lost and self.storage_errors:
+            # frames may have failed before reaching the journal (e.g. encoding):
+            # verify the file against the in-memory data
+            try:
+                from .storage import DataSet as _DS
+                lost = _DS.load(self.path).points < self.dataset.points
+            except Exception:
+                lost = True
+        if lost:
+            # some frames never reached the journal: save the complete in-memory
+            # dataset elsewhere so nothing is lost
+            from .storage import export_hdf5
+            import os
+            import tempfile
+            candidates = [Path(self.path).with_name(Path(self.path).stem + "_recovered.h5"),
+                          Path(tempfile.gettempdir()) / ("easymeasure_run%05d_recovered.h5"
+                                                         % self.run_number)]
+            for target in candidates:
+                try:
+                    export_hdf5(self.dataset, target)
+                    log.error("run %d: %d frame(s) could not be written to %s; the complete "
+                              "data was saved to %s", self.run_number, j.pending + j.dropped,
+                              self.path, target)
+                    self._emit("sweep_warning", {"run": self.run_number,
+                                                 "message": "data saved to %s" % target})
+                    break
+                except Exception as exc:
+                    log.error("run %d: recovery save to %s failed: %s", self.run_number,
+                              target, exc)
 
     def _read(self, name: str):
         if name == "@time":
@@ -517,8 +566,7 @@ class SweepRunner:
                   "points": self.dataset.points, "read_failures": self.read_failures}
         self._journal(FOOTER, footer, sync=True)
         self.dataset.footer = footer
-        if self.journal is not None:
-            self.journal.close()
+        self._close_journal()
         self._emit("sweep_end", {"run": self.run_number, "status": self.status,
                                  "error": self.error, "path": str(self.path), "footer": footer})
         log.info("run %d %s (%d/%d points, %d read failures)", self.run_number, self.status,

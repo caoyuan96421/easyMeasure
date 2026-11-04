@@ -47,6 +47,18 @@ DEFAULT_PORT = 47811
 MAX_QUEUE_BYTES = 256 * 1024 * 1024
 MAX_QUEUE_MSGS = 20000
 _DROPPABLE = {"monitor", "log", "sweep_point"}
+PREAUTH_MAX_FRAME = 64 * 1024
+AUTH_TIMEOUT = 10.0
+# commands that never touch instrument I/O: served by their own small pool so that
+# requests stuck on a hung instrument can never delay ping / pause / abort / status
+CONTROL_COMMANDS = {
+    "ping", "get_state", "get_settings", "set_settings", "queue_state", "current_run",
+    "pause", "resume", "abort", "abort_all", "queue_start", "queue_stop", "queue_clear",
+    "queue_remove", "queue_move", "queue_options", "recent_logs", "monitor_list",
+    "monitor_history", "monitor_remove", "list_channels", "list_instruments", "list_runs",
+    "list_drivers", "list_resources", "get_setup", "save_setup", "channel_info",
+    "validate_sweep", "queue_add", "run_script_now", "read_run_header", "shutdown",
+}
 
 
 class _Client:
@@ -132,15 +144,19 @@ class _Client:
 
     # -- receiving -------------------------------------------------------------
     def _read_loop(self):
-        reader = codec.FrameReader()
+        reader = codec.FrameReader(max_frame=PREAUTH_MAX_FRAME)
         try:
-            self.sock.settimeout(None)
+            # an unauthenticated peer gets a few seconds to say hello
+            self.sock.settimeout(AUTH_TIMEOUT)
             while self.alive:
                 data = self.sock.recv(1 << 16)
                 if not data:
                     break
                 for msg in reader.feed(data):
                     self._handle(msg)
+                    if self.authed and reader.max_frame != codec.MAX_FRAME:
+                        reader.max_frame = codec.MAX_FRAME
+                        self.sock.settimeout(None)
         except ProtocolError as exc:
             log.warning("protocol error from %s: %s", self.id, exc)
         except OSError:
@@ -197,7 +213,7 @@ class _Client:
 class Server:
     def __init__(self, backend: Backend, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                  token: Optional[str] = None, runtime_file: Optional[Path] = None,
-                 workers: int = 16):
+                 workers: int = 32):
         self.backend = backend
         self.host = host
         self.token = token or secrets.token_hex(16)
@@ -218,6 +234,8 @@ class Server:
         self._clients_lock = threading.RLock()
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                            thread_name_prefix="cmd")
+        self._control_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4,
+                                                                   thread_name_prefix="ctl")
         self._stop = threading.Event()
         self._accept_thread = threading.Thread(target=self._accept_loop, name="accept", daemon=True)
         backend.add_listener(self._on_event)
@@ -267,6 +285,7 @@ class Server:
             c.close()
         self.backend.remove_listener(self._on_event)
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._control_pool.shutdown(wait=False, cancel_futures=True)
         try:
             info = json.loads(self.runtime_file.read_text())
             if info.get("pid") == os.getpid() and info.get("port") == self.port:
@@ -333,7 +352,8 @@ class Server:
                              "error": str(exc) or type(exc).__name__,
                              "kind": type(exc).__name__, "tb": tb})
         try:
-            self._pool.submit(run)
+            pool = self._control_pool if cmd in CONTROL_COMMANDS else self._pool
+            pool.submit(run)
         except RuntimeError:
             client.send({"type": "resp", "id": rid, "ok": False, "error": "server shutting down",
                          "kind": "RuntimeError"})

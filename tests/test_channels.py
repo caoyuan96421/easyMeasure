@@ -124,3 +124,74 @@ def test_alias_validation():
         Alias("ok", "a.b", min=1, max=0)
     with pytest.raises(ChannelError):
         Alias("ok", "a.b", ramp_rate=-1)
+
+
+def test_review_ramp_bypasses_closed(demo):
+    """Regression tests for ways around limits / ramp rates found in review."""
+    ch = demo.channels
+    src = demo.instruments.get("src")
+    ch.set("Vg", -0.5)
+    # 1-element list must not skip the ramp (2 V/s -> ~0.5 s for 1 V)
+    t = time.monotonic()
+    ch.set("Vg", [0.5])
+    assert time.monotonic() - t > 0.35
+    with pytest.raises(ChannelError):
+        ch.set("Vg", [0.1, 0.2])
+    # infinity is refused even if only one side is limited
+    ch.add_alias(Alias("Vr", "src.V3", max=1.0, ramp_rate=0.1), replace=True)
+    with pytest.raises(LimitError):
+        ch.set("Vr", float("-inf"))
+    # raw query / raw write respect alias limits and invalidate the cache
+    with pytest.raises(LimitError):
+        demo.query_channel("src.V1", 50.0)
+    with pytest.raises(LimitError):
+        ch.set_raw("src.V1", -7.0)
+    ch.set_raw("src.V1", -1.0)
+    seen = []
+    orig = src.write
+    src.write = lambda c, v: (seen.append(v), orig(c, v))
+    ch.set("Vg", 0.0)                     # must ramp from the real -1.0, not a cached value
+    assert seen[0] < -0.8
+    src.write = orig
+
+
+def test_review_unknown_start_refuses_to_jump(demo):
+    ch = demo.channels
+    ch.add_alias(Alias("Vn", "src.V4", min=-2, max=2, ramp_rate=0.1), replace=True)
+    src = demo.instruments.get("src")
+    orig = src.read
+    src.read = lambda c: float("nan") if c == "V4" else orig(c)
+    try:
+        with pytest.raises(LimitError, match="present value"):
+            ch.set("Vn", 1.5)
+        ch.set("Vn", 1.5, ramp=False)    # explicit override
+    finally:
+        src.read = orig
+
+
+def test_review_composite_nonlinear_path_respects_rates(demo):
+    ch = demo.channels
+    ch.add_alias(Alias("VL", "src.V3", min=-1, max=1, ramp_rate=2.0), replace=True)
+    ch.add_composite(Composite("q", {"VL": "x**2"}, min=-1, max=1))
+    ch.set("VL", 1.0, ramp=False)
+    ch.set("q", -1.0, ramp=False)
+    src = demo.instruments.get("src")
+    seen = []
+    orig = src.write
+    src.write = lambda c, v: (seen.append((time.monotonic(), v)), orig(c, v))
+    t = time.monotonic()
+    ch.set("q", 1.0)          # VL goes 1 -> 0 -> 1: 2 V of travel at 2 V/s
+    dt = time.monotonic() - t
+    src.write = orig
+    assert dt > 0.8
+    rates = [abs(b[1] - a[1]) / max(b[0] - a[0], 1e-9) for a, b in zip(seen, seen[1:])]
+    assert max(rates) < 2.0 * 1.6       # one tick of slack
+    # ramp_step honoured through a composite
+    ch.add_alias(Alias("VS", "src.V4", min=-1, max=1, ramp_step=0.1), replace=True)
+    ch.add_composite(Composite("s", {"VS": "x"}))
+    ch.set("VS", 0.0, ramp=False)
+    seen.clear()
+    src.write = lambda c, v: (seen.append(v), orig(c, v))
+    ch.set("s", 0.9)
+    src.write = orig
+    assert len(seen) >= 9 and max(abs(b - a) for a, b in zip([0.0] + seen, seen)) <= 0.1 + 1e-9

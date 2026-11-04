@@ -310,6 +310,10 @@ class ChannelManager:
                     raise LimitError("%s: %r not in allowed values %s" % (name, v, a.allowed))
                 return v
             arr = self._to_array(name, value)
+            if spec.shape == ():
+                if arr.size != 1:
+                    raise ChannelError("%s is a scalar channel, got shape %s" % (name, arr.shape))
+                arr = arr.reshape(())
             self._check_limits(name, arr, a.min, a.max)
             return float(arr) if arr.ndim == 0 else arr
         if name.startswith("@"):
@@ -323,8 +327,8 @@ class ChannelManager:
             x = float(value)
         except (TypeError, ValueError):
             raise ChannelError("%s needs a numeric scalar, got %r" % (name, value)) from None
-        if math.isnan(x):
-            raise LimitError("%s: refusing to set NaN" % name)
+        if not math.isfinite(x):
+            raise LimitError("%s: refusing to set non-finite value %r" % (name, x))
         return x
 
     @staticmethod
@@ -338,8 +342,8 @@ class ChannelManager:
             arr = np.asarray(value, dtype=float)
         except (TypeError, ValueError):
             raise ChannelError("%s needs numeric data" % name) from None
-        if np.isnan(arr).any():
-            raise LimitError("%s: refusing to set NaN" % name)
+        if not np.isfinite(arr).all():
+            raise LimitError("%s: refusing to set NaN/inf" % name)
         return arr
 
     @staticmethod
@@ -382,17 +386,34 @@ class ChannelManager:
             return value
         return (value - a.offset) / a.scale
 
-    def _current_alias_value(self, a: Alias, spec: ChannelSpec):
-        last = self._last.get(a.name)
-        if last is not None:
-            return last
+    def _current_alias_value(self, a: Alias, spec: ChannelSpec, shape=None):
+        """Where a ramp starts.  The instrument is read back whenever possible:
+        the cached last value can be stale (front-panel change, raw write, failed
+        write, instrument restart).  Returns None if the value cannot be known."""
+        def ok(v):
+            if v is None:
+                return None
+            try:
+                arr = np.asarray(v, dtype=float)
+            except (TypeError, ValueError):
+                return None
+            if not np.isfinite(arr).all():
+                return None
+            if shape is not None and arr.shape != tuple(shape):
+                if arr.size == int(np.prod(shape)):
+                    arr = arr.reshape(shape)
+                else:
+                    return None
+            return arr
         if spec.readable:
             try:
                 h, _ = self.instruments.resolve(a.target)
-                return self._from_raw(a, spec, h.read(spec.name))
+                v = ok(self._from_raw(a, spec, h.read(spec.name)))
+                if v is not None:
+                    return v
             except Exception as exc:
                 log.warning("cannot read %s to start ramp: %s", a.name, exc)
-        return None
+        return ok(self._last.get(a.name))
 
     # -- write ---------------------------------------------------------------------
     def _set_lock(self, name: str) -> threading.RLock:
@@ -402,10 +423,42 @@ class ChannelManager:
                 lk = self._set_locks[name] = threading.RLock()
             return lk
 
-    def set_raw(self, ref: str, value: Any) -> None:
-        """Unprotected write to ``instrument.channel`` (scripts only)."""
+    def _guard_raw(self, ref: str, value: Any) -> List[Alias]:
+        """A raw write must still respect the limits of every alias on that target."""
         h, spec = self.instruments.resolve(ref)
-        h.write(spec.name, value)
+        guards = [a for a in self.aliases() if a.target == ref]
+        for a in guards:
+            if a.read_only:
+                raise ChannelError("%s is protected by read-only alias %s" % (ref, a.name))
+            if spec.dtype == "str":
+                if a.allowed and str(value) not in a.allowed:
+                    raise LimitError("%s (alias %s): %r not in allowed values %s"
+                                     % (ref, a.name, value, a.allowed))
+                continue
+            arr = self._to_array(ref, value)
+            self._check_limits("%s (alias %s)" % (ref, a.name), arr * a.scale + a.offset,
+                               a.min, a.max)
+        return guards
+
+    def set_raw(self, ref: str, value: Any) -> None:
+        """Write to ``instrument.channel`` without ramping (scripts).  Limits of
+        aliases on the same target are still enforced."""
+        h, spec = self.instruments.resolve(ref)
+        guards = self._guard_raw(ref, value)
+        try:
+            h.write(spec.name, value)
+        finally:
+            for a in guards:
+                self._last.pop(a.name, None)   # cached value is stale now
+
+    def query_raw(self, ref: str, value: Any) -> Any:
+        h, spec = self.instruments.resolve(ref)
+        guards = self._guard_raw(ref, value)
+        try:
+            return h.query(spec.name, value)
+        finally:
+            for a in guards:
+                self._last.pop(a.name, None)
 
     def set(self, name: str, value: Any, ramp: bool = True, abort_check: AbortCheck = None) -> Any:
         """Protected write to an alias or composite.  Returns the value set."""
@@ -436,100 +489,132 @@ class ChannelManager:
             raise
         self._last[a.name] = value
 
+    @staticmethod
+    def _has_ramp(a: Alias) -> bool:
+        return a.ramp_rate is not None or a.ramp_step is not None
+
     def _set_alias(self, a: Alias, value, ramp: bool, abort_check: AbortCheck) -> None:
         spec = self._alias_spec(a)
-        if spec.dtype == "str" or not ramp or (a.ramp_rate is None and a.ramp_step is None):
+        if spec.dtype == "str" or not ramp or not self._has_ramp(a):
             self._write_alias_now(a, spec, value)
             return
-        start = self._current_alias_value(a, spec)
-        if start is None or np.shape(start) != np.shape(value):
-            if start is None:
-                log.warning("%s: unknown current value, setting %s without ramp",
-                            a.name, _fmt(value))
-            self._write_alias_now(a, spec, value)
-            return
-        start = np.asarray(start, dtype=float)
         target = np.asarray(value, dtype=float)
-        dist = _max_abs_diff(start, target)
-        if not math.isfinite(dist):
-            self._write_alias_now(a, spec, value)
-            return
-        duration = dist / a.ramp_rate if a.ramp_rate else 0.0
-        nsteps_by_step = int(math.ceil(dist / a.ramp_step)) if a.ramp_step else 1
-        self._ramp([(a, spec, start, target)], duration, nsteps_by_step, abort_check)
+        start = self._current_alias_value(a, spec, target.shape)
+        if start is None:
+            raise LimitError("%s: cannot determine the present value to ramp from "
+                             "(read-back failed or unavailable); set it once with ramp=False "
+                             "to force" % a.name)
+        self._ramp([(a, spec)], lambda u: [start + (target - start) * u], 2, abort_check)
 
-    def _ramp(self, items, duration: float, min_steps: int, abort_check: AbortCheck,
-              x_path: Optional[tuple] = None) -> None:
-        """Move several aliases together from start to target values.
+    def _ramp(self, items, value_at, nsamples: int, abort_check: AbortCheck,
+              x_span: float = 0.0, x_rate: Optional[float] = None) -> None:
+        """Move aliases along a path ``value_at(u)``, ``u`` from 0 to 1.
 
-        *items* is a list of ``(alias, spec, start, target)``.  If *x_path* is given
-        (composite, x0, x1) intermediate targets come from the composite mapping
-        instead of linear interpolation.
+        The path is sampled first: every sample is limit-checked *before* anything is
+        written, and the cumulative "time cost" (max over aliases of distance / ramp
+        rate) and "step cost" (distance / ramp_step) are tabulated.  Progress is then
+        limited so that neither the ramp rate nor the step size of any alias is
+        exceeded, even for non-linear (composite) paths.
         """
+        us = np.linspace(0.0, 1.0, max(2, int(nsamples)))
+        path = []
+        for u in us:
+            vals = [np.asarray(v, dtype=float) for v in value_at(float(u))]
+            for (a, _), v in zip(items, vals):
+                if not np.isfinite(v).all():
+                    raise LimitError("%s: ramp path contains NaN/inf" % a.name)
+                self._check_limits(a.name, v, a.min, a.max)
+            path.append(vals)
+        ct = [0.0]
+        cs = [0.0]
+        for i in range(1, len(us)):
+            dt = ds = 0.0
+            for (a, _), v0, v1 in zip(items, path[i - 1], path[i]):
+                d = _max_abs_diff(v0, v1)
+                if a.ramp_rate:
+                    dt = max(dt, d / a.ramp_rate)
+                if a.ramp_step:
+                    ds = max(ds, d / a.ramp_step)
+            if x_rate:
+                dt = max(dt, x_span * (us[i] - us[i - 1]) / x_rate)
+            ct.append(ct[-1] + dt)
+            cs.append(cs[-1] + ds)
+        ct_a = np.asarray(ct)
+        cs_a = np.asarray(cs)
+
+        def invert(cum, c):
+            if cum[-1] <= c:
+                return 1.0
+            j = int(np.searchsorted(cum, c, side="right"))
+            j = max(1, min(j, len(cum) - 1))
+            c0, c1 = cum[j - 1], cum[j]
+            f = 0.0 if c1 <= c0 else (c - c0) / (c1 - c0)
+            return float(us[j - 1] + (us[j] - us[j - 1]) * min(max(f, 0.0), 1.0))
+
         t0 = time.monotonic()
-        step_i = 0
-        min_steps = max(1, int(min_steps))
+        k = 0
+        last_u = 0.0
         while True:
             if abort_check is not None:
                 abort_check()
+            k += 1
             elapsed = time.monotonic() - t0
-            step_i += 1
-            # step k moves to where the ramp should be one tick later; slow writes
-            # can only delay progress (never exceed the rate on average)
-            frac_t = 1.0 if duration <= 0 else \
-                min(1.0, step_i * RAMP_INTERVAL / duration, (elapsed + RAMP_INTERVAL) / duration)
-            frac_s = min(1.0, step_i / min_steps)
-            frac = min(frac_t, frac_s)
-            if x_path is not None:
-                comp, x0, x1 = x_path
-                tv = comp.target_values(x0 + (x1 - x0) * frac)
-            # compute and check every value first, then write them all
-            values = []
-            for a, spec, s, t in items:
-                v = np.asarray(tv[a.name], dtype=float) if x_path is not None else s + (t - s) * frac
-                v = float(v) if np.ndim(v) == 0 else v
+            allowed_t = min(k * RAMP_INTERVAL, elapsed + RAMP_INTERVAL)
+            u = min(invert(ct_a, allowed_t), invert(cs_a, float(k)))
+            u = max(u, last_u)
+            vals = value_at(u) if u < 1.0 else path[-1]
+            vals = [np.asarray(v, dtype=float) for v in vals]
+            for (a, _), v in zip(items, vals):
                 self._check_limits(a.name, v, a.min, a.max)
-                values.append(v)
-            for (a, spec, _, _), v in zip(items, values):
-                self._write_alias_now(a, spec, v)
-            if frac >= 1.0:
+            for (a, spec), v in zip(items, vals):
+                self._write_alias_now(a, spec, float(v) if v.ndim == 0 else v)
+            if u >= 1.0:
                 return
-            # time-based progress: a slow instrument never makes us exceed the rate
+            last_u = u
             time.sleep(RAMP_INTERVAL)
 
     def _set_composite(self, c: Composite, x: float, ramp: bool, abort_check: AbortCheck) -> None:
         targets = c.target_values(x)
         items = []
-        duration = 0.0
-        for alias_name, tv in targets.items():
+        for alias_name in targets:
             a = self.get_alias(alias_name)
-            spec = self._alias_spec(a)
-            tv = np.asarray(tv, dtype=float)
-            start = self._current_alias_value(a, spec) if ramp else None
-            if start is not None and np.shape(start) == np.shape(tv):
-                start = np.asarray(start, dtype=float)
-                d = _max_abs_diff(start, tv)
-                if a.ramp_rate and math.isfinite(d):
-                    duration = max(duration, d / a.ramp_rate)
-            else:
-                start = tv
-            items.append((a, spec, start, tv))
+            items.append((a, self._alias_spec(a)))
+        tvals = [np.asarray(targets[a.name], dtype=float) for a, _ in items]
+        needs_ramp = ramp and (c.ramp_rate is not None or any(self._has_ramp(a) for a, _ in items))
+        if not needs_ramp:
+            for (a, spec), v in zip(items, tvals):
+                self._check_limits(a.name, v, a.min, a.max)
+            for (a, spec), v in zip(items, tvals):
+                self._write_alias_now(a, spec, float(v) if v.ndim == 0 else v)
+            self._last[c.name] = x
+            return
+        starts = []
+        for (a, spec), tv in zip(items, tvals):
+            st = self._current_alias_value(a, spec, tv.shape)
+            if st is None:
+                raise LimitError("composite %s: cannot determine the present value of %s to ramp "
+                                 "from; set it once with ramp=False to force" % (c.name, a.name))
+            starts.append(st)
         x0 = self._last.get(c.name)
-        if ramp and c.ramp_rate and x0 is not None:
-            duration = max(duration, abs(x - x0) / c.ramp_rate)
-        if not ramp:
-            duration = 0.0
-        # use the composite mapping for the path when we know where we come from
-        # and the targets are consistent with it
-        x_path = None
-        if x0 is not None and duration > 0:
-            expected = c.target_values(x0)
-            consistent = all(
-                _max_abs_diff(expected[a.name], s) <= 1e-9 * (1.0 + float(np.nanmax(np.abs(s))))
-                for a, _, s, _ in items)
-            if consistent:
-                x_path = (c, float(x0), float(x))
-        self._ramp(items, duration, 1, abort_check, x_path)
+        on_path = False
+        if x0 is not None:
+            try:
+                expected = c.target_values(x0)
+                on_path = all(
+                    _max_abs_diff(expected[a.name], s0) <= 1e-6 * (1.0 + float(np.max(np.abs(s0))))
+                    for (a, _), s0 in zip(items, starts))
+            except Exception:
+                on_path = False
+        if on_path:
+            # follow the composite relation (may be non-linear in every target)
+            x0f, x1f = float(x0), float(x)
+            self._ramp(items, lambda u: [c.target_values(x0f + (x1f - x0f) * u)[a.name]
+                                         for a, _ in items],
+                       257, abort_check, abs(x1f - x0f), c.ramp_rate)
+        else:
+            # unknown/inconsistent origin: straight line from the actual values
+            self._ramp(items, lambda u: [s0 + (t - s0) * u for s0, t in zip(starts, tvals)],
+                       2, abort_check)
         self._last[c.name] = x
 
 

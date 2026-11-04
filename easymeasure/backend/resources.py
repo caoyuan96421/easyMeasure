@@ -64,6 +64,20 @@ def thread_priority() -> int:
     return getattr(_prio, "value", PRIO_NORMAL)
 
 
+def set_abort_check(fn) -> None:
+    """Register a non-blocking 'raise if aborted' callable for this thread.
+
+    Instrument retries / reconnects consult it, so an abort is honoured between
+    attempts instead of only after all retries of a misbehaving instrument."""
+    _prio.abort_check = fn
+
+
+def abort_check() -> None:
+    fn = getattr(_prio, "abort_check", None)
+    if fn is not None:
+        fn()
+
+
 class FairLock:
     """Re-entrant, FIFO-within-priority lock with timeout.
 
@@ -139,6 +153,10 @@ class FairLock:
     def __exit__(self, *exc):
         self.release()
         return False
+
+    @property
+    def waiters(self) -> int:
+        return len(self._queue)
 
     def held_by_me(self) -> bool:
         return self._owner == threading.get_ident()
@@ -476,21 +494,41 @@ class Resource:
 
     # -- lifecycle ------------------------------------------------------------
     def _ensure_open(self) -> PortBackend:
+        # The port is opened WITHOUT holding _state_lock: a driver/OS call that
+        # hangs in open() must never block close()/invalidate() of other threads.
         with self._state_lock:
             if self._backend is not None:
                 return self._backend
-            be = _backend_for(self.address, self.options)
-            be.open()
-            self._backend = be
-            self._generation += 1
-            self.stats["opens"] += 1
-            self._last_owner = None  # force re-select after reopen
-            log.debug("opened resource %s (generation %d)", self.address, self._generation)
-            return be
+            gen = self._generation
+        be = _backend_for(self.address, self.options)
+        be.open()
+        with self._state_lock:
+            if self._generation != gen or self._backend is not None:
+                stale = True
+            else:
+                stale = False
+                self._backend = be
+                self._generation += 1
+                self.stats["opens"] += 1
+                self._last_owner = None  # force re-select after reopen
+        if stale:
+            _close_in_background(be, self.address)
+            raise ResourceError("port %s was invalidated while it was being opened" % self.address)
+        log.debug("opened resource %s (generation %d)", self.address, self._generation)
+        # if the port was reopened in the middle of a transaction on a shared bus,
+        # re-select the current owner so traffic is not misdirected
+        owner = self.lock.owner_tag
+        if self.shared and owner is not None and self.lock.held_by_me():
+            sel = self._selectors.get(owner)
+            if sel is not None:
+                self._last_owner = owner
+                sel(self)
+        return be
 
     def close(self) -> None:
         with self._state_lock:
             be, self._backend = self._backend, None
+            self._generation += 1
         if be is not None:
             _close_in_background(be, self.address)
 
@@ -593,8 +631,9 @@ class _Transaction:
             if self.res.shared and self.res._last_owner != self.owner:
                 sel = self.res._selectors.get(self.owner)
                 if sel is not None:
-                    self.res._ensure_open()
-                    sel(self.res)
+                    self.res._ensure_open()        # may already re-select on reopen
+                    if self.res._last_owner != self.owner:
+                        sel(self.res)
                 self.res._last_owner = self.owner
         except BaseException:
             self.res.lock.release()

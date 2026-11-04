@@ -36,7 +36,8 @@ import numpy as np
 from ..common.errors import (ChannelError, EasyMeasureError, InstrumentError,
                              InstrumentNotConnected, InstrumentTimeout, ResourceError)
 from .logsys import RateLimitedLogger, get_logger
-from .resources import FairLock, Resource, ResourceManager, set_thread_priority, thread_priority
+from .resources import (PRIO_MEASUREMENT, FairLock, Resource, ResourceManager, abort_check,
+                        set_thread_priority, thread_priority)
 
 log = get_logger("instrument")
 
@@ -229,6 +230,7 @@ class Instrument:
 # ---------------------------------------------------------------------------
 class _Job:
     __slots__ = ("fn", "done", "result", "error", "abandoned", "priority")
+    # (abort checks stay in the calling thread: drivers are never interrupted)
 
     def __init__(self, fn: Callable[[], Any]):
         self.fn = fn
@@ -303,6 +305,34 @@ class InstrumentHandle:
         self.breaker_threshold = int(o.get("breaker_threshold", 2))
         self.breaker_cooldown = float(o.get("breaker_cooldown", 10.0))
         self._breaker: Dict[str, list] = {}
+        # how long a caller waits for another call on this instrument to finish;
+        # bounded so a hung instrument can never pile up blocked threads forever
+        self.lock_wait = float(o.get("lock_wait", max(30.0, self.call_timeout * (self.retries + 2))))
+        self.max_waiters = int(o.get("max_waiters", 4))
+
+    def _locked(self):
+        handle = self
+
+        class _Ctx:
+            def __enter__(self_):
+                lk = handle._call_lock
+                if lk.locked and not lk.held_by_me() and thread_priority() > PRIO_MEASUREMENT \
+                        and lk.waiters >= handle.max_waiters:
+                    # enough callers are already queued behind a slow/hung call: fail
+                    # fast instead of tying up yet another server thread
+                    raise InstrumentTimeout("%s is busy (%d requests already waiting)"
+                                            % (handle.name, lk.waiters))
+                if not lk.acquire(handle.lock_wait, tag=handle.name):
+                    raise InstrumentTimeout("%s is busy (another call has been running for more "
+                                            "than %.0f s)" % (handle.name, handle.lock_wait))
+
+            def __exit__(self_, *exc):
+                try:
+                    handle._call_lock.release()
+                except RuntimeError:
+                    pass
+                return False
+        return _Ctx()
 
     # -- worker management ------------------------------------------------------
     def _get_worker(self) -> _Worker:
@@ -327,10 +357,14 @@ class InstrumentHandle:
         res = self.resource
         if res is not None:
             # The hung thread may still hold the port lock: break it and drop the
-            # handle so the stuck thread can't corrupt future traffic.
-            if res.lock.locked and res.lock.owner_tag == self.name:
+            # handle so the stuck thread can't corrupt future traffic.  If it does
+            # NOT hold the lock (hung outside any I/O), another instrument may be in
+            # the middle of a transaction on a shared bus: leave the port alone.
+            holds = res.lock.locked and res.lock.owner_tag == self.name
+            if holds:
                 res.lock.force_release()
-            res.invalidate(reason)
+            if holds or not res.shared:
+                res.invalidate(reason)
         # The abandoned thread still references the old driver object; start
         # fresh so its late side effects cannot leak into the new session.
         self.driver = None
@@ -365,7 +399,7 @@ class InstrumentHandle:
 
     # -- connection ---------------------------------------------------------
     def connect(self) -> None:
-        with self._call_lock:
+        with self._locked():
             self._connect_locked()
 
     def _connect_locked(self) -> None:
@@ -375,13 +409,15 @@ class InstrumentHandle:
             self.resource = self._resources.acquire(self.address, self.name, self.shared,
                                                     self.options)
         try:
+            timeout = float(self.options.get("connect_timeout", max(self.call_timeout, 10.0)))
             if self.driver is None:
-                self.driver = self._driver_cls(self.name, self.address, self.options)
+                # even the constructor of a buggy driver may hang: run it guarded
+                cls, name, addr, opts = self._driver_cls, self.name, self.address, self.options
+                self.driver = self._run(lambda: cls(name, addr, opts), timeout, transaction=False)
             drv = self.driver
             drv.resource = self.resource
             if self.resource.shared:
                 self.resource.set_selector(self.name, self._make_selector(drv))
-            timeout = float(self.options.get("connect_timeout", max(self.call_timeout, 10.0)))
             self._run(drv.connect, timeout)
             chans = self._run(drv.get_channels, timeout, transaction=False)
             self._channels = {}
@@ -412,7 +448,7 @@ class InstrumentHandle:
         return _sel
 
     def disconnect(self, release: bool = True) -> None:
-        with self._call_lock:
+        with self._locked():
             drv = self.driver
             if drv is not None and self.state in ("connected", "error"):
                 try:
@@ -429,7 +465,7 @@ class InstrumentHandle:
             log.info("instrument %s disconnected", self.name)
 
     def reconnect(self) -> None:
-        with self._call_lock:
+        with self._locked():
             self._reconnect_locked()
 
     def _reconnect_locked(self) -> None:
@@ -460,6 +496,14 @@ class InstrumentHandle:
         return dict(self._channels)
 
     def spec(self, channel: str) -> ChannelSpec:
+        """Pure lookup (never does I/O, so it is safe for status queries)."""
+        spec = self.channels.get(channel)
+        if spec is None:
+            raise ChannelError("instrument %s has no channel %r" % (self.name, channel))
+        return spec
+
+    def _io_spec(self, channel: str) -> ChannelSpec:
+        """Lookup for an I/O call: may (re)connect to learn a dynamic channel list."""
         spec = self.channels.get(channel)
         if spec is None and not self._channels and self.state != "connected":
             # dynamic channel list not known yet (initial connect failed): try again
@@ -515,7 +559,7 @@ class InstrumentHandle:
         if b is not None and b[0] >= self.breaker_threshold:
             attempts = 1          # half-open trial after a cooldown: a single attempt
         timeouts = 0
-        with self._call_lock:
+        with self._locked():
             for attempt in range(attempts):
                 try:
                     if self.driver is None or self._needs_reconnect or self.state == "disconnected":
@@ -549,6 +593,7 @@ class InstrumentHandle:
                         timeouts += 1
                     if attempt + 1 >= attempts or timeouts > self.timeout_retries:
                         break
+                    abort_check()   # an abort is honoured between attempts
                     self.stats["retries"] += 1
                     if isinstance(exc, InstrumentTimeout) or \
                             self._consecutive_failures >= self.reconnect_after:
@@ -570,7 +615,7 @@ class InstrumentHandle:
                               % (self.name, what, attempts, last_exc))
 
     def read(self, channel: str) -> Any:
-        spec = self.spec(channel)
+        spec = self._io_spec(channel)
         if not spec.readable:
             raise ChannelError("%s.%s is write-only" % (self.name, channel))
 
@@ -584,7 +629,7 @@ class InstrumentHandle:
         return self._guarded("read %s" % channel, spec, do)
 
     def write(self, channel: str, value: Any) -> None:
-        spec = self.spec(channel)
+        spec = self._io_spec(channel)
         if not spec.writable:
             raise ChannelError("%s.%s is read-only" % (self.name, channel))
         value = coerce_value(value, spec, "write")  # bad user value -> ChannelError, no retry
@@ -596,7 +641,7 @@ class InstrumentHandle:
 
     def query(self, channel: str, value: Any) -> Any:
         """Write *value* to the channel and read it back in one transaction."""
-        spec = self.spec(channel)
+        spec = self._io_spec(channel)
         if not (spec.readable and spec.writable):
             raise ChannelError("%s.%s must be read/write for query" % (self.name, channel))
         value = coerce_value(value, spec, "write")

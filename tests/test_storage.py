@@ -75,14 +75,75 @@ def test_crash_recovery_truncated_and_corrupt(tmp_path):
 def test_shape_change_mid_sweep(tmp_path):
     ds = DataSet(make_header())
     ds.apply_point(0, (0, 0), {"img": np.ones((2, 5))})
-    ds.apply_point(0, (1, 0), {"img": np.ones((3, 3)) * 2})      # different shape
+    ds.apply_point(0, (1, 0), {"img": np.ones((3, 3)) * 2})      # bigger in one axis: grow
     ds.apply_point(0, (2, 0), {"img": 7.0})
-    assert ds.data["img"].shape == (4, 3, 2, 5)
-    assert np.isnan(ds.data["img"][1, 0, 0, 3])
-    assert ds.data["img"][1, 0, 1, 2] == 2
+    assert ds.data["img"].shape == (4, 3, 3, 5)
+    assert (ds.data["img"][0, 0, :2, :5] == 1).all() and np.isnan(ds.data["img"][0, 0, 2]).all()
+    assert ds.data["img"][1, 0, 2, 2] == 2 and np.isnan(ds.data["img"][1, 0, 0, 3])
     assert (ds.data["img"][2, 0] == 7).all()
     with pytest.raises(StorageError):
         ds.apply_point(0, (9, 0), {"a": 1.0})
+
+
+def test_corrupt_middle_frame_resync(tmp_path):
+    p = tmp_path / "m.emj"
+    write_journal(p)
+    raw = bytearray(p.read_bytes())
+    # damage a byte inside the 4th frame payload; frames after it must still load
+    from easymeasure.backend.storage import MAGIC, _FRAME
+    pos = len(MAGIC)
+    for _ in range(3):
+        n = int.from_bytes(raw[pos + 2:pos + 6], "little")
+        pos += _FRAME.size + n
+    raw[pos + _FRAME.size + 5] ^= 0xFF
+    p.write_bytes(bytes(raw))
+    ds = DataSet.load(p)
+    assert ds.points == 11 and ds.status == "finished"
+
+
+def test_transient_write_failure_loses_nothing(tmp_path, monkeypatch):
+    p = tmp_path / "t.emj"
+    w = JournalWriter(p, fsync_interval=0.0)
+    w.write(HEADER, make_header(), sync=True)
+    real = w._f
+    calls = {"n": 0}
+
+    class Flaky:
+        def __getattr__(self, k):
+            return getattr(real, k)
+
+        def write(self, b):
+            calls["n"] += 1
+            if 2 <= calls["n"] <= 4:
+                real.write(b[: len(b) // 2])      # torn write, then error
+                raise OSError(28, "No space left on device")
+            return real.write(b)
+    w._f = Flaky()
+    errors = 0
+    for i in range(4):
+        try:
+            w.write(POINT, {"k": 0, "i": [i, 0], "v": {"a": float(i)}})
+        except StorageError:
+            errors += 1
+    w.write(FOOTER, {"status": "finished"}, sync=True)
+    w._f = real
+    w.close()
+    assert errors >= 1 and w.pending == 0
+    ds = DataSet.load(p)
+    assert ds.points == 4 and ds.status == "finished"
+
+
+def test_run_counter_reset_does_not_collide(tmp_path):
+    st = DataStore(tmp_path / "data")
+    r1, p1 = st.new_path("x")
+    p1.parent.mkdir(parents=True, exist_ok=True)
+    p1.write_bytes(b"x")
+    (tmp_path / "data" / "run_counter.txt").write_text("")       # zero-length after power loss
+    r2, p2 = st.new_path("x")
+    assert r2 > r1 and not p2.exists()
+    (tmp_path / "data" / "run_counter.txt").write_text("0")      # stale counter
+    r3, p3 = st.new_path("x")
+    assert r3 > r1 and p3 != p1
 
 
 def test_snapshot_and_hdf5(tmp_path):

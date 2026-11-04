@@ -29,6 +29,7 @@ gives arrays filled with NaN where no data was taken.
 from __future__ import annotations
 
 import json
+import mmap
 import os
 import re
 import struct
@@ -61,6 +62,16 @@ class StorageError(EasyMeasureError):
 # Writer
 # ---------------------------------------------------------------------------
 class JournalWriter:
+    """Append-only, self-checking journal.
+
+    A failed write (disk full, network share hiccup, USB disk unplugged ...) never
+    loses data that the measurement produced: the torn bytes are truncated away and
+    the frame is kept in a pending queue that is retried on every subsequent write
+    and on close.  ``pending`` tells how many frames are not on disk yet.
+    """
+
+    MAX_PENDING_BYTES = 512 * 1024 * 1024
+
     def __init__(self, path: Path, fsync_interval: float = 0.5):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,11 +80,16 @@ class JournalWriter:
         self._f = open(self.path, "xb")  # never overwrite an existing data file
         self._f.write(MAGIC)
         self._f.flush()
+        self._good = len(MAGIC)          # end of the last completely written frame
         self._last_sync = 0.0
         self._sync(force=True)
         self.frames = 0
         self.bytes = len(MAGIC)
-        self.failed = False
+        self.failed = False              # True while frames are pending
+        self.errors = 0
+        self._pending: List[bytes] = []
+        self._pending_bytes = 0
+        self.dropped = 0                 # frames given up on (memory cap)
 
     def _sync(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -84,62 +100,132 @@ class JournalWriter:
                 log.warning("fsync failed on %s: %s", self.path, exc)
             self._last_sync = now
 
+    @property
+    def pending(self) -> int:
+        return len(self._pending)
+
+    def _flush_pending(self, sync: bool) -> None:
+        f = self._f
+        while self._pending:
+            frame = self._pending[0]
+            try:
+                f.seek(self._good)
+                f.write(frame)
+                f.flush()
+            except OSError:
+                # remove any torn bytes so the file stays readable, retry later
+                try:
+                    f.seek(self._good)
+                    f.truncate(self._good)
+                except OSError:
+                    pass
+                raise
+            self._good += len(frame)
+            self._pending.pop(0)
+            self._pending_bytes -= len(frame)
+            self.frames += 1
+            self.bytes += len(frame)
+        self._sync(force=sync)
+
     def write(self, ftype: int, obj: Any, sync: bool = False) -> None:
         payload = codec.encode(obj)
-        hdr = _FRAME.pack(b"F", ftype, len(payload), zlib.crc32(payload) & 0xFFFFFFFF)
+        frame = _FRAME.pack(b"F", ftype, len(payload), zlib.crc32(payload) & 0xFFFFFFFF) + payload
         with self._lock:
             if self._f is None:
                 raise StorageError("journal %s is closed" % self.path)
+            self._pending.append(frame)
+            self._pending_bytes += len(frame)
+            while self._pending_bytes > self.MAX_PENDING_BYTES and len(self._pending) > 1:
+                dropped = self._pending.pop(1)      # keep the oldest (often the header)
+                self._pending_bytes -= len(dropped)
+                self.dropped += 1
             try:
-                self._f.write(hdr + payload)
-                self._f.flush()
-                self._sync(force=sync)
+                self._flush_pending(sync)
             except OSError as exc:
+                self.errors += 1
                 self.failed = True
-                raise StorageError("cannot write %s: %s" % (self.path, exc)) from exc
-            self.frames += 1
-            self.bytes += len(hdr) + len(payload)
+                raise StorageError("cannot write %s (%d frame(s) pending, will retry): %s"
+                                   % (self.path, len(self._pending), exc)) from exc
+            if self.failed:
+                log.info("journal %s writable again, pending frames flushed", self.path)
+            self.failed = False
 
     def close(self) -> None:
         with self._lock:
-            f, self._f = self._f, None
-            if f is not None:
+            f = self._f
+            if f is None:
+                return
+            for attempt in range(3):
                 try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
+                    self._flush_pending(True)
+                    break
+                except OSError as exc:
+                    log.error("cannot flush %d pending frame(s) to %s: %s",
+                              len(self._pending), self.path, exc)
+                    time.sleep(0.2)
+            self._f = None
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+            try:
                 f.close()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
 # Reader
 # ---------------------------------------------------------------------------
 def iter_frames(path: Path) -> Iterator[Tuple[int, Any]]:
-    """Yield ``(type, object)`` for every intact frame; stop at the first bad one."""
-    with open(path, "rb") as f:
-        magic = f.read(len(MAGIC))
-        if magic != MAGIC:
+    """Yield ``(type, object)`` for every intact frame.
+
+    A corrupted region (bad header or CRC) is skipped by scanning forward for the
+    next frame whose CRC checks out, so one damaged frame does not hide the data
+    behind it.  A torn final frame (crash / power loss) is ignored.
+    """
+    with open(path, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        if size < len(MAGIC):
             raise StorageError("%s is not an easyMeasure journal" % path)
-        while True:
-            hdr = f.read(_FRAME.size)
-            if len(hdr) < _FRAME.size:
-                return  # clean EOF or torn header
-            tag, ftype, n, crc = _FRAME.unpack(hdr)
-            if tag != b"F" or n > codec.MAX_FRAME:
-                log.warning("%s: corrupt frame header, stopping", path)
+        data = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            if data[:len(MAGIC)] != MAGIC:
+                raise StorageError("%s is not an easyMeasure journal" % path)
+            yield from _scan_frames(path, data)
+        finally:
+            data.close()
+
+
+def _scan_frames(path, data) -> Iterator[Tuple[int, Any]]:
+    pos = len(MAGIC)
+    end = len(data)
+    warned = False
+    while pos + _FRAME.size <= end:
+        tag, ftype, n, crc = _FRAME.unpack_from(data, pos)
+        ok = tag == b"F" and n <= codec.MAX_FRAME and pos + _FRAME.size + n <= end and \
+            zlib.crc32(data[pos + _FRAME.size:pos + _FRAME.size + n]) & 0xFFFFFFFF == crc
+        if not ok:
+            if tag == b"F" and n <= codec.MAX_FRAME and pos + _FRAME.size + n > end:
+                # could be a torn last frame; only a later valid frame proves otherwise
+                pass
+            nxt = data.find(b"F", pos + 1)
+            if nxt < 0:
+                if not warned:
+                    log.info("%s: truncated/corrupt tail ignored (crash recovery)", path)
                 return
-            payload = f.read(n)
-            if len(payload) < n:
-                log.info("%s: truncated final frame ignored (crash recovery)", path)
-                return
-            if zlib.crc32(payload) & 0xFFFFFFFF != crc:
-                log.warning("%s: CRC mismatch, stopping at frame", path)
-                return
-            try:
-                yield ftype, codec.decode(payload)
-            except Exception as exc:
-                log.warning("%s: undecodable frame skipped: %s", path, exc)
+            if not warned:
+                log.warning("%s: corrupt data at byte %d, resynchronising", path, pos)
+                warned = True
+            pos = nxt
+            continue
+        payload = bytes(data[pos + _FRAME.size:pos + _FRAME.size + n])
+        pos += _FRAME.size + n
+        try:
+            yield ftype, codec.decode(payload)
+        except Exception as exc:
+            log.warning("%s: undecodable frame skipped: %s", path, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +336,15 @@ class DataSet:
                         val = np.nan
                 v = np.asarray(val, dtype=float)
                 target_shape = arr.shape[len(idx):]
+                if v.ndim == len(target_shape) and v.ndim > 0 and \
+                        any(a > b for a, b in zip(v.shape, target_shape)):
+                    # the instrument returns more data than before (e.g. a longer
+                    # trace): grow the array, padding older points with NaN
+                    new_vshape = tuple(max(a, b) for a, b in zip(v.shape, target_shape))
+                    grown = np.full(arr.shape[:len(idx)] + new_vshape, np.nan)
+                    grown[(Ellipsis,) + tuple(slice(0, n) for n in target_shape)] = arr
+                    arr = self.data[name] = grown
+                    target_shape = new_vshape
                 if v.shape == target_shape:
                     arr[idx] = v
                 else:
@@ -449,29 +544,51 @@ class DataStore:
         self._lock = threading.Lock()
         self._counter_file = self.root / "run_counter.txt"
 
+    def _highest_existing(self) -> int:
+        n = 0
+        for p in self.root.glob("*/*.emj"):
+            m = re.match(r"(\d+)_", p.name)
+            if m:
+                n = max(n, int(m.group(1)))
+        return n
+
     def next_run_number(self) -> int:
         with self._lock:
-            n = 0
             try:
-                n = int(self._counter_file.read_text().strip() or 0)
+                n = int(self._counter_file.read_text().strip())
             except (OSError, ValueError):
-                # counter lost: rebuild from existing files
-                for p in self.root.glob("*/*.emj"):
-                    m = re.match(r"(\d+)_", p.name)
-                    if m:
-                        n = max(n, int(m.group(1)))
+                n = -1
+            if n < 0:
+                # counter missing / empty / garbage (e.g. power loss): rebuild
+                n = self._highest_existing()
             n += 1
             tmp = self._counter_file.with_suffix(".tmp")
-            tmp.write_text(str(n))
+            with open(tmp, "w") as f:
+                f.write(str(n))
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
             os.replace(tmp, self._counter_file)
             return n
 
     def new_path(self, name: str) -> Tuple[int, Path]:
-        run = self.next_run_number()
-        day = time.strftime("%Y-%m-%d")
         safe = _SAFE.sub("_", name or "sweep").strip("_")[:60] or "sweep"
-        p = self.root / day / ("%05d_%s.emj" % (run, safe))
-        return run, p
+        for _ in range(1000):
+            run = self.next_run_number()
+            day = time.strftime("%Y-%m-%d")
+            p = self.root / day / ("%05d_%s.emj" % (run, safe))
+            if not any(p.parent.glob("%05d_*.emj" % run)) and not p.exists():
+                return run, p
+            # a stale counter would reuse a run number: jump past existing files
+            with self._lock:
+                hi = max(self._highest_existing(), run)
+                try:
+                    self._counter_file.write_text(str(hi))
+                except OSError:
+                    pass
+        raise StorageError("cannot allocate a new data file name in %s" % self.root)
 
     def list_runs(self, limit: int = 200) -> List[dict]:
         files = sorted(self.root.glob("*/*.emj"), key=lambda p: p.name, reverse=True)[:limit]

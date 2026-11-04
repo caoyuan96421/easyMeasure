@@ -293,3 +293,90 @@ def test_dynamic_channels_after_failed_connect(mgr):
     assert h.state == "error"
     Dyn.ok = True
     assert h.read("y") == 2.0
+
+
+def test_review_hanging_open_does_not_deadlock():
+    """A port whose open() hangs must not block invalidate()/other callers forever."""
+    from easymeasure.backend.drivers import simbus, DriverRegistry
+    hang = {"on": False}
+    orig = simbus.SimPortBackend.open
+
+    def hanging_open(self):
+        if hang["on"]:
+            time.sleep(30)
+        orig(self)
+    simbus.SimPortBackend.open = hanging_open
+    try:
+        m = InstrumentManager(ResourceManager(), DriverRegistry())
+        h = m.add("src", "sim_source", "SIM::HO", {"gpib_addr": 1, "call_timeout": 0.5,
+                                                   "connect_timeout": 0.5, "retries": 1,
+                                                   "breaker_cooldown": 0.1})
+        h.resource.invalidate("glitch")
+        hang["on"] = True
+        t = time.monotonic()
+        with pytest.raises(InstrumentError):
+            h.read("V1")
+        assert time.monotonic() - t < 6
+        hang["on"] = False
+        time.sleep(0.2)
+        assert h.read("V1") == 0.0
+    finally:
+        simbus.SimPortBackend.open = orig
+
+
+def test_review_hanging_constructor(mgr):
+    class HangInit(Instrument):
+        CHANNELS = [ChannelSpec("x", "r")]
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            time.sleep(30)
+    mgr.drivers.register("hanginit", HangInit)
+    t = time.monotonic()
+    h = mgr.add("hi", "hanginit", options={"call_timeout": 0.3, "connect_timeout": 0.3})
+    assert time.monotonic() - t < 3 and h.state in ("error", "hung")
+
+
+def test_review_busy_instrument_bounded_wait(mgr):
+    h = mgr.add("f", "flaky", options={"retries": 0, "call_timeout": 2.0, "lock_wait": 0.3})
+    th = threading.Thread(target=lambda: pytest.raises(InstrumentTimeout, h.read, "hang"))
+    th.start()
+    time.sleep(0.1)
+    t = time.monotonic()
+    with pytest.raises(InstrumentTimeout, match="busy"):
+        h.read("v")
+    assert time.monotonic() - t < 1.0
+    th.join()
+
+
+def test_review_shared_bus_not_invalidated_by_other_instrument():
+    from easymeasure.backend.drivers import DriverRegistry
+    from easymeasure.backend.drivers.sim_source import SimVoltageSource
+    from easymeasure.backend.drivers._simbase import _DEVICES
+
+    class Src2(SimVoltageSource):
+        def get_channels(self):
+            return super().get_channels() + [ChannelSpec("pair", "w")]
+
+        def _write_pair(self, v):
+            self.resource.write("SOUR1:VOLT %g" % v)
+            time.sleep(0.4)
+            self.resource.write("SOUR2:VOLT %g" % v)
+    reg = DriverRegistry()
+    reg.register("src2", Src2)
+    m = InstrumentManager(ResourceManager(), reg)
+    src = m.add("src", "src2", "SIM::SB", {"gpib_addr": 1})
+    dmm = m.add("dmm", "sim_dmm", "SIM::SB", {"gpib_addr": 2})
+    t = threading.Thread(target=lambda: src.write("pair", 0.7))
+    t.start()
+    time.sleep(0.15)
+    dmm._abandon_worker("dmm timed out elsewhere")   # dmm does not hold the bus
+    t.join()
+    assert _DEVICES[("SB", 1)].volts[:2] == [0.7, 0.7]
+    # and if the bus *is* reopened mid-transaction the owner is re-selected
+    t = threading.Thread(target=lambda: src.write("pair", 0.3))
+    t.start()
+    time.sleep(0.15)
+    src.resource.invalidate("forced reopen")
+    t.join()
+    assert _DEVICES[("SB", 1)].volts[:2] == [0.3, 0.3]

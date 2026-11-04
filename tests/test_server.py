@@ -158,3 +158,34 @@ def test_backend_process_survives_killed_frontend_process(tmp_path):
     finally:
         if be.poll() is None:
             be.kill()
+
+
+def test_review_unauthenticated_cannot_exhaust_memory(server):
+    import struct
+    s = socket.create_connection(("127.0.0.1", server.port))
+    s.sendall(struct.pack("<I", (1 << 30) - 1))      # claims a 1 GB frame
+    closed = False
+    try:
+        for _ in range(64):
+            s.sendall(b"\0" * (1 << 20))
+    except OSError:
+        closed = True                                # server dropped us early
+    s.close()
+    assert closed
+    with client_for(server) as c:
+        assert "pong" in c.call("ping")
+
+
+def test_review_control_commands_not_starved_by_hung_instrument(server, demo):
+    demo.add_instrument("chaos", "sim_chaos", options={"call_timeout": 1.0, "retries": 0,
+                                                       "breaker_threshold": 1000})
+    with client_for(server) as c:
+        for i in range(40):          # far more than the worker pool
+            c._send({"type": "req", "id": 10_000 + i, "cmd": "read_channel",
+                     "args": {"name": "chaos.hang"}})
+        time.sleep(0.3)
+        t = time.time()
+        c.call("ping")
+        c.call("queue_state")
+        c.call("abort")
+        assert time.time() - t < 1.0

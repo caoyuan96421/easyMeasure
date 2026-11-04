@@ -239,8 +239,8 @@ class Backend:
         return self.channels.set(name, value, ramp=ramp)
 
     def query_channel(self, ref: str, value: Any) -> Any:
-        h, spec = self.instruments.resolve(ref)
-        return h.query(spec.name, value)
+        """Write + read back in one transaction (limits of aliases on *ref* apply)."""
+        return self.channels.query_raw(ref, value)
 
     def raw_query(self, instrument: str, command: str) -> str:
         return self.instruments.get(instrument).raw_query(command)

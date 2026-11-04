@@ -169,10 +169,15 @@ def decode(frame: bytes) -> Any:
 
 
 class FrameReader:
-    """Incrementally split a byte stream into frames."""
+    """Incrementally split a byte stream into frames.
 
-    def __init__(self):
+    ``max_frame`` can be lowered at any time (e.g. a tiny limit before a client has
+    authenticated, so an unauthenticated peer cannot make us buffer a gigabyte).
+    """
+
+    def __init__(self, max_frame: int = MAX_FRAME):
         self._buf = bytearray()
+        self.max_frame = max_frame
 
     def feed(self, data: bytes) -> Iterator[Any]:
         self._buf.extend(data)
@@ -180,7 +185,7 @@ class FrameReader:
             if len(self._buf) < 4:
                 return
             (n,) = _HDR.unpack_from(self._buf, 0)
-            if n > MAX_FRAME or n < 4:
+            if n > self.max_frame or n < 4:
                 self._buf.clear()
                 raise ProtocolError("invalid frame length %d" % n)
             if len(self._buf) < 4 + n:
