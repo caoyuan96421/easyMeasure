@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>easyMeasure</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/css/app.css">
+<script type="module" src="/assets/js/app.js"></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="login-brand">easyMeasure</div>
+    <div class="login-sub">Remote access to the measurement backend</div>
+    <label for="login-user">User</label>
+    <input id="login-user" name="username" autocomplete="username" required maxlength="64">
+    <label for="login-password">Password</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <button id="login-button" class="primary" type="submit">Log in</button>
+    <div id="login-error" class="login-error" role="alert"></div>
+    <div class="login-note">Encrypted connection (TLS). Repeated failed attempts lock the account and your address for a while.</div>
+  </form>
+</div>
+<div id="app" class="app" hidden></div>
+<noscript>This page needs JavaScript.</noscript>
+</body>
+</html>

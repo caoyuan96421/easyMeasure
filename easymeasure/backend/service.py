@@ -9,6 +9,7 @@ arguments and returns JSON/codec-serialisable data.
 from __future__ import annotations
 
 import copy
+import os
 import threading
 import time
 import traceback
@@ -40,6 +41,7 @@ DEFAULT_SETTINGS = {
     "driver_paths": [],
     "autosave_setup": True,
     "ppt_colormap": "viridis",
+    "remote_access": False,      # start the internet gateway with the backend
 }
 
 
@@ -57,7 +59,8 @@ class Backend:
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
-        "shutdown", "start_tray", "run_action",
+        "shutdown", "start_tray", "run_action", "remote_status", "remote_start", "remote_stop",
+        "remote_set_user", "remote_remove_user",
     )
 
     def __init__(self, settings: Optional[dict] = None, home: Optional[Path] = None,
@@ -97,6 +100,9 @@ class Backend:
         self.monitor.start()
         self.started = time.time()
         self._tray = None
+        self._remote = None
+        self._remote_want = False
+        self._remote_args: dict = {}
         self._shutdown_cb: Optional[Callable[[], None]] = None
         self._post_threads: List[threading.Thread] = []
         log.info("backend started (home %s, data %s)", self.home, self.settings["data_dir"])
@@ -546,6 +552,135 @@ class Backend:
         threading.Thread(target=watch, name="tray-watch", daemon=True).start()
         return {"running": True, "pid": proc.pid}
 
+    # ----------------------------------------------------------------- remote --
+    def _remote_proc_alive(self) -> bool:
+        return self._remote is not None and self._remote.poll() is None
+
+    def remote_status(self) -> dict:
+        """State of the internet gateway (see :mod:`easymeasure.remote`)."""
+        import json
+        from ..remote import config as rconfig
+        from ..remote.users import UserStore
+        st = {}
+        try:
+            st = json.loads(rconfig.status_path(self.home).read_text())
+        except Exception:
+            pass
+        running = self._remote_proc_alive() and time.time() - float(st.get("t", 0)) < 10
+        cfg = rconfig.load(self.home)
+        users = UserStore(rconfig.users_path(self.home)).list()
+        port = st.get("port") or cfg["port"]
+        urls = []
+        try:
+            import socket
+            hosts = [socket.getfqdn() or socket.gethostname()]
+            hosts += sorted({i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None)
+                             if ":" not in i[4][0] and not i[4][0].startswith("127.")})
+            if cfg["host"] in ("127.0.0.1", "localhost"):
+                hosts = ["127.0.0.1"]
+            urls = ["https://%s:%s" % (h, port) for h in dict.fromkeys(hosts) if h]
+        except Exception:
+            pass
+        return {"enabled": self._remote_want, "running": running, "urls": urls,
+                "pid": self._remote.pid if self._remote_proc_alive() else None,
+                "port": port, "host": cfg["host"],
+                "fingerprint": st.get("fingerprint"), "self_signed": st.get("self_signed"),
+                "connections": st.get("connections", []) if running else [],
+                "users": users, "config": cfg, "log": str(self.home / "logs" / "remote.log")}
+
+    def remote_start(self, port: Optional[int] = None, host: Optional[str] = None,
+                     persist: bool = True) -> dict:
+        """Start the internet gateway in its own process and keep it running."""
+        if port:
+            self._remote_args["port"] = int(port)
+        if host:
+            self._remote_args["host"] = str(host)
+        self._remote_want = True
+        if persist and not self.settings.get("remote_access"):
+            self.set_settings(remote_access=True)
+        if not self._remote_proc_alive():
+            self._spawn_remote()
+        return self.remote_status()
+
+    def remote_set_user(self, name: str, password: Optional[str] = None,
+                        role: Optional[str] = None) -> list:
+        """Add a remote user or change password / role (local GUI only)."""
+        from ..remote import config as rconfig
+        from ..remote.users import UserStore
+        users = UserStore(rconfig.users_path(self.home))
+        try:
+            users.set_user(name, password or None, role or None)
+        except ValueError as exc:
+            raise ChannelError(str(exc)) from None
+        log.info("remote user %s %s", name, "updated" if password is None else "password set")
+        return users.list()
+
+    def remote_remove_user(self, name: str) -> list:
+        from ..remote import config as rconfig
+        from ..remote.users import UserStore
+        users = UserStore(rconfig.users_path(self.home))
+        users.remove(name)
+        log.info("remote user %s removed", name)
+        return users.list()
+
+    def remote_stop(self, persist: bool = True) -> dict:
+        self._remote_want = False
+        if persist and self.settings.get("remote_access"):
+            self.set_settings(remote_access=False)
+        proc, self._remote = self._remote, None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except Exception:
+                proc.kill()
+            log.info("remote gateway stopped")
+        return self.remote_status()
+
+    def _spawn_remote(self) -> None:
+        import subprocess
+        import sys
+        args = [sys.executable, "-m", "easymeasure.remote", "--home", str(self.home), "serve",
+                "--quiet"]
+        if self._remote_args.get("port"):
+            args += ["--port", str(self._remote_args["port"])]
+        if self._remote_args.get("host"):
+            args += ["--host", self._remote_args["host"]]
+        env = dict(os.environ)
+        pkg_root = str(Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
+        out = open(self.home / "logs" / "remote-gateway.out", "ab")
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out, env=env)
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        proc = subprocess.Popen(args, **kwargs)
+        out.close()
+        self._remote = proc
+        log.info("remote gateway started (pid %d)", proc.pid)
+
+        def watch(p=proc):
+            delay = 1.0
+            while True:
+                t0 = time.time()
+                code = p.wait()
+                if getattr(self, "_closing", False) or not self._remote_want or self._remote is not p:
+                    return
+                if time.time() - t0 > 60:
+                    delay = 1.0
+                log.warning("remote gateway exited (code %s); restarting in %.0f s (see %s)",
+                            code, delay, self.home / "logs" / "remote-gateway.out")
+                time.sleep(delay)
+                delay = min(60.0, delay * 2)
+                if getattr(self, "_closing", False) or not self._remote_want:
+                    return
+                try:
+                    self._spawn_remote()
+                except Exception as exc:
+                    log.error("cannot restart the remote gateway: %s", exc)
+                return
+        threading.Thread(target=watch, name="remote-watch", daemon=True).start()
+
     def shutdown(self, force: bool = False) -> str:
         if self.runner is not None and not force:
             raise ChannelError("a sweep is running; abort it first or use force")
@@ -558,6 +693,13 @@ class Backend:
     def close(self) -> None:
         """Stop everything (used by the server on exit and by tests)."""
         self._closing = True
+        self._remote_want = False
+        remote, self._remote = self._remote, None
+        if remote is not None and remote.poll() is None:
+            try:
+                remote.terminate()
+            except Exception:
+                pass
         tray, self._tray = self._tray, None
         if tray is not None and tray.poll() is None:
             try:

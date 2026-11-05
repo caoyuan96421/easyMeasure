@@ -61,6 +61,12 @@ log = get_logger("sweep")
 # ---------------------------------------------------------------------------
 # Definition handling
 # ---------------------------------------------------------------------------
+#: size limits (protect the backend's memory against absurd or hostile definitions)
+MAX_POINTS_PER_DIM = 10_000_000
+MAX_TOTAL_POINTS = 100_000_000
+MAX_SETPOINT_ELEMENTS = 20_000_000
+
+
 def normalize_definition(d: dict) -> dict:
     """Fill defaults and check structure (without consulting the instruments)."""
     if not isinstance(d, dict):
@@ -88,6 +94,9 @@ def normalize_definition(d: dict) -> dict:
             raise SweepDefinitionError("dimension %d: points must be an integer" % k) from None
         if dim["points"] < 1:
             raise SweepDefinitionError("dimension %d: points must be >= 1" % k)
+        if dim["points"] > MAX_POINTS_PER_DIM:
+            raise SweepDefinitionError("dimension %d: at most %d points per dimension"
+                                       % (k, MAX_POINTS_PER_DIM))
         for key in ("pre_delay", "post_delay"):
             try:
                 v = float(dim.get(key, 0.0) or 0.0)
@@ -110,6 +119,11 @@ def normalize_definition(d: dict) -> dict:
                     "dimension %d: %s needs start/stop, values or mapping" % (k, s["channel"]))
         if not isinstance(dim["record"], list) or not all(isinstance(r, str) for r in dim["record"]):
             raise SweepDefinitionError("dimension %d: 'record' must be a list of names" % k)
+    total = 1
+    for dim in dims:
+        total *= dim["points"]
+    if total > MAX_TOTAL_POINTS:
+        raise SweepDefinitionError("sweep has %d points; the limit is %d" % (total, MAX_TOTAL_POINTS))
     for ph in ("pre", "post"):
         p = d.setdefault(ph, {}) or {}
         d[ph] = p
@@ -174,6 +188,9 @@ def compute_setpoints(d: dict) -> Dict[int, Dict[str, Any]]:
                                        "x": x})
                     if isinstance(v, str):
                         raise SweepDefinitionError("%s: mapping returned a string" % ch)
+                    if np.size(v) * n > MAX_SETPOINT_ELEMENTS:
+                        raise SweepDefinitionError("%s: mapping produces more than %d values"
+                                                   % (ch, MAX_SETPOINT_ELEMENTS))
                     try:
                         rows.append(np.asarray(v, dtype=float))
                     except (TypeError, ValueError):
@@ -182,6 +199,9 @@ def compute_setpoints(d: dict) -> Dict[int, Dict[str, Any]]:
                 if len(shapes) != 1:
                     raise SweepDefinitionError("%s: mapping returns inconsistent shapes %s"
                                                % (ch, sorted(shapes)))
+                if rows and rows[0].size * len(rows) > MAX_SETPOINT_ELEMENTS:
+                    raise SweepDefinitionError("%s: mapping produces more than %d values"
+                                               % (ch, MAX_SETPOINT_ELEMENTS))
                 out[k][ch] = np.stack(rows)
             else:
                 if not all(np.isfinite([start_f, stop_f])):

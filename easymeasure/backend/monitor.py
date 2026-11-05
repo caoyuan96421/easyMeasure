@@ -51,6 +51,7 @@ class Monitor:
     def add(self, name: str, interval: float = 1.0) -> None:
         with self._lock:
             e = self._entries.get(name)
+            interval = max(0.05, float(interval))
             if e is None:
                 self._entries[name] = _Entry(name, interval, self.history_len)
             else:

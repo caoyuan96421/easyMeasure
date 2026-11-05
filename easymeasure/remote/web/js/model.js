@@ -1,0 +1,73 @@
+// Client-side cache of the backend state (port of frontend/model.py).
+
+export class Model {
+  constructor(conn) {
+    this.conn = conn;
+    this.state = {};
+    this.handlers = {};
+    this._t = null;
+    conn.on("connected", () => this.refresh());
+    conn.on("event", (kind, data) => this._event(kind, data));
+  }
+
+  on(evt, fn) { (this.handlers[evt] ||= []).push(fn); }
+  emit(evt, ...a) { for (const f of this.handlers[evt] || []) { try { f(...a); } catch (e) { console.error(e); } } }
+
+  async refresh() {
+    try {
+      const st = await this.conn.request("get_state");
+      if (st && typeof st === "object") {
+        this.state = st;
+        this.emit("state", st);
+        if (st.queue) this.emit("queue", st.queue);
+      }
+    } catch (e) {
+      this.emit("message", "error", "get_state: " + e.message);
+    }
+  }
+
+  scheduleRefresh() {
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.refresh(), 150);
+  }
+
+  _event(kind, data) {
+    if (kind === "changed" || kind === "settings") this.scheduleRefresh();
+    else if (kind === "queue" && data) { this.state.queue = data; this.emit("queue", data); }
+    else if (kind === "sweep_warning") this.emit("message", "warning", String(data && data.message));
+    else if (kind === "ppt") this.emit("message", "info", `slide added to ${data && data.path}`);
+  }
+
+  aliases() { return ((this.state.channels || {}).aliases) || []; }
+  composites() { return ((this.state.channels || {}).composites) || []; }
+  instruments() { return this.state.instruments || []; }
+  settings() { return this.state.settings || {}; }
+
+  writableChannels(numericOnly = false) {
+    const out = this.aliases().filter((a) => a.writable && !(numericOnly && a.dtype === "str")).map((a) => a.name);
+    return out.concat(this.composites().map((c) => c.name));
+  }
+  readableChannels() {
+    return this.aliases().filter((a) => a.readable !== false).map((a) => a.name)
+      .concat(this.composites().map((c) => c.name));
+  }
+  rawChannels() {
+    return this.instruments().flatMap((i) => (i.channels || []).map((c) => `${i.name}.${c.name}`));
+  }
+  aliasableChannels() {
+    return this.instruments().flatMap((i) => (i.channels || []).filter((c) => !c.config).map((c) => `${i.name}.${c.name}`));
+  }
+  configChannels(writable = false) {
+    return this.instruments().flatMap((i) => (i.channels || []).filter((c) => c.config &&
+      (writable ? (c.access || "rw").includes("w") : (c.access || "rw").includes("r"))).map((c) => `${i.name}.${c.name}`));
+  }
+  actions() {
+    return this.instruments().flatMap((i) => (i.actions || []).map((a) => `${i.name}.${a.name}`));
+  }
+  channelMeta(name) {
+    const a = this.aliases().find((x) => x.name === name);
+    if (a) return a;
+    const c = this.composites().find((x) => x.name === name);
+    return c ? { ...c, dtype: "float", shape: [] } : null;
+  }
+}

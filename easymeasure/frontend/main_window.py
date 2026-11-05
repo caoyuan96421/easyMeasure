@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         for text, fn in (("Start backend", self.start_backend), ("Reconnect", self._reconnect),
                          ("Restart backend…", self.restart_backend),
                          ("Show tray icon", self.show_tray),
+                         ("Remote access…", self.remote_access),
                          ("Shut down backend…", self.shutdown_backend)):
             act = QAction(text, self)
             act.triggered.connect(fn)
@@ -326,6 +327,13 @@ class MainWindow(QMainWindow):
             self.conn_label.setStyleSheet("color: #e39a1b")
             self._message("warning", "the running backend uses older code than this GUI; "
                                      "use Backend → Restart backend when no sweep is running")
+
+    def remote_access(self):
+        if not self.conn.is_connected:
+            QMessageBox.information(self, "Remote access", "Connect to a backend first.")
+            return
+        from .remote_dialog import RemoteAccessDialog
+        RemoteAccessDialog(self.conn, self).exec()
 
     def show_tray(self):
         self.conn.request("start_tray", on_ok=lambda r: self._message(

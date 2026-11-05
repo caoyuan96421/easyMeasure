@@ -12,6 +12,9 @@ GUI); the reader thread here always drains the socket, so that cannot happen.
 
 The GUI uses its own Qt-native, non-blocking client
 (:mod:`easymeasure.frontend.connection`); this one blocks the calling thread.
+
+Over the internet use :class:`RemoteClient` (same interface, through the TLS
+gateway; see :mod:`easymeasure.client.remote`).
 """
 
 from __future__ import annotations
@@ -180,3 +183,11 @@ def wait_for_backend(timeout: float = 15.0, runtime_file: Optional[Path] = None)
             return info
         time.sleep(0.2)
     return None
+
+
+def __getattr__(name):
+    # RemoteClient needs aiohttp; only import it when it is used
+    if name == "RemoteClient":
+        from .remote import RemoteClient
+        return RemoteClient
+    raise AttributeError(name)

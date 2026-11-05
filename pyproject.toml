@@ -17,20 +17,28 @@ dependencies = [
     "python-pptx>=0.6.21",
     "matplotlib>=3.5",
     "pywin32>=306; sys_platform == 'win32'",   # append slides to a .pptx open in PowerPoint
+    "aiohttp>=3.10",          # remote access gateway (HTTPS + secure WebSocket) and RemoteClient
+    "cryptography>=41",      # self-signed TLS certificate for the gateway
 ]
 
 [project.optional-dependencies]
 hardware = ["pyserial>=3.5", "pyvisa>=1.12"]
 test = ["pytest>=7", "pytest-timeout>=2"]
+# browser end-to-end test of the web frontend (then: python -m playwright install chromium)
+webtest = ["playwright>=1.40"]
 
 [project.scripts]
 easymeasure-backend = "easymeasure.backend.__main__:main"
+easymeasure-remote = "easymeasure.remote.__main__:main"
 
 [project.gui-scripts]
 easymeasure = "easymeasure.frontend.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["easymeasure*"]
+
+[tool.setuptools.package-data]
+"easymeasure.remote" = ["web/*.html", "web/*.svg", "web/css/*.css", "web/js/*.js", "web/js/panels/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

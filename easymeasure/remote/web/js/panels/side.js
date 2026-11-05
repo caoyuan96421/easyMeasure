@@ -1,0 +1,383 @@
+// Right-hand side: Monitor (live tiles pushed by the backend), Manual control
+// (spin box + slider per writable alias) and the Log panel.
+
+import { h, btn, bar, fmt, clock, promptDialog, throttle } from "../ui.js";
+import { PlotCanvas } from "../plot.js";
+import { evaluate } from "../expr.js";
+import { NDArray } from "../codec.js";
+
+const HISTORY = 3000;
+const SPANS = [["1 min", 60], ["10 min", 600], ["1 h", 3600], ["all", 0]];
+
+class MonitorTile {
+  constructor(name, onRemove) {
+    this.name = name;
+    this.t = [];
+    this.v = [];
+    this.latest = null;
+    this.kind = null;
+    this.dirty = false;
+    this.value = h("div", { class: "mon-value", text: "—" });
+    this.err = h("div", { class: "mon-err" });
+    this.span = h("select", { on: { change: () => { this.dirty = true; } } }, SPANS.map(([l], i) => h("option", { text: l, value: i, selected: i === 1 })));
+    this.pc = new PlotCanvas({ compact: true });
+    this.rm = btn("✕", () => onRemove(name), { cmd: "monitor_remove", title: "stop monitoring" });
+    this.el = h("div", { class: "mon-tile" },
+      h("div", { class: "mon-head" }, h("b", { text: name }), h("span", { class: "grow" }), this.span, this.rm),
+      this.value, this.pc.el, this.err);
+  }
+
+  push(msg) {
+    if (msg.error !== undefined) { this.err.textContent = "⚠ " + String(msg.error).slice(0, 200); return; }
+    this.err.textContent = "";
+    const v = msg.value, t = Number(msg.t || Date.now() / 1000);
+    if (typeof v === "string") { this.kind = "str"; this.latest = v; }
+    else if (v instanceof NDArray && v.ndim >= 1) { this.kind = "array"; this.latest = v; }
+    else {
+      const f = Number(v instanceof NDArray ? v.data[0] : v);
+      if (!Number.isFinite(f) && !Number.isNaN(f)) return;
+      this.kind = "scalar";
+      this.latest = f;
+      this.t.push(t); this.v.push(f);
+      if (this.t.length > HISTORY) { this.t.splice(0, this.t.length - HISTORY); this.v.splice(0, this.v.length - HISTORY); }
+    }
+    this.dirty = true;
+  }
+
+  redraw() {
+    if (!this.dirty) return;
+    this.dirty = false;
+    if (this.kind === "scalar") {
+      this.value.textContent = fmt(this.latest, 7);
+      this.pc.el.hidden = false;
+      const span = SPANS[Number(this.span.value)][1];
+      const tl = this.t[this.t.length - 1];
+      let i0 = 0;
+      if (span) while (i0 < this.t.length && this.t[i0] < tl - span) i0++;
+      const x = Float64Array.from(this.t.slice(i0), (t) => t - tl), y = Float64Array.from(this.v.slice(i0));
+      this.pc.setContent({ kind: "curves", series: [{ x, y, color: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#4cc9f0", width: 1.2 }] });
+    } else if (this.kind === "str") {
+      this.value.textContent = String(this.latest).slice(0, 80);
+      this.pc.el.hidden = true;
+    } else if (this.kind === "array") {
+      const a = this.latest;
+      this.pc.el.hidden = false;
+      if (a.ndim === 1) {
+        const x = Float64Array.from({ length: a.size }, (_, i) => i);
+        let mx = -Infinity; for (const q of a.data) if (q > mx) mx = q;
+        this.value.textContent = `[${a.size}]  max ${fmt(mx, 4)}`;
+        this.pc.setContent({ kind: "curves", series: [{ x, y: a.data, color: "#80ed99", width: 1 }] });
+      } else {
+        const ny = a.shape[0], nx = a.size / ny;
+        let s = 0, n = 0; for (const q of a.data) if (q === q) { s += q; n++; }
+        let lo = Infinity, hi = -Infinity; for (const q of a.data) { if (q < lo) lo = q; if (q > hi) hi = q; }
+        this.pc.levels = hi > lo ? [lo, hi] : [lo - 0.5, lo + 0.5];
+        this.value.textContent = `${a.shape.join("×")}  mean ${fmt(n ? s / n : NaN, 4)}`;
+        this.pc.setContent({ kind: "image", x: Float64Array.from({ length: nx }, (_, i) => i),
+          y: Float64Array.from({ length: ny }, (_, i) => i), z: a.data, nx, ny, version: Math.random() });
+      }
+    }
+  }
+}
+
+export class MonitorPanel {
+  constructor(app) {
+    this.app = app;
+    this.conn = app.conn;
+    this.tiles = new Map();
+    this.chan = h("input", { placeholder: "channel", list: "em-mon-channels", class: "w-chan" });
+    this.list = h("datalist", { id: "em-mon-channels" });
+    this.interval = h("input", { type: "number", value: "1", min: "0.1", step: "0.1", class: "w-num", title: "poll interval (s)" });
+    this.msg = h("div", { class: "msg" });
+    this.host = h("div", { class: "mon-tiles" });
+    this.el = h("div", { class: "panel monitor" },
+      bar(this.chan, this.list, this.interval, h("span", { text: "s" }), btn("Monitor", () => this._add(), { cmd: "monitor_add" })),
+      this.msg, this.host);
+    app.model.on("state", (st) => this._state(st));
+    this.conn.on("event", (k, d) => { if (k === "monitor" && d) this._push(d); });
+    this.conn.on("connected", () => this._history());
+    setInterval(() => { if (this.el.offsetParent !== null) for (const t of this.tiles.values()) t.redraw(); }, 150);
+  }
+
+  _state(st) {
+    const names = (st.monitor || []).map((m) => m.channel);
+    this.list.replaceChildren(...this.app.model.readableChannels().concat(this.app.model.rawChannels()).map((n) => h("option", { value: n })));
+    for (const n of names) {
+      if (!this.tiles.has(n)) {
+        const t = new MonitorTile(n, (x) => this._remove(x));
+        this.tiles.set(n, t);
+        this.host.append(t.el);
+        this.app.applyPermissions(t.el);
+      }
+    }
+    for (const [n, t] of this.tiles) if (!names.includes(n)) { t.el.remove(); this.tiles.delete(n); }
+    for (const m of st.monitor || []) {
+      const t = this.tiles.get(m.channel);
+      if (t && t.kind === null && m.last_value !== null && m.last_value !== undefined) t.push({ value: m.last_value, t: m.last_time });
+    }
+    this.msg.textContent = names.length ? "" : "no monitored channels";
+  }
+
+  _push(d) {
+    const t = this.tiles.get(d.channel);
+    if (t) t.push(d);
+  }
+
+  async _history() {
+    try {
+      const hist = await this.conn.request("monitor_history");
+      for (const [name, pts] of Object.entries(hist || {})) {
+        let t = this.tiles.get(name);
+        if (!t) { t = new MonitorTile(name, (x) => this._remove(x)); this.tiles.set(name, t); this.host.append(t.el); this.app.applyPermissions(t.el); }
+        t.t = []; t.v = [];
+        for (const [tt, v] of pts) t.push({ t: tt, value: v });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async _add() {
+    const name = this.chan.value.trim();
+    if (!name) return;
+    try { await this.conn.request("monitor_add", { channel: name, interval: Number(this.interval.value) || 1 }); this.app.model.scheduleRefresh(); }
+    catch (e) { this.msg.textContent = "✘ " + e.message; }
+  }
+
+  async _remove(name) {
+    try { await this.conn.request("monitor_remove", { channel: name }); this.app.model.scheduleRefresh(); }
+    catch (e) { this.msg.textContent = "✘ " + e.message; }
+  }
+}
+
+// ------------------------------------------------------------------ manual ----
+const SLIDER_STEPS = 1000;
+
+class ChannelRow {
+  constructor(panel, meta) {
+    this.panel = panel;
+    this.meta = meta;
+    this.name = meta.name;
+    this.lo = typeof meta.min === "number" ? meta.min : null;
+    this.hi = typeof meta.max === "number" ? meta.max : null;
+    this.typing = false;
+    this.label = h("span", { class: "man-label", text: this.name,
+      title: `${this.name}${meta.target ? " → " + meta.target : ""}${meta.description ? "\n" + meta.description : ""}` });
+    this.slider = null;
+    if (meta.dtype === "str") {
+      if (meta.allowed && meta.allowed.length) {
+        this.editor = h("select", { on: { change: () => panel.requestSet(this.name, this.editor.value) } },
+          meta.allowed.map((a) => h("option", { text: a, value: a })));
+      } else {
+        this.editor = h("input", { on: { change: () => panel.requestSet(this.name, this.editor.value) } });
+      }
+    } else {
+      const unit = meta.unit ? ` ${meta.unit}` : "";
+      this.editor = h("input", { type: "number", step: "any", class: "man-num",
+        title: `Enter: set (ramped)${unit ? "\nunit:" + unit : ""}\nright click: expression / read back` });
+      if (this.lo !== null) this.editor.min = this.lo;
+      if (this.hi !== null) this.editor.max = this.hi;
+      this.editor.addEventListener("input", () => { this.typing = true; });
+      this.editor.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { this.typing = false; this._commit(); }
+        else if (e.key === "Escape") { this.typing = false; this.editor.blur(); panel.readBack(this.name); }
+      });
+      this.editor.addEventListener("blur", () => { if (this.typing) { this.typing = false; this._commit(); } });
+      this.editor.addEventListener("contextmenu", (e) => { e.preventDefault(); this._menu(e); });
+      if (this.lo !== null && this.hi !== null && this.hi > this.lo) {
+        this.slider = h("input", { type: "range", min: 0, max: SLIDER_STEPS, step: 1, class: "man-slider",
+          title: `${this.lo} … ${this.hi}${unit} (applied when released)` });
+        this.slider.addEventListener("input", () => { this.editor.value = this._fromSlider(Number(this.slider.value)); });
+        this.slider.addEventListener("change", () => panel.requestSet(this.name, this._fromSlider(Number(this.slider.value))));
+      }
+      this.unit = h("span", { class: "unit", text: meta.unit || "" });
+    }
+    this.read = btn("↻", () => panel.readBack(this.name), { cmd: "read_channel", title: "read the present value from the instrument" });
+    this.editor.dataset.cmd = "write_channel";
+    if (this.slider) this.slider.dataset.cmd = "write_channel";
+    this.el = h("div", { class: "man-row" }, this.label, this.editor, this.unit || null, this.slider || h("span"), this.read);
+  }
+
+  _commit() {
+    const v = Number(this.editor.value);
+    if (!Number.isFinite(v)) return;
+    if (this.slider) this.slider.value = this._toSlider(v);
+    this.panel.requestSet(this.name, v);
+  }
+
+  _toSlider(v) { return Math.round(Math.min(1, Math.max(0, (v - this.lo) / (this.hi - this.lo))) * SLIDER_STEPS); }
+  _fromSlider(i) { return Number((this.lo + (this.hi - this.lo) * i / SLIDER_STEPS).toPrecision(10)); }
+
+  async _menu(ev) {
+    const menu = h("div", { class: "ctxmenu" },
+      h("div", { text: "Set from expression…", on: { click: () => { close(); this._expression(); } } }),
+      h("div", { text: "Read back from instrument", on: { click: () => { close(); this.panel.readBack(this.name); } } }),
+      h("div", { text: "Copy value", on: { click: () => { close(); navigator.clipboard && navigator.clipboard.writeText(this.editor.value); } } }));
+    const close = () => { menu.remove(); document.removeEventListener("pointerdown", outside, true); };
+    const outside = (e) => { if (!menu.contains(e.target)) close(); };
+    Object.assign(menu.style, { left: ev.clientX + "px", top: ev.clientY + "px" });
+    document.body.append(menu);
+    setTimeout(() => document.addEventListener("pointerdown", outside, true));
+  }
+
+  async _expression() {
+    if (!this.panel.app.conn.can("write_channel")) return;
+    const cur = Number(this.editor.value);
+    const txt = await promptDialog(`Set ${this.name}`, "Expression", this.panel.lastExpr[this.name] || "x",
+      `New value as an expression of the present value x = ${fmt(cur, 8)} (e.g. x + 0.01, x/2, 0.1*pi, sqrt(2)/10)`);
+    if (txt === null || !txt.trim()) return;
+    let v;
+    try { v = evaluate(txt, { x: cur }); } catch (e) { this.panel.say(`✘ ${this.name}: ${e.message}`); return; }
+    this.panel.lastExpr[this.name] = txt;
+    this.show(v, true);                       // show the requested value at once
+    this.panel.requestSet(this.name, v);
+  }
+
+  show(v, force = false) {
+    if (v === null || v === undefined) return;
+    if (this.editor.tagName === "SELECT") { if ([...this.editor.options].some((o) => o.value === String(v))) this.editor.value = String(v); return; }
+    if (this.editor.type !== "number") { if (document.activeElement !== this.editor) this.editor.value = String(v); return; }
+    const f = Number(v);
+    if (!Number.isFinite(f)) return;
+    const focused = document.activeElement === this.editor;
+    if ((force && !this.typing) || !focused) this.editor.value = String(Number(f.toPrecision(10)));
+    if (this.slider) this.slider.value = this._toSlider(f);
+  }
+
+  setState(state, tip = "") {
+    this.label.classList.toggle("busy", state === "busy");
+    this.label.classList.toggle("err", state === "error");
+    this.label.title = this.label.title.split("\n⚠")[0] + (tip ? "\n⚠ " + tip : "");
+  }
+}
+
+export class ManualPanel {
+  constructor(app) {
+    this.app = app;
+    this.conn = app.conn;
+    this.rows = new Map();
+    this.sig = null;
+    this.pending = {};
+    this.queued = {};
+    this.lastExpr = {};
+    this.filter = h("input", { placeholder: "filter channels", type: "search", on: { input: () => this._filter() } });
+    this.ramp = h("input", { type: "checkbox", checked: true, title: "respect the alias ramp rates (recommended)" });
+    this.host = h("div", { class: "man-rows" });
+    this.status = h("div", { class: "msg muted" });
+    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.ramp, " ramp")), this.host, this.status);
+    app.model.on("state", (st) => this._state(st));
+  }
+
+  say(t) { this.status.textContent = t; }
+
+  _channels() {
+    const out = [];
+    for (const a of this.app.model.aliases()) if (a.writable && (a.dtype === "str" || !(a.shape && a.shape.length))) out.push(a);
+    for (const c of this.app.model.composites()) out.push({ ...c, dtype: "float" });
+    return out;
+  }
+
+  _state() {
+    const chans = this._channels();
+    const sig = JSON.stringify(chans.map((m) => [m.name, m.dtype, m.min, m.max, m.unit, m.allowed || []]));
+    if (sig !== this.sig) {
+      this.sig = sig;
+      this.host.replaceChildren();
+      this.rows.clear();
+      for (const m of chans) {
+        const r = new ChannelRow(this, m);
+        this.rows.set(m.name, r);
+        this.host.append(r.el);
+        if (m.last === null || m.last === undefined) this.readBack(m.name);
+      }
+      this.app.applyPermissions(this.host);
+      this._filter();
+      this.say(chans.length ? "" : "no writable aliases or composites defined");
+    }
+    for (const m of chans) {
+      const r = this.rows.get(m.name);
+      if (r && !this.pending[m.name]) r.show(m.last);
+    }
+  }
+
+  _filter() {
+    const t = this.filter.value.trim().toLowerCase();
+    for (const [n, r] of this.rows) r.el.hidden = !!t && !n.toLowerCase().includes(t);
+  }
+
+  /** One write in flight per channel; newer requests replace queued ones. */
+  async requestSet(name, value) {
+    if (this.pending[name]) { this.queued[name] = value; return; }
+    this.pending[name] = true;
+    const row = this.rows.get(name);
+    if (row) row.setState("busy");
+    this.say(`setting ${name} → ${fmt(value)} …`);
+    let ok = true, result = null, err = "";
+    try { result = await this.conn.request("write_channel", { name, value, ramp: this.ramp.checked }, { timeout: 3600000 }); }
+    catch (e) { ok = false; err = e.message; }
+    this.pending[name] = false;
+    const r = this.rows.get(name);
+    if (r) { r.setState(ok ? "ok" : "error", err); if (ok) r.show(result, true); }
+    this.say(ok ? `${name} = ${fmt(result, 8)}` : `✘ ${name}: ${err}`);
+    if (name in this.queued) { const nxt = this.queued[name]; delete this.queued[name]; this.requestSet(name, nxt); }
+    else if (!ok) this.readBack(name);
+    else this.app.model.scheduleRefresh();
+  }
+
+  async readBack(name) {
+    try {
+      const v = await this.conn.request("read_channel", { name });
+      const r = this.rows.get(name);
+      if (r && !this.pending[name]) r.show(v);
+    } catch (e) { this.say(`✘ read ${name}: ${e.message}`); }
+  }
+}
+
+// ---------------------------------------------------------------------- log ----
+const LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40 };
+
+export class LogPanel {
+  constructor(app) {
+    this.app = app;
+    this.conn = app.conn;
+    this.level = h("select", { on: { change: () => this.reload() } }, Object.keys(LEVELS).map((l) => h("option", { text: l, value: l, selected: l === "INFO" })));
+    this.follow = h("input", { type: "checkbox", checked: true });
+    this.box = h("div", { class: "logbox" });
+    this.lines = [];
+    this.el = h("div", { class: "panel log" },
+      bar(h("b", { text: "Log" }), h("label", {}, "level ", this.level), h("label", { class: "check" }, this.follow, " follow"),
+        btn("Clear", () => { this.box.replaceChildren(); this.lines = []; }), btn("Reload", () => this.reload(), { cmd: "recent_logs" })),
+      this.box);
+    this._flush = throttle(() => this._render(), 200);
+    this.conn.on("connected", () => this.reload());
+    this.conn.on("event", (k, d) => { if (k === "log" && d) this._add(d); });
+  }
+
+  _min() { return LEVELS[this.level.value] || 20; }
+
+  async reload() {
+    try {
+      const rows = await this.conn.request("recent_logs", { n: 1500, min_level: this._min() });
+      this.box.replaceChildren();
+      this.lines = [];
+      for (const r of rows || []) this._add(r, false);
+      this._render();
+    } catch (e) { /* not allowed */ }
+  }
+
+  _add(e, render = true) {
+    if ((e.levelno || 0) < this._min()) return;
+    this.lines.push(e);
+    if (render) this._flush();
+  }
+
+  _render() {
+    const frag = document.createDocumentFragment();
+    for (const e of this.lines.splice(0)) {
+      const lvl = (e.level || "").toLowerCase();
+      frag.append(h("div", { class: "logline " + lvl }, h("span", { class: "t", text: clock(e.t || e.time) }),
+        " ", h("span", { class: "lv", text: (e.level || "").padEnd(7) }), " ", h("span", { class: "src", text: e.logger || e.name || "" }), " ", e.msg || e.message || ""));
+    }
+    this.box.append(frag);
+    while (this.box.childElementCount > 3000) this.box.firstElementChild.remove();
+    if (this.follow.checked) this.box.scrollTop = this.box.scrollHeight;
+  }
+}

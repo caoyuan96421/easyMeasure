@@ -29,6 +29,11 @@ def main(argv=None) -> int:
     ap.add_argument("--quiet", action="store_true", help="no console logging")
     ap.add_argument("--no-tray", action="store_true",
                     help="do not show the system-tray indicator")
+    ap.add_argument("--remote", nargs="?", type=int, const=0, default=None, metavar="PORT",
+                    help="also start the internet gateway (HTTPS/WSS, default port 8443); "
+                         "see python -m easymeasure.remote")
+    ap.add_argument("--no-remote", action="store_true",
+                    help="do not start the gateway even if remote access is enabled")
     ap.add_argument("--force", action="store_true",
                     help="start even if another backend seems to be running")
     args = ap.parse_args(argv)
@@ -68,6 +73,11 @@ def main(argv=None) -> int:
             backend.start_tray()    # separate process: can never affect the backend
         except Exception as exc:
             print("tray icon not started: %s" % exc, file=sys.stderr)
+    if not args.no_remote and (args.remote is not None or backend.settings.get("remote_access")):
+        try:
+            backend.remote_start(port=args.remote or None, persist=False)
+        except Exception as exc:
+            print("remote gateway not started: %s" % exc, file=sys.stderr)
     try:
         server.serve_forever()
     finally:

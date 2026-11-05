@@ -69,7 +69,14 @@ CONTROL_COMMANDS = {
     "monitor_history", "monitor_remove", "list_channels", "list_instruments", "list_runs",
     "list_drivers", "list_resources", "get_setup", "save_setup", "channel_info",
     "validate_sweep", "queue_add", "run_script_now", "read_run_header", "shutdown",
+    "list_clients", "remote_status", "remote_start", "remote_stop", "remote_set_user",
+    "remote_remove_user",
 }
+
+
+def _local_only():
+    from ..remote.policy import LOCAL_ONLY
+    return LOCAL_ONLY
 
 
 class _Client:
@@ -385,7 +392,9 @@ class Server:
 
     def clients(self) -> list:
         with self._clients_lock:
-            return [{"id": c.id, "name": c.name, "dropped": c.dropped} for c in self._clients.values()]
+            return [{"id": c.id, "name": c.name, "dropped": c.dropped,
+                     "events": "*" if c.events is None else sorted(c.events)}
+                    for c in self._clients.values()]
 
     # -- requests / events -------------------------------------------------------
     def submit(self, client: _Client, msg: dict) -> None:
@@ -397,7 +406,13 @@ class Server:
             try:
                 if not isinstance(args, dict):
                     raise ProtocolError("args must be a dict")
-                result = self.backend.dispatch(cmd, args)
+                if client.name.startswith("web:") and cmd in _local_only():
+                    # defence in depth: the gateway already refuses these
+                    raise ProtocolError("%s is only available on the backend computer" % cmd)
+                if cmd == "list_clients":
+                    result = self.clients()
+                else:
+                    result = self.backend.dispatch(cmd, args)
                 client.send({"type": "resp", "id": rid, "ok": True, "result": result})
             except BaseException as exc:  # noqa: B902 - report everything to the client
                 tb = None if isinstance(exc, EasyMeasureError) else traceback.format_exc(limit=6)
