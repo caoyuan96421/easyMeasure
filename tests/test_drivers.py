@@ -1,0 +1,470 @@
+"""Hardware drivers against their emulators (command syntax from the manuals)."""
+
+import math
+import time
+
+import numpy as np
+import pytest
+
+from easymeasure.common.errors import ChannelError, LimitError
+from easymeasure.drivers.emulators import SCPIEmulator, compile_pattern, split_args
+from easymeasure.drivers.simbus import get_bus
+
+HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211"]
+
+
+def emu(address: str, addr: int = 0):
+    return get_bus(address.split("::", 1)[1]).devices[addr]
+
+
+def clean(e):
+    """Every command a driver sent exists in the manual's command table."""
+    assert e.unknown == [], e.unknown
+    return True
+
+
+# ---------------------------------------------------------------------------
+def test_registry_and_static_channels(backend):
+    d = backend.list_drivers()
+    assert not d["errors"], d["errors"]
+    for name in HW:
+        info = d["drivers"][name]
+        names = [c["name"] for c in info["channels"]]
+        assert len(names) == len(set(names)) and names, name
+        assert info["description"]
+    assert "Icompliance" in [c["name"] for c in d["drivers"]["keithley2400"]["channels"]]
+    assert "voltage2" in [c["name"] for c in d["drivers"]["keysight_b2902"]["channels"]]
+
+
+def test_scpi_pattern_matcher():
+    rx = compile_pattern("[:SOURce{n}]:VOLTage[:LEVel][:IMMediate][:AMPLitude]")
+    for ok in (":SOUR:VOLT", "SOUR2:VOLT:LEV", ":VOLT", ":SOURCE:VOLTAGE:LEVEL:IMMEDIATE:AMPLITUDE",
+               ":sour:volt:lev"):
+        assert rx.match(ok if ok.startswith(":") else ":" + ok), ok
+    for bad in (":SOURC:VOLT", ":SOUR:VOL", ":SOUR:VOLTAGES", ":SOUR:VOLT?"):
+        assert not rx.match(bad), bad
+    assert rx.match(":SOUR2:VOLT").group(1) == "2"
+    assert split_args('1, "VOLT,CURR", (@1,2)') == ["1", '"VOLT,CURR"', "(@1,2)"]
+    e = SCPIEmulator("x,y,z,1")
+    assert e.handle("*IDN?;*IDN?") == "x,y,z,1;x,y,z,1"
+    assert e.handle(":BOGUS 1") is None and e.unknown == [":BOGUS 1"]
+    assert e.handle(":SYST:ERR?").startswith("-113")
+    assert e.handle(":SYST:ERR?") == '+0,"No error"'
+
+
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def k24(backend):
+    backend.add_instrument("smu", "keithley2400", "SIM::k24", {"load_ohm": 1000.0})
+    backend.define_alias(name="Vs", target="smu.voltage", min=-20, max=20)
+    backend.define_alias(name="Is", target="smu.current")
+    return backend
+
+
+def test_keithley2400_voltage_mode(k24):
+    be, e = k24, emu("SIM::k24")
+    h = be.instruments.get("smu")
+    assert h.state == "connected", h.last_error
+    assert e.commands(":FORM:ELEM") == [":FORM:ELEM CURR"]
+    assert ":SENS:FUNC:CONC OFF" in e.log and ":SENS:FUNC 'CURR'" in e.log
+    # output off: nothing is measured (the 2400 would answer :READ? with error 803)
+    assert math.isnan(be.read_channel("Is"))
+    assert not e.commands(":READ?")
+    be.write_channel("smu.Icompliance", 1e-3)
+    assert be.read_channel("smu.Icompliance") == pytest.approx(1e-3)
+    be.write_channel("smu.output", "on")
+    assert be.read_channel("smu.output") == "ON"
+    be.write_channel("Vs", 0.5, ramp=False)
+    assert be.read_channel("Vs") == pytest.approx(0.5)
+    assert be.read_channel("Is") == pytest.approx(0.5e-3)           # 0.5 V / 1 kΩ
+    be.write_channel("Vs", 5.0, ramp=False)
+    assert be.read_channel("Is") == pytest.approx(1e-3)             # clamped at compliance
+    with pytest.raises(LimitError):
+        be.write_channel("Vs", 50)                                   # alias limit
+    # the instrument's own refusal is reported (error queue) and not retried
+    with pytest.raises(ChannelError, match="Data out of range"):
+        be.write_channel("smu.Icompliance", 5)                   # the 2400 limit is 1.05 A
+    assert be.read_channel("smu.Icompliance") == pytest.approx(1e-3)
+    with pytest.raises(ChannelError, match="NPLC must be within"):
+        be.write_channel("smu.nplc", 20)
+    be.write_channel("smu.nplc", 0.1)
+    assert be.read_channel("smu.nplc") == pytest.approx(0.1)
+    assert e.commands(":SENS:CURR:NPLC 0.1")
+    be.write_channel("smu.sense", "4-wire")
+    assert be.read_channel("smu.sense") == "4-wire" and e.out.rsen
+    be.write_channel("smu.terminals", "rear")
+    assert be.read_channel("smu.terminals") == "REAR"
+    be.run_action("smu.beep")
+    assert clean(e)
+
+
+def test_keithley2400_mode_switch(k24):
+    be, e = k24, emu("SIM::k24")
+    h = be.instruments.get("smu")
+    be.write_channel("smu.output", "ON")
+    with pytest.raises(ChannelError, match="OFF before changing the mode"):
+        be.write_channel("smu.mode", "Current")
+    assert e.out.func == "VOLT"
+    be.write_channel("smu.output", "OFF")
+    be.write_channel("smu.mode", "current")
+    assert be.read_channel("smu.mode") == "Current" and e.out.func == "CURR"
+    chans = h.channels
+    assert chans["current"].writable and not chans["voltage"].writable
+    assert "Icompliance" not in chans and chans["Vcompliance"].unit == "V"
+    assert e.commands(":FORM:ELEM")[-1] == ":FORM:ELEM VOLT"
+    be.write_channel("smu.Vcompliance", 2.0)
+    be.write_channel("smu.output", "ON")
+    be.write_channel("Is", 1e-3, ramp=False)
+    assert be.read_channel("Vs") == pytest.approx(1.0)               # 1 mA × 1 kΩ
+    be.write_channel("Is", 5e-3, ramp=False)
+    assert be.read_channel("Vs") == pytest.approx(2.0)               # voltage compliance
+    with pytest.raises(ChannelError, match="not writable"):
+        be.write_channel("Vs", 1.0)
+    with pytest.raises(ChannelError, match="Vcompliance"):
+        be.read_channel("smu.Icompliance")
+    # output switched on/off at the front panel is noticed
+    e.out.on = False
+    be.instruments.get("smu").driver.st["1"]["on"] = True
+    v = be.read_channel("Vs")       # :READ? fails (803) -> retried after recover -> NaN
+    assert math.isnan(v)
+    assert clean(e)
+
+
+def test_keithley2400_iv_sweep_with_mode_from_pre_constants(k24):
+    be = k24
+    d = {"name": "iv", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Is", "start": 0, "stop": 2e-3}], "record": ["Vs"]}],
+         "pre": {"constants": [{"channel": "smu.mode", "value": "Current"},
+                               {"channel": "smu.Vcompliance", "value": 10},
+                               {"channel": "smu.output", "value": "ON"}]},
+         "post": {"constants": [{"channel": "Is", "value": 0},
+                                {"channel": "smu.output", "value": "OFF"},
+                                {"channel": "smu.mode", "value": "Voltage"}]}}
+    assert be.validate_sweep(d)["warnings"]
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(60)
+    item = be.queue_state()["history"][-1]
+    assert item["status"] == "finished", item
+    from easymeasure.backend.storage import DataSet
+    ds = DataSet.load(item["path"])
+    np.testing.assert_allclose(ds.data["Vs"], np.linspace(0, 2e-3, 5) * 1000, rtol=1e-6)
+    assert be.read_channel("smu.mode") == "Voltage"
+    assert clean(emu("SIM::k24"))
+
+
+def test_keithley2400_survives_a_noisy_line(backend):
+    be = backend
+    be.add_instrument("smu", "keithley2400", "SIM::noisy",
+                      {"error_rate": 0.05, "garble_rate": 0.05, "seed": 3, "retries": 4,
+                       "timeout": 0.2, "verify_writes": True})
+    be.define_alias(name="V", target="smu.voltage")
+    h = be.instruments.get("smu")
+    for i in range(40):
+        be.write_channel("V", i * 0.01, ramp=False)
+        assert be.read_channel("V") == pytest.approx(i * 0.01)
+    assert h.stats["retries"] > 0
+
+
+# ---------------------------------------------------------------------------
+def test_keysight_b2901(backend):
+    be = backend
+    be.add_instrument("smu", "keysight_b2901", "SIM::b1", {"load_ohm": 2000.0})
+    e = emu("SIM::b1")
+    be.define_alias(name="V", target="smu.voltage")
+    be.define_alias(name="I", target="smu.current")
+    # measuring with the output off would switch it on by itself (OUTP:ON:AUTO):
+    # the driver must not measure then
+    assert math.isnan(be.read_channel("I"))
+    assert not e.outs["1"].on and not e.commands(":MEAS")
+    be.write_channel("smu.Icompliance", 1e-3)
+    be.write_channel("smu.nplc", 0.01)
+    be.write_channel("smu.output", "ON")
+    be.write_channel("V", 1.0, ramp=False)
+    assert be.read_channel("I") == pytest.approx(5e-4)
+    assert e.commands(":MEAS:CURR? (@1)")
+    with pytest.raises(ChannelError, match="Settings conflict"):
+        be.write_channel("smu.low", "FLOAT")                       # needs the output off
+    be.write_channel("smu.output", "OFF")
+    be.write_channel("smu.low", "float")
+    assert be.read_channel("smu.low") == "FLOAT"
+    be.write_channel("smu.mode", "Current")
+    assert "Vcompliance" in be.instruments.get("smu").channels
+    be.write_channel("smu.nplc", 50)          # the B2900 integrates up to 100 PLC
+    with pytest.raises(ChannelError):
+        be.write_channel("smu.nplc", 200)
+    assert be.read_channel("smu.sense") == "2-wire"
+    assert clean(e)
+
+
+def test_keysight_b2902_two_independent_outputs(backend):
+    be = backend
+    be.add_instrument("smu", "keysight_b2902", "SIM::b2", {"load_ohm": 1000.0})
+    e = emu("SIM::b2")
+    h = be.instruments.get("smu")
+    assert "voltage1" in h.channels and "voltage2" in h.channels and "voltage" not in h.channels
+    be.write_channel("smu.mode2", "Current")
+    ch = h.channels
+    assert ch["voltage1"].writable and not ch["current1"].writable and "Icompliance1" in ch
+    assert ch["current2"].writable and not ch["voltage2"].writable and "Vcompliance2" in ch
+    be.define_alias(name="Vg", target="smu.voltage1")
+    be.define_alias(name="Ig", target="smu.current1")
+    be.define_alias(name="Isd", target="smu.current2")
+    be.define_alias(name="Vsd", target="smu.voltage2")
+    be.write_channel("smu.Icompliance1", 1e-2)
+    be.write_channel("smu.Vcompliance2", 5)
+    be.write_channel("smu.output1", "ON")
+    be.write_channel("smu.output2", "ON")
+    be.write_channel("Vg", 2.0, ramp=False)
+    be.write_channel("Isd", 1e-3, ramp=False)
+    assert be.read_channel("Ig") == pytest.approx(2e-3)
+    assert be.read_channel("Vsd") == pytest.approx(1.0)
+    assert e.commands(":MEAS:VOLT? (@2)") and e.commands(":SOUR2:CURR 0.001")
+    with pytest.raises(ChannelError):
+        be.read_channel("smu.Icompliance2")
+    assert clean(e)
+
+
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("model", ["SR830", "SR850"])
+def test_sr830_family(backend, model):
+    be = backend
+    addr = "SIM::li_" + model
+    be.add_instrument("li", "sr830", addr, {"emulate_model": model})
+    e = emu(addr)
+    h = be.instruments.get("li")
+    assert h.state == "connected", h.last_error
+    assert e.outx == 1                                         # GPIB: replies to GPIB
+    x, y, r, th = (be.read_channel("li." + c) for c in ("X", "Y", "R", "theta"))
+    assert math.hypot(x, y) == pytest.approx(r) and th == pytest.approx(30.0)
+    assert be.read_channel("li.Xn") == pytest.approx(12e-9)
+    assert be.read_channel("li.Yn") == pytest.approx(11e-9)
+    if model == "SR830":
+        assert e.ddef[1] == (2, 0) and e.ddef[2] == (2, 0)
+    else:
+        assert e.trcd[3][0] == 5 and e.trcd[4][0] == 6
+    # sources (sweepable)
+    be.define_alias(name="Vac", target="li.sine_out", min=0.004, max=2)
+    be.define_alias(name="f", target="li.frequency")
+    be.define_alias(name="G", target="li.aux_out2", min=-1, max=1)
+    be.write_channel("Vac", 0.5, ramp=False)
+    assert be.read_channel("li.R") == pytest.approx(0.5e-3)
+    be.write_channel("f", 77.7, ramp=False)
+    assert be.read_channel("f") == pytest.approx(77.7)
+    be.write_channel("G", -0.8, ramp=False)
+    assert be.read_channel("li.aux_in2") == pytest.approx(-0.4)   # loop-back cable
+    be.channels.set_raw("li.phase", 400)           # raw write (scripts); wraps to ±180
+    assert be.read_channel("li.phase") == pytest.approx(40.0)
+    # every setting round-trips through all of its values
+    for c in ("sensitivity", "time_constant", "rolloff", "coupling", "ground", "line_filter",
+              "reserve", "sync_filter"):
+        for v in h.spec(c).allowed:
+            assert be.write_channel("li." + c, v) == v
+            assert be.read_channel("li." + c) == v, (c, v)
+    assert be.write_channel("li.time_constant", "300ms") == "300 ms"   # typed casually
+    be.write_channel("li.harmonic", 3)
+    assert be.read_channel("li.harmonic") == 3
+    with pytest.raises(ChannelError):
+        be.write_channel("li.harmonic", 2.5)
+    # current input: units and sensitivity labels follow
+    be.write_channel("li.input", "I (1 MOhm)")
+    assert h.spec("X").unit == "A" and h.spec("Xn").unit == "A/√Hz"
+    assert h.spec("sensitivity").allowed[-1] == "1 µA"
+    assert be.read_channel("li.R") == pytest.approx(0.5e-3 * 1e-6)    # A now
+    be.write_channel("li.sensitivity", "20 pA")
+    assert be.read_channel("li.sensitivity") == "20 pA"
+    be.write_channel("li.input", "I (100 MΩ)")
+    assert be.read_channel("li.input") == "I (100 MΩ)"
+    be.write_channel("li.input", "A")
+    assert h.spec("R").unit == "V"
+    # external reference: frequency becomes read-only
+    be.write_channel("li.reference", "External")
+    assert not h.spec("frequency").writable
+    with pytest.raises(ChannelError, match="not writable"):
+        be.write_channel("f", 10.0)
+    be.write_channel("li.reference", "Internal")
+    be.write_channel("f", 10.0, ramp=False)
+    # auto functions wait until the instrument is done
+    be.run_action("li.auto_phase")
+    assert abs(be.read_channel("li.Y")) < 1e-12
+    be.run_action("li.auto_gain")
+    be.run_action("li.auto_reserve")
+    assert be.read_channel("li.sensitivity") == "1 mV"
+    with pytest.raises(ChannelError, match="sine_out"):
+        be.channels.set_raw("li.sine_out", 6)
+    assert clean(e)
+
+
+def test_sr830_rs232_interface_option(backend):
+    be = backend
+    be.add_instrument("li", "sr830", "SIM::li232", {"interface": "RS232"})
+    assert emu("SIM::li232").outx == 0
+
+
+# ---------------------------------------------------------------------------
+def test_hp34401a_modes_rename_the_reading(backend):
+    be = backend
+    be.add_instrument("dmm", "hp34401a", "SIM::dmm")
+    e = emu("SIM::dmm")
+    h = be.instruments.get("dmm")
+    assert ":TRIG:SOUR IMM" in [":" + c.lstrip(":") for c in e.log]
+    be.define_alias(name="Vsample", target="dmm.Vdc")
+    assert be.read_channel("Vsample") == pytest.approx(1.234567, rel=1e-4)
+    expect = {"vdc": ("Vdc", "V"), "vac": ("Vac", "V"), "idc": ("Idc", "A"),
+              "iac": ("Iac", "A"), "ohm": ("R2w", "Ω"), "ohm4w": ("R4w", "Ω")}
+    for mode, (name, unit) in expect.items():
+        be.write_channel("dmm.mode", mode)
+        assert be.read_channel("dmm.mode") == mode
+        readings = [c for c in h.channels.values() if not c.config]
+        assert [c.name for c in readings] == [name] and readings[0].unit == unit
+        assert math.isfinite(be.read_channel("dmm." + name))
+        for rng in h.spec("range").allowed:
+            be.write_channel("dmm.range", rng)
+            assert be.read_channel("dmm.range") == rng
+        be.write_channel("dmm.range", "AUTO")
+        if mode in ("vac", "iac"):
+            assert "nplc" not in h.channels
+            for f in ("3 Hz", "20 Hz", "200 Hz"):
+                be.write_channel("dmm.ac_filter", f)
+                assert be.read_channel("dmm.ac_filter") == f
+            assert h.spec(name).timeout == 5.0           # 200 Hz filter settles fast
+        else:
+            assert "ac_filter" not in h.channels
+            for n in (0.02, 0.2, 1, 10, 100):
+                be.write_channel("dmm.nplc", n)
+                assert be.read_channel("dmm.nplc") == n
+            assert h.spec(name).timeout == pytest.approx(15.0)   # follows NPLC 100
+            be.write_channel("dmm.autozero", "OFF")
+            assert be.read_channel("dmm.autozero") == "OFF"
+    # the alias now points at a channel that does not exist in this mode
+    al = {a["name"]: a for a in be.list_channels()["aliases"]}
+    assert "no channel 'Vdc'" in al["Vsample"]["error"]
+    with pytest.raises(ChannelError, match="channels now: R4w"):
+        be.read_channel("Vsample")
+    with pytest.raises(ChannelError, match="one of"):
+        be.write_channel("dmm.nplc", 5)
+    be.write_channel("dmm.mode", "vdc")
+    assert be.read_channel("Vsample") == pytest.approx(1.234567, rel=1e-4)
+    be.write_channel("dmm.range", "100 mV")
+    assert be.read_channel("dmm.Vdc") == math.inf                  # overload
+    assert clean(e)
+
+
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def daq(backend):
+    from easymeasure.drivers.emulators import nidaqmx_sim
+    nidaqmx_sim.reset()
+    backend.add_instrument("daq", "ni6211", "DAQ::SIM1")
+    return backend
+
+
+def test_ni6211_channels_and_loopback(daq):
+    be = daq
+    h = be.instruments.get("daq")
+    assert h.state == "connected", h.last_error
+    names = list(h.channels)
+    for n in ["ai%d" % k for k in range(16)] + ["ai", "ao0", "ao1", "di0", "di3", "do0", "do3",
+                                                 "ctr0", "ctr1", "rate", "samples", "terminal",
+                                                 "ai_range"]:
+        assert n in names, n
+    assert be.read_channel("daq.ao1") == 0.0           # read back on the internal channel
+    be.define_alias(name="Vg", target="daq.ao0", min=-5, max=5, ramp_rate=50)
+    be.write_channel("Vg", 2.5)
+    assert be.read_channel("daq.ai0") == pytest.approx(2.5, abs=1e-3)
+    assert be.read_channel("daq.ai7") == pytest.approx(0.7, abs=1e-3)
+    v = be.read_channel("daq.ai")
+    assert v.shape == (16,) and v[0] == pytest.approx(2.5, abs=1e-3)
+    with pytest.raises(LimitError):
+        be.write_channel("Vg", 8)
+    with pytest.raises(ChannelError, match="±10"):
+        be.channels.set_raw("daq.ao1", 11)
+    be.define_alias(name="Trig", target="daq.do1")
+    be.write_channel("Trig", 1)
+    assert be.read_channel("daq.di1") == 1.0 and be.read_channel("daq.do1") == 1.0
+    be.write_channel("Trig", 0)
+    assert be.read_channel("daq.di1") == 0.0
+    c0 = be.read_channel("daq.ctr0")
+    time.sleep(0.03)
+    assert be.read_channel("daq.ctr0") > c0
+    be.run_action("daq.reset_counters")
+    assert be.read_channel("daq.ctr0") < 20
+
+
+def test_ni6211_speed_settings(daq):
+    be = daq
+    h = be.instruments.get("daq")
+    with pytest.raises(ChannelError, match="250 kS/s"):
+        be.write_channel("daq.rate", 20000)                 # 16 × 20 kS/s > 250 kS/s
+    be.write_channel("daq.rate", 15000)
+    be.write_channel("daq.samples", 1500)
+    assert h.spec("ai3").timeout == pytest.approx(5.1)       # follows samples / rate
+    be.read_channel("daq.ai3")
+    be.write_channel("daq.samples", 1)                       # on-demand single conversion
+    t = time.perf_counter()
+    for _ in range(20):
+        be.read_channel("daq.ai3")
+    assert (time.perf_counter() - t) / 20 < 0.02
+    be.write_channel("daq.terminal", "DIFF")
+    assert "ai8" not in h.channels and h.spec("ai").shape == (8,)
+    be.write_channel("daq.rate", 30000)                      # 8 inputs: 31.25 kS/s each
+    with pytest.raises(ChannelError):
+        be.write_channel("daq.terminal", "RSE")              # 16 × 30 kS/s: refused
+    assert be.read_channel("daq.terminal") == "DIFF"
+    be.write_channel("daq.ai_range", "±0.2 V")
+    assert be.read_channel("daq.ai_range") == "±0.2 V"
+    be.update_instrument("daq", options={"ai_channels": "0-1", "rate": 100000, "terminal": "RSE"})
+    h = be.instruments.get("daq")
+    assert [c for c in h.channels if c.startswith("ai") and c != "ai_range"] == ["ai0", "ai1", "ai"]
+    assert be.read_channel("daq.rate") == 100000
+
+
+def test_ni6211_without_ni_software(backend):
+    """A real device address needs NI-DAQmx: the error says what is missing."""
+    h = backend.add_instrument("daq", "ni6211", "DAQ::Dev1")
+    assert h["state"] == "error"
+    assert "Dev1" in h["last_error"] or "nidaqmx" in h["last_error"]
+
+
+def test_drivers_on_one_gpib_bus(backend):
+    """Several instruments behind one shared Prologix-style GPIB adapter."""
+    be = backend
+    be.add_instrument("smu", "keithley2400", "SIM::gpib", {"gpib_addr": 24, "shared": True,
+                                                         "load_ohm": 100.0})
+    be.add_instrument("dmm", "hp34401a", "SIM::gpib", {"gpib_addr": 22, "shared": True})
+    be.add_instrument("li", "sr830", "SIM::gpib", {"gpib_addr": 8, "shared": True})
+    for n in ("smu", "dmm", "li"):
+        assert be.instruments.get(n).state == "connected", be.instruments.get(n).last_error
+    assert len(be.list_resources()) == 1
+    be.define_alias(name="V", target="smu.voltage")
+    be.write_channel("smu.Icompliance", 0.01)
+    be.write_channel("smu.output", "ON")
+    for i in range(10):
+        be.write_channel("V", 0.01 * i, ramp=False)
+        assert be.read_channel("smu.current") == pytest.approx(1e-4 * i)
+        assert be.read_channel("dmm.Vdc") == pytest.approx(1.234567, rel=1e-4)
+        assert be.read_channel("li.theta") == pytest.approx(30.0)
+    for a in (24, 22, 8):
+        assert clean(emu("SIM::gpib", a))
+
+
+def test_example_hardware_setup_and_iv_sweep(backend):
+    """examples/hardware_setup.json + sweep_iv_current.json run on the emulators."""
+    from conftest import load_example
+    from easymeasure.drivers.emulators import nidaqmx_sim
+    nidaqmx_sim.reset()
+    be = backend
+    assert be.load_setup(setup=load_example("hardware_setup.json")) == []
+    for h in be.instruments.handles():
+        assert h.state == "connected", (h.name, h.last_error)
+    d = load_example("sweep_iv_current.json")
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(120)
+    item = be.queue_state()["history"][-1]
+    assert item["status"] == "finished", item
+    from easymeasure.backend.storage import DataSet
+    ds = DataSet.load(item["path"])
+    np.testing.assert_allclose(ds.data["Vsrc"], np.linspace(-2, 2, 41), rtol=1e-6, atol=1e-9)
+    assert ds.pre["smu.mode"] == "Current"
+    assert be.read_channel("smu.mode") == "Voltage" and be.read_channel("smu.output") == "OFF"
+    # the units in the file come from the instrument in its current-source mode
+    assert ds.header["units"]["Vsrc"] == "V" and ds.header["units"]["Isrc"] == "A"

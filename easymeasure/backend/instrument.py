@@ -51,6 +51,16 @@ class ChannelSpec:
 
     ``shape``: ``()`` for scalars, otherwise a tuple whose entries are fixed sizes
     or ``-1`` for "any size".  ``None`` means "unknown / anything".
+
+    ``allowed``: optional list of the accepted values (strings for ``str`` channels,
+    numbers for scalar ``float`` channels).  Writes are checked against it (text
+    ignoring case and blanks, numbers to 1e-9 relative) and normalised to the listed
+    spelling; front ends show a combo box instead of a text field.
+
+    A driver may return a *different* channel list from :meth:`Instrument.get_channels`
+    after a configuration channel was written (e.g. a mode switch renames the
+    reading channel or changes its unit): the backend asks again after every
+    configuration write and action, and tells the front ends when it changed.
     """
 
     name: str
@@ -63,6 +73,8 @@ class ChannelSpec:
     #: configuration channel (sensitivity, range, mode, ...): readable/writable on the
     #: instrument, but never aliased or swept, which keeps channel lists short
     config: bool = False
+    #: accepted values (see class doc); None = anything of the right type
+    allowed: Optional[List[Any]] = None
 
     def __post_init__(self):
         if self.access not in ("r", "w", "rw"):
@@ -71,6 +83,16 @@ class ChannelSpec:
             raise ValueError("dtype must be 'float' or 'str'")
         if self.shape is not None:
             self.shape = tuple(int(s) for s in self.shape)
+        if self.allowed is not None:
+            vals = list(self.allowed)
+            if not vals:
+                raise ValueError("allowed must list at least one value")
+            if self.dtype == "str":
+                self.allowed = [str(v) for v in vals]
+            else:
+                if self.shape != ():
+                    raise ValueError("allowed values need a scalar channel")
+                self.allowed = [float(v) for v in vals]
 
     @property
     def readable(self) -> bool:
@@ -84,11 +106,31 @@ class ChannelSpec:
     def is_scalar(self) -> bool:
         return self.shape == ()
 
+    def match_allowed(self, value: Any) -> Any:
+        """The listed spelling of *value*, or None if it is not an allowed value."""
+        if self.allowed is None:
+            return value
+        if self.dtype == "str":
+            key = _text_key(value)
+            for a in self.allowed:
+                if _text_key(a) == key:
+                    return a
+            return None
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return None
+        for a in self.allowed:
+            if x == a or abs(x - a) <= 1e-9 * max(abs(a), abs(x)):
+                return a
+        return None
+
     def to_dict(self) -> dict:
         return {
             "name": self.name, "access": self.access, "dtype": self.dtype,
             "shape": None if self.shape is None else list(self.shape),
             "unit": self.unit, "description": self.description, "config": self.config,
+            "allowed": None if self.allowed is None else list(self.allowed),
         }
 
     @classmethod
@@ -97,7 +139,7 @@ class ChannelSpec:
         return cls(name=d["name"], access=d.get("access", "rw"), dtype=d.get("dtype", "float"),
                    shape=None if shape is None else tuple(shape), unit=d.get("unit", ""),
                    description=d.get("description", ""), timeout=d.get("timeout"),
-                   config=bool(d.get("config", False)))
+                   config=bool(d.get("config", False)), allowed=d.get("allowed"))
 
 
 @dataclass
@@ -119,12 +161,37 @@ class ActionSpec:
         return cls(d["name"], d.get("description", ""), d.get("timeout"))
 
 
+def _text_key(v) -> str:
+    """Comparison key for allowed text values: case, blanks and the hard-to-type
+    µ / Ω do not matter ("500uV" == "500 µV", "I (1 MOhm)" == "I (1 MΩ)")."""
+    t = "".join(str(v).split()).casefold()
+    return t.replace("µ", "u").replace("μ", "u").replace("ω", "ohm")
+
+
 def coerce_value(value: Any, spec: ChannelSpec, direction: str = "read") -> Any:
     """Convert *value* to the channel's canonical representation.
 
     Numeric scalars become ``float``; numeric arrays become float64 ndarrays;
     strings stay ``str``.  Raises :class:`ChannelError` for incompatible data.
+    Channels with ``allowed`` values: a written value must be one of them and is
+    replaced by the listed spelling; a read value is normalised when it matches.
     """
+    v = _coerce(value, spec)
+    if spec.allowed is not None:
+        m = spec.match_allowed(v)
+        if m is not None:
+            return m
+        if direction == "write":
+            raise ChannelError("%s must be one of %s, got %r" % (
+                spec.name, ", ".join(_fmt_allowed(a) for a in spec.allowed), value))
+    return v
+
+
+def _fmt_allowed(a) -> str:
+    return a if isinstance(a, str) else "%g" % a
+
+
+def _coerce(value: Any, spec: ChannelSpec) -> Any:
     if spec.dtype == "str":
         if isinstance(value, bytes):
             value = value.decode("utf-8", errors="replace")
@@ -214,7 +281,12 @@ class Instrument:
         """Called before the port is released (inside a transaction)."""
 
     def get_channels(self) -> List[ChannelSpec]:
-        """Return the channel list (may depend on options / connected hardware)."""
+        """Return the channel list (may depend on options / connected hardware).
+
+        Called after :meth:`connect` and again after every write to a configuration
+        channel and every action, so the list may follow the instrument state (a mode
+        switch may rename a channel, change its unit or make it read-only).  Keep it
+        cheap: no I/O, just the state the driver already knows."""
         return list(self.CHANNELS)
 
     def get_actions(self) -> List[ActionSpec]:
@@ -315,6 +387,9 @@ class InstrumentHandle:
         self.resource: Optional[Resource] = None
         self.state = "disconnected"   # disconnected | connected | error | hung
         self.last_error = ""
+        #: called (outside the call lock) when the driver's channel/action list changed
+        self.on_specs_changed: Optional[Callable[["InstrumentHandle"], None]] = None
+        self._specs_dirty = False
         self._channels: Dict[str, ChannelSpec] = {}
         self._actions: Dict[str, ActionSpec] = {}
         self._worker: Optional[_Worker] = None
@@ -436,6 +511,7 @@ class InstrumentHandle:
     def connect(self) -> None:
         with self._locked():
             self._connect_locked()
+        self._fire_specs_changed()
 
     def _connect_locked(self) -> None:
         if self.driver is not None and self.state == "connected" and not self._needs_reconnect:
@@ -455,17 +531,8 @@ class InstrumentHandle:
                 self.resource.set_selector(self.name, self._make_selector(drv))
             self._run(drv.connect, timeout)
             chans = self._run(drv.get_channels, timeout, transaction=False)
-            self._channels = {}
-            for c in chans:
-                if not isinstance(c, ChannelSpec):
-                    c = ChannelSpec.from_dict(c)
-                self._channels[c.name] = c
             acts = self._run(drv.get_actions, timeout, transaction=False)
-            self._actions = {}
-            for a in acts or []:
-                if not isinstance(a, ActionSpec):
-                    a = ActionSpec.from_dict(a)
-                self._actions[a.name] = a
+            self._apply_specs(chans, acts)
             self.state = "connected"
             self.last_error = ""
             self._needs_reconnect = False
@@ -482,6 +549,63 @@ class InstrumentHandle:
             if isinstance(exc, EasyMeasureError):
                 raise
             raise InstrumentError("%s: connect failed: %s" % (self.name, exc)) from None
+
+    def _apply_specs(self, chans, acts) -> bool:
+        """Install a (new) channel/action list from the driver; True if it changed."""
+        new_c: Dict[str, ChannelSpec] = {}
+        for c in chans or []:
+            if not isinstance(c, ChannelSpec):
+                c = ChannelSpec.from_dict(c)
+            if c.name in new_c:
+                raise ChannelError("%s: duplicate channel name %r" % (self.name, c.name))
+            new_c[c.name] = c
+        new_a: Dict[str, ActionSpec] = {}
+        for a in acts or []:
+            if not isinstance(a, ActionSpec):
+                a = ActionSpec.from_dict(a)
+            new_a[a.name] = a
+        # compare with what clients saw so far (the static class lists before the
+        # first connect)
+        changed = new_c != self.channels or new_a != self.actions
+        self._channels, self._actions = new_c, new_a
+        if changed:
+            self._specs_dirty = True
+        return changed
+
+    def _refresh_specs(self, drv: Instrument) -> None:
+        """Re-ask the driver for its channel list (on the worker, under the call lock)."""
+        try:
+            self._apply_specs(drv.get_channels(), drv.get_actions())
+        except Exception as exc:          # a broken get_channels must not fail the write
+            log.warning("%s: get_channels() failed: %s", self.name, exc)
+
+    def refresh_specs(self) -> bool:
+        """Ask the driver again for its channel list; True if it changed."""
+        with self._locked():
+            drv = self.driver
+            if drv is None or self.state != "connected":
+                return False
+            spec = ChannelSpec("__specs__", "r", "str")
+            self._specs_dirty = False
+            self._run(lambda: self._refresh_specs(drv), spec.timeout or self.call_timeout,
+                      transaction=False)
+            changed = self._specs_dirty
+        self._fire_specs_changed()
+        return changed
+
+    def _fire_specs_changed(self) -> None:
+        if not self._specs_dirty:
+            return
+        self._specs_dirty = False
+        log.info("%s: channel list changed: %s", self.name,
+                 ", ".join("%s[%s]" % (c.name, c.unit) if c.unit else c.name
+                           for c in self._channels.values()))
+        cb = self.on_specs_changed
+        if cb is not None:
+            try:
+                cb(self)
+            except Exception as exc:
+                log.warning("%s: specs-changed listener failed: %s", self.name, exc)
 
     def _make_selector(self, drv: Instrument):
         def _sel(res: Resource):
@@ -508,6 +632,7 @@ class InstrumentHandle:
     def reconnect(self) -> None:
         with self._locked():
             self._reconnect_locked()
+        self._fire_specs_changed()
 
     def _reconnect_locked(self) -> None:
         self.stats["reconnects"] += 1
@@ -558,15 +683,25 @@ class InstrumentHandle:
             raise ChannelError("instrument %s has no action %r" % (self.name, name))
         spec = ChannelSpec("action:" + name, "w", "str", (), timeout=act.timeout)
         # never retried automatically: an action (trigger, reset) is not idempotent
-        self._guarded("action %s" % name, spec, lambda drv: drv.action(name), retries=0)
+
+        def do(drv: Instrument):
+            drv.action(name)
+            self._refresh_specs(drv)        # e.g. a reset may change the mode
+
+        self._guarded("action %s" % name, spec, do, retries=0)
         log.info("%s: action %s executed", self.name, name)
 
     def spec(self, channel: str) -> ChannelSpec:
         """Pure lookup (never does I/O, so it is safe for status queries)."""
         spec = self.channels.get(channel)
         if spec is None:
-            raise ChannelError("instrument %s has no channel %r" % (self.name, channel))
+            raise self._no_channel(channel)
         return spec
+
+    def _no_channel(self, channel: str) -> ChannelError:
+        names = list(self.channels)
+        return ChannelError("instrument %s has no channel %r%s" % (
+            self.name, channel, (" (channels now: %s)" % ", ".join(names)) if names else ""))
 
     def _io_spec(self, channel: str) -> ChannelSpec:
         """Lookup for an I/O call: may (re)connect to learn a dynamic channel list."""
@@ -579,7 +714,7 @@ class InstrumentHandle:
                 pass
             spec = self.channels.get(channel)
         if spec is None:
-            raise ChannelError("instrument %s has no channel %r" % (self.name, channel))
+            raise self._no_channel(channel)
         return spec
 
     # -- guarded operations -------------------------------------------------
@@ -616,6 +751,8 @@ class InstrumentHandle:
         except InstrumentTimeout:
             self._breaker_update(what, True)
             raise
+        finally:
+            self._fire_specs_changed()     # a (re)connect or config write changed them
         self._breaker_update(what, False)
         return result
 
@@ -703,6 +840,8 @@ class InstrumentHandle:
 
         def do(drv: Instrument):
             drv.write(channel, value)
+            if spec.config:
+                self._refresh_specs(drv)    # a mode switch may change the channel list
 
         self._guarded("write %s" % channel, spec, do)
 
@@ -715,6 +854,8 @@ class InstrumentHandle:
 
         def do(drv: Instrument):
             drv.write(channel, value)
+            if spec.config:
+                self._refresh_specs(drv)
             raw = drv.read(channel)
             try:
                 return coerce_value(raw, spec, "read")
@@ -775,6 +916,8 @@ class InstrumentManager:
         self.drivers = driver_registry
         self._handles: Dict[str, InstrumentHandle] = {}
         self._lock = threading.RLock()
+        #: callbacks ``f(instrument_name)`` run when an instrument's channel list changed
+        self.listeners: List[Callable[[str], None]] = []
 
     def add(self, name: str, driver: str, address: str = "NONE", options: Optional[dict] = None,
             connect: bool = True) -> InstrumentHandle:
@@ -785,6 +928,7 @@ class InstrumentManager:
             if name in self._handles:
                 raise ChannelError("instrument %r already exists" % name)
             h = InstrumentHandle(name, driver, cls, address, options or {}, self.resources)
+            h.on_specs_changed = self._specs_changed
             self._handles[name] = h
         if connect:
             try:
@@ -793,6 +937,15 @@ class InstrumentManager:
                 # keep it registered (state=error) so the user can fix & reconnect
                 pass
         return h
+
+    def _specs_changed(self, h: InstrumentHandle) -> None:
+        if self._handles.get(h.name) is not h:
+            return                         # removed / replaced meanwhile
+        for cb in list(self.listeners):
+            try:
+                cb(h.name)
+            except Exception as exc:
+                log.warning("instrument listener failed: %s", exc)
 
     def remove(self, name: str) -> None:
         with self._lock:

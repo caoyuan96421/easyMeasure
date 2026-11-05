@@ -39,6 +39,7 @@ export class SetupPanel {
       { key: "access", label: "Access" }, { key: "dtype", label: "Type" },
       { key: "shape", label: "Shape", fmt: (s) => (s === null || s === undefined ? "any" : s.length === 0 ? "scalar" : s.map((x) => (x === -1 ? "N" : x)).join("×")) },
       { key: "unit", label: "Unit" }, { key: "description", label: "Description" },
+      { key: "allowed", label: "Values", fmt: (v) => (v && v.length ? v.join(" | ") : "") },
     ], { empty: "select an instrument" });
     this.actions = new Table([{ key: "name", label: "Action" }, { key: "description", label: "Description" }],
       { onActivate: () => this._runAction(), empty: "no actions" });
@@ -188,7 +189,20 @@ export class SetupPanel {
     if (!ref) { this.say("select a channel", true); return; }
     const c = this.raw.current();
     if (!c.config) { this.say("use an alias to set measurement channels (limits and ramps apply)", true); }
-    const v = await formDialog(`Set ${ref}`, [{ key: "value", label: "Value", value: "" }]);
+    let current = "";
+    try { current = await this.conn.request("read_channel", { name: ref }); } catch (e) { /* unknown */ }
+    if (c.allowed && c.allowed.length) {
+      // only certain values accepted: offer them in a drop-down
+      const idx = c.allowed.findIndex((x) => (typeof x === "number" ? Math.abs(Number(current) - x) <= 1e-9 * Math.abs(x || 1)
+        : String(x).toLowerCase() === String(current).toLowerCase()));
+      const v = await formDialog(`Set ${ref}`, [{ key: "value", label: c.description || "Value", type: "select",
+        value: String(Math.max(0, idx)), options: c.allowed.map((x, i) => [String(i), typeof x === "number" ? fmt(x, 6) + (c.unit ? " " + c.unit : "") : String(x)]) }]);
+      if (v) await this._do("write_channel", { name: ref, value: c.allowed[Number(v.value)], ramp: true }, (r) => `${ref} = ${fmt(r)}`).catch(() => {});
+      return;
+    }
+    const v = await formDialog(`Set ${ref}`, [{ key: "value", label: c.description || "Value",
+      value: current === null || current === undefined ? "" : (typeof current === "number" ? String(Number(current.toPrecision(10))) : String(current)),
+      placeholder: c.unit || "" }]);
     if (v) await this._do("write_channel", { name: ref, value: parseValue(v.value), ramp: true }, (r) => `${ref} = ${fmt(r)}`).catch(() => {});
   }
 

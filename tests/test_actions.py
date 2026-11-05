@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from easymeasure.backend.drivers import DriverRegistry
+from easymeasure.backend.registry import DriverRegistry
 from easymeasure.backend.instrument import Instrument
 from easymeasure.backend.storage import DataSet
 from easymeasure.common.errors import EasyMeasureError, InstrumentError, InstrumentTimeout
@@ -159,9 +159,10 @@ def test_actions_under_hardware_faults(backend):
 class FakeSCPI:
     """Minimal line-based SCPI instrument on a local TCP port."""
 
-    def __init__(self, idn, replies):
+    def __init__(self, idn, replies, device=None):
         self.idn = idn
         self.replies = dict(replies)
+        self.device = device            # an emulator answers instead of the reply table
         self.received = []
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
@@ -193,7 +194,11 @@ class FakeSCPI:
                     line, buf = buf.split(b"\n", 1)
                     cmd = line.decode().strip()
                     self.received.append(cmd)
-                    if cmd.endswith("?"):
+                    if self.device is not None:
+                        reply = self.device.handle(cmd)
+                        if reply is not None:
+                            c.sendall((reply + "\n").encode())
+                    elif cmd.endswith("?"):
                         reply = self.idn if cmd == "*IDN?" else self.replies.get(cmd, "0")
                         c.sendall((reply + "\n").encode())
 
@@ -212,26 +217,31 @@ class FakeSCPI:
 
 
 def test_keithley_actions_and_config_over_tcp(backend):
-    fake = FakeSCPI("KEITHLEY INSTRUMENTS INC.,MODEL 2400,1,C30", {
-        ":SOUR:VOLT?": "0.5", ":READ?": "1.2E-6,0", ":SENS:CURR:PROT?": "1E-4",
-        ":OUTP?": "1", ":SENS:CURR:NPLC?": "1"})
+    """The Keithley 2400 driver over a real TCP socket (instrument = its emulator)."""
+    from easymeasure.drivers.emulators.smu import Keithley2400Emulator
+    dev = Keithley2400Emulator({"load_ohm": 1e5})
+    fake = FakeSCPI("", {}, device=dev)
     try:
         be = backend
         h = be.add_instrument("smu", "keithley2400", "TCP::127.0.0.1::%d" % fake.port)
         assert h["state"] == "connected", h
         assert {a["name"] for a in h["actions"]} == {"clear_status", "beep"}
-        assert {c["name"] for c in h["channels"] if c["config"]} == {"compliance", "output", "nplc"}
+        assert {c["name"] for c in h["channels"] if c["config"]} == {
+            "mode", "Icompliance", "output", "nplc", "sense", "terminals"}
         be.run_action("smu.clear_status")
         be.run_action("smu.beep")
         be.write_channel("smu.output", "ON")
         be.write_channel("smu.nplc", 10)
+        be.define_alias(name="Vsmu", target="smu.voltage", max=5)
+        be.write_channel("Vsmu", 0.12, ramp=False)
         assert be.read_channel("smu.current") == pytest.approx(1.2e-6)
         assert be.read_channel("smu.output") == "ON"
         rx = fake.wait_for(lambda r: ":OUTP ON" in r and any(x.startswith(":SENS:CURR:NPLC") for x in r))
         assert "*CLS" in rx and any(r.startswith(":SYST:BEEP") for r in rx)
-        assert ":OUTP ON" in rx and any(r.startswith(":SENS:CURR:NPLC 10") for r in rx)
+        assert ":OUTP ON" in rx and ":SENS:CURR:NPLC 10" in rx
         with pytest.raises(EasyMeasureError):
             be.write_channel("smu.output", "MAYBE")
+        assert dev.unknown == []
     finally:
         fake.close()
 

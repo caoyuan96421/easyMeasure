@@ -206,6 +206,13 @@ def _table(headers):
     return t
 
 
+def _same_num(a, b) -> bool:
+    try:
+        return abs(float(a) - float(b)) <= 1e-9 * max(abs(float(a)), 1e-300)
+    except (TypeError, ValueError):
+        return False
+
+
 def _short(v) -> str:
     if v is None:
         return ""
@@ -427,7 +434,11 @@ class SetupPanel(QWidget):
                                                   "×".join("N" if s == -1 else str(s) for s in shape)),
                     c.get("unit", ""), c.get("description", ""))
             for k, v in enumerate(vals):
-                self.raw.setItem(r, k, QTableWidgetItem(str(v)))
+                it = QTableWidgetItem(str(v))
+                if c.get("allowed"):
+                    it.setToolTip("allowed: " + ", ".join(
+                        a if isinstance(a, str) else "%g" % a for a in c["allowed"]))
+                self.raw.setItem(r, k, it)
             if c["name"] == sel:
                 self.raw.selectRow(r)
         acts = inst.get("actions", []) if inst else []
@@ -466,8 +477,15 @@ class SetupPanel(QWidget):
 
         def ask(current):
             from PySide6.QtWidgets import QInputDialog
-            txt, ok = QInputDialog.getText(self, "Set %s" % ref, "%s (%s)\nnew value:" % (
-                ref, c.get("description") or c["dtype"]), text=_short(current))
+            label = "%s (%s)\nnew value:" % (ref, c.get("description") or c["dtype"])
+            if c.get("allowed"):
+                items = [a if isinstance(a, str) else "%g" % a for a in c["allowed"]]
+                cur = next((i for i, a in enumerate(c["allowed"]) if str(a).casefold() ==
+                            str(current).casefold() or (not isinstance(a, str) and
+                                                        _same_num(a, current))), 0)
+                txt, ok = QInputDialog.getItem(self, "Set %s" % ref, label, items, cur, False)
+            else:
+                txt, ok = QInputDialog.getText(self, "Set %s" % ref, label, text=_short(current))
             if ok and txt.strip():
                 self.m_chan.setEditText(ref)
                 self.m_value.setText(txt.strip())

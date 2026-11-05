@@ -294,9 +294,13 @@ def test_manual_panel(app, gui):
     w, be, _, _ = gui
     mp = w.manual
     assert pump(app, 5, lambda: "Vg" in mp.rows)
-    # only aliases/composites that can be written, no config channels, no read-only
+    # aliases/composites that can be written (no read-only ones) + instrument settings
     assert "detuning" in mp.rows and "I" not in mp.rows
+    assert "dmm.nplc" in mp.rows and mp.rows["dmm.nplc"].kind == "config"
+    mp.settings.setChecked(False)
     assert not any("." in n for n in mp.rows)
+    mp.settings.setChecked(True)
+    assert "dmm.nplc" in mp.rows
     vg = mp.rows["Vg"]
     assert vg.slider is not None                   # min and max are known
     assert mp.rows["B"].slider is not None
@@ -422,3 +426,48 @@ def test_remote_access_dialog(app, gui):
     assert pump(app, 10, lambda: dlg.status.text() == "off")
     assert demo.settings["remote_access"] is False
     dlg.close()
+
+
+def test_allowed_values_and_mode_switch_in_gui(app, gui):
+    """Settings with allowed values get combo boxes; a mode switch rebuilds the rows."""
+    from PySide6.QtWidgets import QComboBox, QLineEdit
+    w, be, _, _ = gui
+    be.add_instrument("smu", "keithley2400", "SIM::guik24")
+    be.define_alias(name="Vsmu", target="smu.voltage")
+    mp = w.manual
+    assert pump(app, 5, lambda: "smu.mode" in mp.rows and "Vsmu" in mp.rows)
+    mode = mp.rows["smu.mode"].editor
+    assert isinstance(mode, QComboBox)
+    assert [mode.itemText(i) for i in range(mode.count())] == ["Voltage", "Current"]
+    assert pump(app, 5, lambda: mode.currentText() == "Voltage")      # read back
+    assert isinstance(mp.rows["smu.Icompliance"].editor, QLineEdit)   # number, any magnitude
+    out = mp.rows["smu.output"].editor
+    assert isinstance(out, QComboBox) and out.count() == 2
+    # choose "Current" in the combo: backend switches, the panel follows
+    mode.setCurrentIndex(1)
+    mode.activated.emit(1)
+    assert pump(app, 10, lambda: "smu.Vcompliance" in mp.rows and "smu.Icompliance" not in mp.rows)
+    assert be.read_channel("smu.mode") == "Current"
+    assert "Vsmu" not in mp.rows                    # voltage is measured now: not settable
+    # numeric choices (DMM nplc of the demo setup has none; the 34401A has a list)
+    be.add_instrument("hp", "hp34401a", "SIM::guihp")
+    assert pump(app, 5, lambda: "hp.nplc" in mp.rows)
+    nplc = mp.rows["hp.nplc"].editor
+    assert isinstance(nplc, QComboBox) and nplc.itemData(0) == 0.02
+    assert pump(app, 5, lambda: nplc.currentIndex() == 3)              # 10 PLC after *RST
+    nplc.setCurrentIndex(1)
+    nplc.activated.emit(1)
+    assert pump(app, 5, lambda: be.read_channel("hp.nplc") == 0.2)
+    # setup panel: the raw table tells the allowed values
+    sp = w.setup_panel
+    for r in range(sp.inst.rowCount()):
+        if sp.inst.item(r, 0).text() == "hp":
+            sp.inst.selectRow(r)
+    pump(app, 0.2)
+    names = [sp.raw.item(r, 0).text() for r in range(sp.raw.rowCount())]
+    assert names[0] == "Vdc"
+    assert "vdc" in sp.raw.item(names.index("mode"), 0).toolTip()
+    # sweep editor constants know the choices
+    w.editor.refresh_channels()
+    assert w.editor.pre.choices["smu.mode"] == ["Voltage", "Current"]
+    be.write_channel("smu.mode", "Voltage")

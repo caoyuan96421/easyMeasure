@@ -26,6 +26,8 @@ Address formats
 ``TCPIP0::1.2.3.4::inst0::INSTR``   pyvisa
 ``TCP::192.168.1.5::5025``          raw TCP socket (built-in, no pyvisa needed)
 ``SIM::<name>``                     simulated byte port (see drivers/simbus.py)
+``DAQ::<device>``                   NI-DAQmx device (``DAQ::Dev1``); no byte port, but
+                                    one owner, so two drivers cannot share a DAQ card
 ``NONE`` or empty                   instrument without a port (DLL/software)
 =================================  ===========================================
 """
@@ -445,8 +447,10 @@ def _backend_for(address: str, options: dict) -> PortBackend:
     if not a or up == "NONE":
         return NullBackend("NONE", options)
     if up.startswith("SIM::"):
-        from .drivers.simbus import SimPortBackend  # local import avoids a cycle
+        from ..drivers.simbus import SimPortBackend  # local import avoids a cycle
         return SimPortBackend(a, options)
+    if up.startswith("DAQ::"):
+        return NullBackend(a, options)           # the driver talks to NI-DAQmx itself
     if up.startswith("TCP::"):
         return SocketBackend(a, options)
     if up.startswith("COM") or a.startswith("/dev/"):
@@ -465,6 +469,8 @@ def normalize_address(address: Optional[str]) -> str:
     up = a.upper()
     if up.startswith("COM"):
         return up
+    if up.startswith("DAQ::"):
+        return "DAQ::" + a[5:]                   # device names are case sensitive
     if up.startswith(("GPIB", "USB", "TCPIP", "ASRL", "TCP::", "SIM::")):
         # VISA addresses are case-insensitive in the prefix; keep the remainder
         head, sep, rest = a.partition("::")

@@ -212,27 +212,68 @@ def compute_setpoints(d: dict) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-def validate_against(d: dict, channels) -> List[str]:
+def _instruments_of(channels, name: str) -> set:
+    """Instruments behind an alias / composite / raw reference (best effort)."""
+    try:
+        if channels.is_composite(name):
+            out = set()
+            for a in channels._composites[name].targets:
+                out |= _instruments_of(channels, a)
+            return out
+        if "." in name:
+            return {name.split(".", 1)[0]}
+        return {channels.get_alias(name).target.split(".", 1)[0]}
+    except Exception:
+        return set()
+
+
+def _pre_configured(d: dict, channels) -> set:
+    """Instruments whose settings (configuration channels) the pre-sweep constants change."""
+    out = set()
+    for c in d["pre"]["constants"]:
+        ch = c["channel"]
+        if "." in ch:            # raw constants can only be configuration channels
+            out.add(ch.split(".", 1)[0])
+    return out
+
+
+def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
     """Check channel existence/direction and limits for every setpoint.
 
     Returns a list of warnings; raises :class:`SweepDefinitionError` on errors.
+
+    A pre-sweep constant may change an instrument's settings and with them its
+    channel list (e.g. switch a source-measure unit from voltage to current
+    source).  Problems with channels of such an instrument are then only warnings
+    here; the runner checks again with ``after_pre=True`` once the pre-sweep
+    constants are applied, and stops before the first point if they remain.
     """
     warnings: List[str] = []
     errors: List[str] = []
     setpoints = compute_setpoints(d)
+    deferred = set() if after_pre else _pre_configured(d, channels)
+
+    def problem(name: str, text: str) -> None:
+        insts = _instruments_of(channels, name) & deferred
+        if insts:
+            warnings.append("%s (checked again after the pre-sweep constants change the "
+                            "settings of %s)" % (text, ", ".join(sorted(insts))))
+        else:
+            errors.append(text)
+
     for k, dim in enumerate(d["dimensions"]):
         for s in dim["sweep"]:
             ch = s["channel"]
             try:
                 info = channels.info(ch)
             except Exception as exc:
-                errors.append("sweep channel %s: %s" % (ch, exc))
+                problem(ch, "sweep channel %s: %s" % (ch, exc))
                 continue
             if info["kind"] == "raw":
                 errors.append("sweep channel %s must be an alias or composite" % ch)
                 continue
             if not info["writable"]:
-                errors.append("sweep channel %s is not writable" % ch)
+                problem(ch, "sweep channel %s is not writable" % ch)
                 continue
             if info["dtype"] == "str":
                 errors.append("string channel %s cannot be swept" % ch)
@@ -248,26 +289,45 @@ def validate_against(d: dict, channels) -> List[str]:
             try:
                 for v in sp:
                     channels.check_value(ch, v if np.ndim(v) else float(v))
-            except (LimitError, ChannelError) as exc:
+            except LimitError as exc:
                 errors.append(str(exc))
+            except ChannelError as exc:
+                problem(ch, str(exc))
         for r in dim["record"]:
             if r in ("@time", "@elapsed"):
                 continue
             try:
                 info = channels.info(r)
                 if not info["readable"]:
-                    errors.append("record channel %s is not readable" % r)
+                    problem(r, "record channel %s is not readable" % r)
             except Exception as exc:
-                errors.append("record channel %s: %s" % (r, exc))
-    for ph in ("pre", "post"):
+                problem(r, "record channel %s: %s" % (r, exc))
+    for ph in (("post",) if after_pre else ("pre", "post")):
+        # a constant may depend on an earlier one of the same phase (mode first, then
+        # the compliance of that mode): those are only checked when they are applied
+        changed = set(deferred) if ph == "post" else set()
         for c in d[ph]["constants"]:
+            ch = c["channel"]
             try:
-                channels.check_value(c["channel"], c["value"])
+                channels.check_value(ch, c["value"])
+            except LimitError as exc:
+                errors.append("%s constant %s: %s" % (ph, ch, exc))
             except Exception as exc:
-                errors.append("%s constant %s: %s" % (ph, c["channel"], exc))
+                text = "%s constant %s: %s" % (ph, ch, exc)
+                if _instruments_of(channels, ch) & changed:
+                    warnings.append(text + " (checked when applied: an earlier constant changes "
+                                    "the settings of that instrument)")
+                else:
+                    errors.append(text)
+            if "." in ch:
+                changed.add(ch.split(".", 1)[0])
         for r in d[ph]["record"]:
             if not channels.exists(r):
-                errors.append("%s record channel %s does not exist" % (ph, r))
+                text = "%s record channel %s does not exist" % (ph, r)
+                if _instruments_of(channels, r) & changed:
+                    warnings.append(text + " (yet)")
+                else:
+                    errors.append(text)
         if d[ph]["hook"]:
             try:
                 compile(d[ph]["hook"], "<%s-hook>" % ph, "exec")
@@ -555,6 +615,10 @@ class SweepRunner:
         main_error: Optional[BaseException] = None
         try:
             self._phase("pre")
+            if _pre_configured(self.d, self.channels):
+                # the pre-sweep constants changed instrument settings (and maybe their
+                # channel lists): make sure the sweep still makes sense before point 1
+                validate_against(self.d, self.channels, after_pre=True)
             self._loop(len(self.shape) - 1, ())
             self.status = "finished"
         except AbortRequested:

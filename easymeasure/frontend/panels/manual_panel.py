@@ -1,4 +1,8 @@
-"""Manual panel: set any aliased / composite channel directly.
+"""Manual panel: set any aliased / composite channel and instrument setting directly.
+
+Instrument settings (configuration channels such as a mode, range or time
+constant) are listed below the aliases when "settings" is ticked.  Channels with
+a list of allowed values get a combo box instead of a text field / spin box.
 
 Each channel row has a spin box, a slider (when the alias has both a minimum and
 a maximum) and a context menu on the spin box (right click) to enter a math
@@ -26,6 +30,17 @@ from ...common.exprs import Expression
 from ..widgets import shrinkable_label
 
 SLIDER_STEPS = 1000
+
+
+def _parse(text: str, numeric: bool):
+    """Value typed into a text field: a number for numeric channels if it parses."""
+    t = text.strip()
+    if numeric:
+        try:
+            return float(t)
+        except ValueError:
+            return t                       # let the backend explain what is wrong
+    return t
 BIG = 1e12
 
 
@@ -86,25 +101,37 @@ class ChannelRow:
         self.meta = meta
         self.lo = meta.get("min")
         self.hi = meta.get("max")
-        unit = meta.get("unit") or ""
+        unit = meta.get("display_unit") or meta.get("unit") or ""
+        choices = meta.get("choices") or meta.get("allowed")
+        self.numeric_choices = bool(choices) and meta.get("dtype") != "str"
         self.label = QLabel(self.name)
         fm = self.label.fontMetrics()
         self.label.setMinimumWidth(min(fm.horizontalAdvance(self.name) + 6, fm.averageCharWidth() * 14))
-        self.label.setToolTip("%s%s%s" % (self.name, (" → %s" % meta["target"]) if meta.get("target") else "",
-                                          ("\n" + meta["description"]) if meta.get("description") else ""))
+        self.label.setToolTip("%s%s%s%s" % (
+            self.name, (" → %s" % meta["target"]) if meta.get("target") else "",
+            (" [%s]" % unit) if unit and kind == "config" else "",
+            ("\n" + meta["description"]) if meta.get("description") else ""))
+        self._base_style = "font-style: italic" if kind == "config" else ""
+        self.label.setStyleSheet(self._base_style)
         self.slider: Optional[SafeSlider] = None
         self.editor = None
-        if meta.get("dtype") == "str":
-            if meta.get("allowed"):
-                cb = SafeCombo()
-                cb.addItems(meta["allowed"])
-                cb.activated.connect(lambda _i: self.panel.request_set(self.name, cb.currentText()))
-                self.editor = cb
-            else:
-                le = QLineEdit()
-                le.editingFinished.connect(lambda: le.isModified() and
-                                           self.panel.request_set(self.name, le.text()))
-                self.editor = le
+        if choices:
+            cb = SafeCombo()
+            for c in choices:
+                cb.addItem(("%g" % c + (" " + unit if unit else "")) if self.numeric_choices else str(c), c)
+            cb.setCurrentIndex(-1)
+            cb.activated.connect(lambda i: self.panel.request_set(self.name, cb.itemData(i)))
+            self.editor = cb
+        elif meta.get("dtype") == "str" or kind == "config":
+            # text, or a numeric setting without limits (frequency, NPLC ...): a line
+            # edit takes any magnitude, a spin box would need a range
+            le = QLineEdit()
+            numeric = meta.get("dtype") != "str"
+            if numeric and unit:
+                le.setPlaceholderText(unit)
+            le.editingFinished.connect(lambda: le.isModified() and
+                                       self.panel.request_set(self.name, _parse(le.text(), numeric)))
+            self.editor = le
         else:
             sp = SafeSpinBox()
             lo = self.lo if self.lo is not None else -BIG
@@ -162,18 +189,31 @@ class ChannelRow:
                     self.slider.setValue(self._to_slider(fv))
             elif isinstance(self.editor, QComboBox):
                 if not self.editor.view().isVisible():
-                    i = self.editor.findText(str(v))
-                    if i >= 0:
-                        self.editor.setCurrentIndex(i)
+                    self.editor.setCurrentIndex(self._choice_index(v))
             elif isinstance(self.editor, QLineEdit) and not self.editor.hasFocus():
-                self.editor.setText(str(v))
+                self.editor.setText(("%.10g" % v) if isinstance(v, float) else str(v))
                 self.editor.setModified(False)
         finally:
             self._updating = False
 
+    def _choice_index(self, v) -> int:
+        cb = self.editor
+        for i in range(cb.count()):
+            d = cb.itemData(i)
+            if self.numeric_choices:
+                try:
+                    if abs(float(v) - d) <= 1e-9 * max(abs(d), 1e-300):
+                        return i
+                except (TypeError, ValueError):
+                    return -1
+            elif str(d).casefold() == str(v).casefold():
+                return i
+        return -1
+
     def set_state(self, state: str, tip: str = "") -> None:
         color = {"busy": "#e39a1b", "error": "#d33c3c", "ok": ""}.get(state, "")
-        self.label.setStyleSheet("color: %s" % color if color else "")
+        self.label.setStyleSheet("; ".join(x for x in (self._base_style,
+                                                       "color: %s" % color if color else "") if x))
         base = self.label.toolTip().split("\n⚠")[0]
         self.label.setToolTip(base + ("\n⚠ " + tip if tip else ""))
 
@@ -239,6 +279,10 @@ class ManualPanel(QWidget):
         self._signature = None
         self._pending: Dict[str, bool] = {}
         self._queued: Dict[str, object] = {}
+        # read-backs wait in line per instrument: a rebuild asks for every value at
+        # once, and an instrument serves one request at a time anyway
+        self._rb_wait: Dict[str, list] = {}
+        self._rb_busy: Dict[str, bool] = {}
         self.last_expression: Dict[str, str] = {}
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("filter channels")
@@ -247,8 +291,14 @@ class ManualPanel(QWidget):
         self.ramp = QCheckBox("ramp")
         self.ramp.setChecked(True)
         self.ramp.setToolTip("respect the alias ramp rates (recommended)")
+        self.settings = QCheckBox("settings")
+        self.settings.setChecked(True)
+        self.settings.setToolTip("also list the instrument settings (configuration channels: "
+                                 "modes, ranges, time constants ...)")
+        self.settings.toggled.connect(lambda _: self._state(self.model.state))
         top = QHBoxLayout()
         top.addWidget(self.filter, 1)
+        top.addWidget(self.settings)
         top.addWidget(self.ramp)
         self.host = QWidget()
         self.grid = QGridLayout(self.host)
@@ -278,12 +328,20 @@ class ManualPanel(QWidget):
                 out.append((a, "alias"))
         for c in self.model.composites():
             out.append((dict(c, dtype="float"), "composite"))
+        if self.settings.isChecked():
+            for i in self.model.instruments():
+                for c in i.get("channels", []):
+                    if c.get("config") and "w" in c.get("access", "rw") and \
+                            (c.get("dtype") == "str" or not c.get("shape")):
+                        out.append((dict(c, name="%s.%s" % (i["name"], c["name"]),
+                                         choices=c.get("allowed")), "config"))
         return out
 
     def _state(self, st: dict) -> None:
         chans = self._channels()
-        sig = tuple((m["name"], m.get("dtype"), m.get("min"), m.get("max"), m.get("unit"),
-                     tuple(m.get("allowed") or ()), kind) for m, kind in chans)
+        sig = tuple((m["name"], m.get("dtype"), m.get("min"), m.get("max"),
+                     m.get("display_unit") or m.get("unit"),
+                     tuple(m.get("choices") or m.get("allowed") or ()), kind) for m, kind in chans)
         if sig != self._signature:
             self._signature = sig
             self._rebuild(chans)
@@ -314,7 +372,7 @@ class ManualPanel(QWidget):
             if meta.get("last") is None:
                 self.read_back(meta["name"])      # show the real present values
         if not chans:
-            self.message("no writable aliases or composites defined")
+            self.message("no writable aliases, composites or instrument settings")
         else:
             self.message("")
 
@@ -362,10 +420,31 @@ class ManualPanel(QWidget):
                           on_ok=lambda v: done(v), on_err=lambda e: done(None, False, e),
                           timeout=3600)
 
+    def _instrument_of(self, name: str) -> str:
+        row = self.rows.get(name)
+        target = (row.meta.get("target") if row is not None else None) or name
+        return target.split(".", 1)[0] if "." in target else "@" + name
+
     def read_back(self, name: str) -> None:
-        def got(v):
+        key = self._instrument_of(name)
+        wait = self._rb_wait.setdefault(key, [])
+        if name not in wait:
+            wait.append(name)
+        self._next_read_back(key)
+
+    def _next_read_back(self, key: str) -> None:
+        if self._rb_busy.get(key) or not self._rb_wait.get(key):
+            return
+        name = self._rb_wait[key].pop(0)
+        self._rb_busy[key] = True
+
+        def done(v=None, err=None):
+            self._rb_busy[key] = False
             row = self.rows.get(name)
-            if row is not None and not self._pending.get(name):
+            if err is not None:
+                self.message("✘ read %s: %s" % (name, err))
+            elif row is not None and not self._pending.get(name):
                 row.show_value(v)
-        self.conn.request("read_channel", {"name": name}, on_ok=got,
-                          on_err=lambda e: self.message("✘ read %s: %s" % (name, e)))
+            self._next_read_back(key)
+        self.conn.request("read_channel", {"name": name}, on_ok=lambda v: done(v),
+                          on_err=lambda e: done(err=e))

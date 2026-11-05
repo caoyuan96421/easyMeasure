@@ -1,7 +1,7 @@
 """Template for a new instrument driver.
 
 Copy this file into a driver directory (listed in the backend setting
-``driver_paths``) or into ``easymeasure/backend/drivers/``.  The driver name is
+``driver_paths``) or into ``easymeasure/drivers/``.  The driver name is
 the file name (here: ``driver_template``).
 
 Write the driver naively: the framework runs every call on a guarded worker
@@ -22,8 +22,11 @@ class MyPowerSupply(Instrument):
         ChannelSpec("voltage", "rw", "float", (), "V", "output voltage"),
         ChannelSpec("current", "r", "float", (), "A", "measured current"),
         # config=True: a setting (range, mode, output on/off ...), set directly in the
-        # GUI / sweep pre-post constants, never aliased or swept
-        ChannelSpec("output", "rw", "str", (), "", "ON/OFF", config=True),
+        # GUI / sweep pre-post constants, never aliased or swept.
+        # allowed=[...]: only these values (GUI and web show a drop-down; "on" -> "ON")
+        ChannelSpec("output", "rw", "str", (), "", "ON/OFF", config=True, allowed=["ON", "OFF"]),
+        ChannelSpec("range", "rw", "str", (), "", "current range", config=True,
+                    allowed=["10 mA", "100 mA", "1 A"]),
         ChannelSpec("trace", "r", "float", (-1,), "A", "buffered current trace", timeout=30.0),
     ]
 
@@ -60,6 +63,8 @@ class MyPowerSupply(Instrument):
         return self.resource.query("VOLT?")        # strings are converted to float
 
     def _write_voltage(self, value):
+        if value < 0:
+            raise ChannelError("negative voltages are not supported")   # ChannelError = not retried
         self.resource.write("VOLT %.6f" % value)   # value is already a float
 
     def _read_current(self):
@@ -69,9 +74,26 @@ class MyPowerSupply(Instrument):
         return "ON" if self.resource.query("OUTP?").strip() in ("1", "ON") else "OFF"
 
     def _write_output(self, value):
-        if value.upper() not in ("ON", "OFF"):
-            raise ChannelError("output must be ON or OFF")   # ChannelError = not retried
-        self.resource.write("OUTP %s" % value.upper())
+        # value is already "ON" or "OFF" (checked against allowed and normalised)
+        self.resource.write("OUTP %s" % value)
+
+    def _read_range(self):
+        r = float(self.resource.query("CURR:RANG?"))
+        return {0.01: "10 mA", 0.1: "100 mA", 1.0: "1 A"}.get(r, "%g A" % r)
+
+    def _write_range(self, value):
+        self.range = value
+        self.resource.write("CURR:RANG %s" % {"10 mA": 0.01, "100 mA": 0.1, "1 A": 1}[value])
+
+    # The channel list may follow the instrument state: called again after every
+    # configuration write / action / reconnect.  Keep it free of I/O.
+    def get_channels(self):
+        chans = list(self.CHANNELS)
+        if getattr(self, "range", "") == "10 mA":
+            # e.g. a different description / unit / access in this state
+            chans[1] = ChannelSpec("current", "r", "float", (), "A", "measured current (10 mA range)")
+        return chans
+
 
     def _read_trace(self):
         return self.resource.query("TRAC:DATA?")    # "1.0,2.0,3.0" -> numpy array

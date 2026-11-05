@@ -8,7 +8,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from ..instrument import Instrument
+from ..backend.instrument import Instrument
 from .simbus import FaultInjector, SimDevice, attach_device
 
 #: devices persist across driver re-creation (like real hardware keeps its state)

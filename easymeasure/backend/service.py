@@ -20,7 +20,7 @@ from ..common import paths
 from ..common.errors import ChannelError, EasyMeasureError, SweepDefinitionError
 from . import setup_io
 from .channels import Alias, ChannelManager, Composite
-from .drivers import DriverRegistry
+from .registry import DriverRegistry
 from .instrument import InstrumentManager
 from .logsys import get_logger, ring, setup_logging
 from .monitor import Monitor
@@ -86,6 +86,7 @@ class Backend:
         self.drivers.scan()
         self.instruments = InstrumentManager(self.resources, self.drivers)
         self.channels = ChannelManager(self.instruments)
+        self.instruments.listeners.append(self._instrument_specs_changed)
         self.control = RunControl()
         self.monitor = Monitor(self.channels)
         self.monitor.listeners.append(lambda m: self.emit("monitor", m))
@@ -234,6 +235,12 @@ class Backend:
         h.reconnect()
         self._changed("instruments")
         return h.describe()
+
+    def _instrument_specs_changed(self, name: str) -> None:
+        """A driver changed its channel list (mode switch ...): values cached for its
+        aliases are stale, and every front end must reload the state."""
+        self.channels.forget_instrument(name)
+        self._changed("instruments")
 
     def list_instruments(self) -> list:
         return self.instruments.describe()
@@ -566,7 +573,12 @@ class Backend:
             st = json.loads(rconfig.status_path(self.home).read_text())
         except Exception:
             pass
-        running = self._remote_proc_alive() and time.time() - float(st.get("t", 0)) < 10
+        # the status file must come from *this* gateway process: after a crash the old
+        # process's file is still fresh while the restarted one is not listening yet
+        # (the pid cannot tell: a venv's python.exe on Windows is a launcher)
+        t = float(st.get("t", 0))
+        running = self._remote_proc_alive() and t >= getattr(self, "_remote_spawned", 0) and \
+            time.time() - t < 10
         cfg = rconfig.load(self.home)
         users = UserStore(rconfig.users_path(self.home)).list()
         port = st.get("port") or cfg["port"]
@@ -659,6 +671,7 @@ class Backend:
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out, env=env)
         if os.name == "nt":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        self._remote_spawned = time.time()
         proc = subprocess.Popen(args, **kwargs)
         out.close()
         self._remote = proc

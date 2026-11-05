@@ -30,6 +30,10 @@ disturbing a running measurement.
 * **Live N-D plotting** (curves, stacked curves, heat maps with draggable levels
   and colormaps, sliders for extra dimensions), a monitor panel, and automatic
   PowerPoint slides at the end of every run.
+* **Ready-made hardware drivers** (Keithley 2400, Keysight B2901/B2902, SR830/SR850,
+  HP 34401A, NI USB-6211), each tested against an emulator built from the
+  instrument's programming manual; mode switches rename channels and change units
+  and the front ends follow.
 * **Remote access over the internet**: a TLS gateway (in its own process) serves a
   browser version of the GUI and a Python `RemoteClient`, with accounts, roles,
   brute-force lock-out, rate limits and an audit log.
@@ -112,15 +116,36 @@ re-entrant lock; when ownership changes the new owner's `select()` runs (e.g.
 `++addr 5` on a Prologix GPIB adapter). The measurement thread gets priority
 over monitor/GUI traffic, so monitoring never slows a sweep down.
 
-### Instruments and drivers (`backend/instrument.py`, `backend/drivers/`)
+### Instruments and drivers (`backend/instrument.py`, `drivers/`)
 An instrument exposes **channels** for read / write / query. A channel is
 `float` (scalar or an array of any dimension — e.g. a spectrum or a 2-D image)
 or `str`. Each driver is one Python file with a class deriving from
 `Instrument`, declaring `CHANNELS` and implementing `_read_<ch>` / `_write_<ch>`
 (or `read`/`write`). See `examples/driver_template.py`. Drivers are found in
-`easymeasure/backend/drivers/` and in extra directories (`driver_paths` setting);
+`easymeasure/drivers/` and in extra directories (`driver_paths` setting);
 a driver that fails to import is reported, never fatal. `scpi_generic` builds a
-SCPI instrument purely from options.
+SCPI instrument purely from options. The hardware drivers that come with
+easyMeasure are listed under [Hardware drivers](#hardware-drivers).
+
+**Allowed values** (`ChannelSpec(..., allowed=["Voltage", "Current"])`, or numbers
+for a scalar `float` channel, e.g. `allowed=[0.02, 0.2, 1, 10, 100]`): writes must be
+one of them and are normalised to the listed spelling (case, blanks, `u`/`µ` and
+`Ohm`/`Ω` do not matter: `"500uv"` sets `"500 µV"`). The GUI and the web page show a
+drop-down instead of a text box wherever the channel is set (manual panel, *Set…*,
+sweep pre/post constants); aliases inherit the list and may narrow it with their own
+`allowed`.
+
+**Channel lists that follow the instrument state.** `get_channels()` may return a
+different list after a configuration channel was written — the backend asks again
+after every configuration write, every action and every (re)connect, and pushes the
+new list to all front ends. A mode switch can so rename a channel (34401A: `Vdc` →
+`Iac`), change a unit (lock-in X in V or A, compliance `Icompliance` [A] ↔
+`Vcompliance` [V]) or make a channel read-only (the measured side of an SMU). An alias
+whose target disappeared reports the error instead of silently reading something else
+(re-point it, or switch back); cached alias values of that instrument are discarded.
+Sweeps whose pre-sweep constants change such a setting are validated again after the
+constants were applied, so `pre: smu.mode = Current` followed by a current sweep works,
+and a sweep that still does not fit stops before its first point.
 
 **Configuration channels** (`ChannelSpec(..., config=True)`): settings such as
 sensitivity, range, integration time or output on/off. They can be read and set
@@ -259,6 +284,69 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
 Nothing in the GUI blocks on the backend: every request is asynchronous with a
 callback, files load and slides render in worker threads.
 
+## Hardware drivers
+
+| driver | instrument | channels (settings in *italics*) |
+|---|---|---|
+| `keithley2400` | Keithley 2400-series SourceMeter | `voltage`, `current`, *`mode`* (Voltage / Current), *`Icompliance`* or *`Vcompliance`*, *`output`*, *`nplc`*, *`sense`* (2/4-wire), *`terminals`* |
+| `keysight_b2901` | Keysight B2901/B2911 SMU | as the 2400, plus *`low`* (ground / float); NPLC up to 100 |
+| `keysight_b2902` | Keysight B2902/B2912 SMU | the same per output with suffix `1` / `2` (`voltage1`, *`mode2`* …) |
+| `sr830` | SRS SR830 / SR850 (and SR810) lock-in | `X`, `Y`, `R`, `theta`, `Xn`, `Yn`, `aux_in1…4`; sources `sine_out`, `frequency`, `phase`, `aux_out1…4`; *`reference`*, *`sensitivity`*, *`time_constant`*, *`rolloff`*, *`coupling`*, *`ground`*, *`line_filter`*, *`input`*, *`reserve`*, *`harmonic`*, *`sync_filter`*; actions auto gain / phase / reserve |
+| `hp34401a` | HP/Agilent 34401A DMM | one reading named after *`mode`*: `Vdc`, `Vac`, `Idc`, `Iac`, `R2w`, `R4w`; *`range`*, *`nplc`*, *`autozero`* (DC/Ω), *`ac_filter`* (AC) |
+| `ni6211` | NI USB-6211 DAQ (NI-DAQmx) | `ai0…ai15` (`ai0…7` in DIFF), vector `ai`, `ao0`, `ao1`, `di0…3`, `do0…3`, `ctr0`, `ctr1`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`* |
+
+**Source-measure units.** In `Voltage` mode `voltage` is the source (read/write) and
+`current` is measured (read-only); the compliance is the current limit `Icompliance`
+in A. In `Current` mode it is the other way round with `Vcompliance` in V. The
+front ends follow the switch at once. Changing the mode requires the output to be
+OFF (the driver refuses otherwise rather than switching under load), and the
+measured quantity reads NaN while the output is off — nothing is measured, and the
+B2900 would otherwise switch its output on by itself for a measurement. A typical I–V
+curve in current mode:
+
+```json
+{"name": "iv", "dimensions": [{"points": 101,
+   "sweep": [{"channel": "Isrc", "start": 0, "stop": 1e-6}], "record": ["Vmeas"]}],
+ "pre":  {"constants": [{"channel": "smu.mode", "value": "Current"},
+                        {"channel": "smu.Vcompliance", "value": 2},
+                        {"channel": "smu.output", "value": "ON"}]},
+ "post": {"constants": [{"channel": "Isrc", "value": 0}, {"channel": "smu.output", "value": "OFF"}]}}
+```
+(`Isrc` → `smu.current`, `Vmeas` → `smu.voltage`.)
+
+**Lock-in.** Sensitivities and time constants are human-readable (`"500 µV"`,
+`"300 ms"`); with a current input the sensitivities are listed in A and X/Y/R are
+in A. `frequency` is read-only with an external reference. `Xn`/`Yn` are measured on
+the instrument's displays (SR830: CH1/CH2 are set to X/Y noise on the first read;
+SR850: traces 3 and 4). Sources such as `aux_out1` or `sine_out` are ordinary
+channels: alias them with limits and ramp rates and sweep them.
+
+**34401A.** The reading channel is renamed by the mode, so an alias on `dmm.Vdc`
+cannot record a current by mistake after somebody switched the meter to `idc` (it
+reports an error until the mode is back). Reading timeouts follow NPLC / AC filter.
+Overload (`9.9E37`) reads as ±inf.
+
+**NI USB-6211.** Needs NI-DAQmx and `pip install nidaqmx`; address `DAQ::Dev1` (the
+NI MAX name). Every analog reading is the mean of `samples` samples at `rate` per
+input; all scanned inputs together are limited to 250 kS/s (option `ai_channels`,
+e.g. `"0-3"`, scans fewer inputs for higher rates). `samples = 1` is a single
+on-demand conversion (sub-millisecond). `ai` returns all inputs of one scan as a
+vector.
+
+**Common options.** `reset` (`*RST` on connect), `check_errors` (read the error queue
+after every setting so a refused value raises an error with the instrument's own
+message, default on), `verify_writes` (SMUs: read every source value back — worth it
+on RS-232), `gpib_addr` + `shared` (several instruments behind one Prologix GPIB
+adapter: `++addr N` selects each), `timeout`, `read_termination`.
+
+**Without hardware.** Give a SCPI driver a `SIM::<name>` address and it talks to a
+built-in emulator of the instrument (`ni6211`: `DAQ::SIM`). The emulators implement
+the instruments' command tables from their programming manuals (short/long SCPI
+forms, optional nodes, error queue, `*ESR?`), physics good enough to see something
+(an SMU into a resistor with compliance clamping, a lock-in with a phase-shifted
+signal, loop-back wiring on the DAQ), and `tests/test_drivers.py` checks that every
+command a driver sends exists in the manual's table.
+
 ## Simulated instruments
 
 | driver | what it simulates |
@@ -307,6 +395,15 @@ requests, plus the faulty-hardware stress test and a browser on the live view): 
 forbidden request succeeded, 0 of 1545 probe pings failed (p50 7 ms, p99 0.4 s through
 the gateway; p50 1.5 ms, p99 0.25 s directly to the backend), the gateway stayed at
 180–215 MB, and its event loop never stalled.
+
+`tests/test_drivers.py` runs every hardware driver against its emulator: each
+command a driver sends must exist in the instrument's command table, settings
+round-trip through all their allowed values, mode switches rename channels and
+change units, refused values come back with the instrument's own error message, a
+noisy serial line is survived, several instruments share one GPIB adapter, and an
+I–V sweep in current-source mode runs from the example setup.
+`tests/test_dynamic_channels.py` covers allowed values and channel lists that change
+with the instrument state, including sweeps whose pre-sweep constants switch modes.
 
 The suite covers codec fuzzing, fair/priority locks, port arbitration, hung /
 crashing / garbage-returning drivers, circuit breaker, limits and ramp rates,
@@ -459,7 +556,8 @@ millisecond (0.5 ms measured over WSS on localhost) and a 2 MB map ~40 ms.
 ```
 easymeasure/
   backend/   resources, instrument, channels, sweep, runqueue, storage, monitor,
-             scripting, service, server, logsys, setup_io, drivers/
+             scripting, service, server, logsys, setup_io, registry (driver discovery)
+  drivers/   instrument drivers (hardware and simulated), emulators/ of the hardware
   frontend/  connection, model, main_window, panels/, plotting/
   client/    blocking clients for scripts (local and RemoteClient)
   remote/    internet gateway, accounts, access policy, web/ (browser frontend)

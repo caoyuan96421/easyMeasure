@@ -1,0 +1,16 @@
+{
+  "name": "iv_current_bias",
+  "dimensions": [
+    {"points": 41, "sweep": [{"channel": "Isrc", "start": -2e-3, "stop": 2e-3}],
+     "record": ["Vsrc", "Vdmm"], "pre_delay": 0.01}
+  ],
+  "pre": {"constants": [{"channel": "smu.output", "value": "OFF"},
+                        {"channel": "smu.mode", "value": "Current"},
+                        {"channel": "smu.Vcompliance", "value": 5},
+                        {"channel": "smu.nplc", "value": 1},
+                        {"channel": "smu.output", "value": "ON"}],
+          "record": ["smu.mode", "dmm.mode", "dmm.nplc"]},
+  "post": {"constants": [{"channel": "Isrc", "value": 0},
+                         {"channel": "smu.output", "value": "OFF"},
+                         {"channel": "smu.mode", "value": "Voltage"}]}
+}

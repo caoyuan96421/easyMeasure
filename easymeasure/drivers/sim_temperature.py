@@ -6,8 +6,8 @@ import math
 import threading
 import time
 
-from ...common.errors import ChannelError
-from ..instrument import ChannelSpec
+from ..common.errors import ChannelError
+from ..backend.instrument import ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 

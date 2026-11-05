@@ -5,7 +5,7 @@ must define a subclass of :class:`easymeasure.backend.instrument.Instrument`; if
 defines several, the one named in a module-level ``DRIVER`` variable is used.
 The driver is identified by its module name (e.g. ``sim_dmm``).
 
-Drivers are discovered in this package and in any additional directories given
+Drivers are discovered in the :mod:`easymeasure.drivers` package and in any additional directories given
 to :class:`DriverRegistry` (``driver_paths`` in the backend settings), so users can
 keep their own drivers outside the library.  Import errors are captured and
 reported instead of crashing the backend.
@@ -23,9 +23,10 @@ import traceback
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from ...common.errors import DriverError
-from ..instrument import Instrument
-from ..logsys import get_logger
+from .. import drivers as _drivers_pkg
+from ..common.errors import DriverError
+from .instrument import Instrument
+from .logsys import get_logger
 
 log = get_logger("drivers")
 
@@ -45,9 +46,9 @@ class DriverRegistry:
         with self._lock:
             self._classes.clear()
             self._errors.clear()
-            pkg_path = Path(__file__).parent
+            pkg_path = Path(_drivers_pkg.__file__).parent
             for mod in pkgutil.iter_modules([str(pkg_path)]):
-                if mod.name.startswith("_") or mod.name in _SKIP:
+                if mod.ispkg or mod.name.startswith("_") or mod.name in _SKIP:
                     continue
                 self._load_builtin(mod.name)
             for d in self.extra_paths:
@@ -80,7 +81,7 @@ class DriverRegistry:
 
     def _load_builtin(self, name: str) -> None:
         try:
-            module = importlib.import_module(__name__ + "." + name)
+            module = importlib.import_module(_drivers_pkg.__name__ + "." + name)
             self._register_module(name, module)
         except Exception:
             self._errors[name] = traceback.format_exc(limit=5)

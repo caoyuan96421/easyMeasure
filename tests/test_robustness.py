@@ -117,7 +117,7 @@ def test_hung_instrument_during_sweep(backend):
     be.define_alias(name="Vg", target="src.V1", min=-1, max=1)
     be.define_alias(name="I", target="dmm.reading")
     # make the dmm hang hard every few calls
-    from easymeasure.backend.drivers._simbase import _DEVICES
+    from easymeasure.drivers._simbase import _DEVICES
     dev = _DEVICES[("H1", 2)]
     dev.faults.hang_rate = 0.15
     dev.faults.hang_time = 3.0

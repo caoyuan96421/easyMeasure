@@ -10,7 +10,8 @@ instrument layer:
 * ``ramp_rate``     - maximum rate of change in units/second (``None`` = jump).
 * ``ramp_step``     - optional maximum step per write while ramping.
 * ``scale`` / ``offset`` - alias value = raw * scale + offset (e.g. amplifier gain).
-* ``allowed``       - for string channels, the list of accepted values.
+* ``allowed``       - for string channels, the list of accepted values (narrows the
+                      instrument channel's own ``allowed`` list, if it has one).
 * ``read_only``     - refuse all writes through this alias.
 
 Composite channels
@@ -263,12 +264,24 @@ class ChannelManager:
                     "shape": None if spec.shape is None else list(spec.shape),
                     "readable": spec.readable, "writable": spec.writable and not a.read_only,
                     "unit": a.unit or spec.unit, "min": a.min, "max": a.max,
-                    "ramp_rate": a.ramp_rate}
+                    "ramp_rate": a.ramp_rate, "choices": self._choices(a, spec)}
         h, spec = self.instruments.resolve(name)
         return {"name": name, "kind": "raw", "dtype": spec.dtype,
                 "shape": None if spec.shape is None else list(spec.shape),
                 "readable": spec.readable, "writable": spec.writable and spec.config,
-                "unit": spec.unit, "config": spec.config}
+                "unit": spec.unit, "config": spec.config,
+                "choices": None if spec.allowed is None else list(spec.allowed)}
+
+    @staticmethod
+    def _choices(a: Alias, spec: ChannelSpec):
+        """Values a front end should offer for an alias (None = free input)."""
+        if spec.dtype == "str" and a.allowed:
+            if spec.allowed is None:
+                return list(a.allowed)
+            return [spec.match_allowed(v) for v in a.allowed if spec.match_allowed(v) is not None]
+        if spec.allowed is not None and a.scale == 1.0 and a.offset == 0.0:
+            return list(spec.allowed)
+        return None
 
     def _alias_spec(self, a: Alias) -> ChannelSpec:
         _, spec = self.instruments.resolve(a.target)
@@ -289,7 +302,8 @@ class ChannelManager:
             try:
                 inf = self.info(a.name)
                 d.update(dtype=inf["dtype"], shape=inf["shape"], readable=inf["readable"],
-                         writable=inf["writable"])
+                         writable=inf["writable"], choices=inf["choices"],
+                         display_unit=inf["unit"])     # alias unit, else the instrument's
             except Exception as exc:
                 d.update(error=str(exc))
             d["last"] = self._last.get(a.name)
@@ -323,8 +337,9 @@ class ChannelManager:
             if not spec.writable:
                 raise ChannelError("alias %s (%s) is not writable" % (name, a.target))
             if spec.dtype == "str":
-                v = str(value)
-                if a.allowed and v not in a.allowed:
+                from .instrument import coerce_value
+                v = coerce_value(str(value), spec, "write")   # instrument's own list
+                if a.allowed and not _in_allowed(v, a.allowed):
                     raise LimitError("%s: %r not in allowed values %s" % (name, v, a.allowed))
                 return v
             arr = self._to_array(name, value)
@@ -342,8 +357,12 @@ class ChannelManager:
                 raise ChannelError("%s is read-only" % name)
             from .instrument import coerce_value
             return coerce_value(value, spec, "write")
-        raise ChannelError("unknown channel %r (instrument channels must be aliased before "
-                           "they can be set, unless they are configuration channels)" % name)
+        if "." in name:
+            self.instruments.resolve(name)     # says which channels the instrument has now
+            raise ChannelError("%s is a measurement channel: define an alias to set it (limits "
+                               "and ramps apply); only configuration channels are set directly"
+                               % name)
+        raise ChannelError("unknown channel %r" % name)
 
     def _raw_config_spec(self, name: str):
         """The spec of ``instrument.channel`` if it is a configuration channel."""
@@ -470,7 +489,7 @@ class ChannelManager:
             if a.read_only:
                 raise ChannelError("%s is protected by read-only alias %s" % (ref, a.name))
             if spec.dtype == "str":
-                if a.allowed and str(value) not in a.allowed:
+                if a.allowed and not _in_allowed(str(value), a.allowed):
                     raise LimitError("%s (alias %s): %r not in allowed values %s"
                                      % (ref, a.name, value, a.allowed))
                 continue
@@ -662,6 +681,12 @@ class ChannelManager:
             self._ramp(items, lambda u: [s0 + (t - s0) * u for s0, t in zip(starts, tvals)],
                        2, abort_check)
         self._last[c.name] = x
+
+
+def _in_allowed(v: str, allowed) -> bool:
+    from .instrument import _text_key
+    key = _text_key(v)
+    return any(_text_key(a) == key for a in allowed)
 
 
 def _fmt(v) -> str:

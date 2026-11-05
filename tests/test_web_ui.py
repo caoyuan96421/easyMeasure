@@ -155,3 +155,40 @@ def test_web_ui_end_to_end(browser, gw, demo, tmp_path):
     v.click("button:has-text('Log out')")
     v.wait_for_selector("#login-user", state="visible")
     assert errors == [], errors
+
+
+def test_web_settings_combos_and_mode_switch(browser, gw, demo):
+    """Instrument settings in the web manual panel: drop-downs for allowed values,
+    and the panel follows a mode switch (renamed / read-only channels)."""
+    demo.add_instrument("smu", "keithley2400", "SIM::webk24")
+    demo.add_instrument("hp", "hp34401a", "SIM::webhp")
+    errors = []
+    page = open_page(browser, gw, "olga", errors)
+    row = page.locator(".man-row", has_text="smu.mode").first
+    sel = row.locator("select")
+    page.wait_for_function("""() => { const r = [...document.querySelectorAll('.man-row')]
+        .find(e => e.textContent.includes('smu.mode'));
+        return r && r.querySelector('select').selectedOptions[0].text === 'Voltage'; }""", timeout=10000)
+    assert sel.locator("option").all_text_contents()[1:] == ["Voltage", "Current"]
+    assert page.locator(".man-row", has_text="smu.Icompliance").count() == 1
+    sel.select_option(label="Current")
+    page.wait_for_selector(".man-row:has-text('smu.Vcompliance')", timeout=10000)
+    assert page.locator(".man-row", has_text="smu.Icompliance").count() == 0
+    assert demo.read_channel("smu.mode") == "Current"
+    # numeric choices (34401A NPLC) show as a drop-down with units, values sent as numbers
+    nplc = page.locator(".man-row", has_text="hp.nplc").first.locator("select")
+    assert "0.2 PLC" in nplc.locator("option").all_text_contents()
+    nplc.select_option(label="0.2 PLC")
+    t0 = time.time()
+    while demo.read_channel("hp.nplc") != 0.2 and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.read_channel("hp.nplc") == 0.2
+    # the DMM mode renames its reading channel; the setup table lists the new one
+    page.locator(".man-row", has_text="hp.mode").first.locator("select").select_option(label="iac")
+    page.wait_for_selector(".man-row:has-text('hp.ac_filter')", timeout=10000)
+    page.click(".tab:has-text('Instruments')")
+    page.click("td:text-is('hp')")
+    page.wait_for_selector("td:text-is('Iac')", timeout=10000)
+    assert page.locator("td:text-is('Vdc')").count() == 0
+    assert not errors, errors
+    page.context.close()

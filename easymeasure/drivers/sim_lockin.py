@@ -10,8 +10,8 @@ import math
 
 import numpy as np
 
-from ...common.errors import ChannelError
-from ..instrument import ActionSpec, ChannelSpec
+from ..common.errors import ChannelError
+from ..backend.instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 

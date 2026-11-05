@@ -173,6 +173,7 @@ table.grid.edit input { width: 100%; }
 .man-row { display: grid; grid-template-columns: minmax(50px, 9em) minmax(70px, 8em) auto minmax(40px, 1fr) auto; gap: 4px; align-items: center; }
 .man-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .man-label.busy { color: var(--warn); } .man-label.err { color: var(--err); }
+.man-label.config { font-style: italic; }
 .man-num { width: 100%; font-family: var(--font-mono); }
 .man-slider { width: 100%; }
 .unit { color: var(--muted); font-size: .9rem; }

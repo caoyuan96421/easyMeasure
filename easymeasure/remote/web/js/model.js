@@ -61,6 +61,13 @@ export class Model {
     return this.instruments().flatMap((i) => (i.channels || []).filter((c) => c.config &&
       (writable ? (c.access || "rw").includes("w") : (c.access || "rw").includes("r"))).map((c) => `${i.name}.${c.name}`));
   }
+  /** name -> allowed values, for aliases and configuration channels that only take certain values */
+  channelChoices() {
+    const out = {};
+    for (const a of this.aliases()) if (a.choices && a.choices.length) out[a.name] = a.choices;
+    for (const i of this.instruments()) for (const c of i.channels || []) if (c.allowed && c.allowed.length) out[`${i.name}.${c.name}`] = c.allowed;
+    return out;
+  }
   actions() {
     return this.instruments().flatMap((i) => (i.actions || []).map((a) => `${i.name}.${a.name}`));
   }

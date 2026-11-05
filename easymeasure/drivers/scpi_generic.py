@@ -24,8 +24,8 @@ from __future__ import annotations
 
 from typing import List
 
-from ...common.errors import ChannelError
-from ..instrument import ActionSpec, ChannelSpec, Instrument
+from ..common.errors import ChannelError
+from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
 
 
 class SCPIGeneric(Instrument):

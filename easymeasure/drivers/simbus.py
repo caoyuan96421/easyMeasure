@@ -26,8 +26,8 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
-from ...common.errors import ResourceError
-from ..resources import PortBackend
+from ..common.errors import ResourceError
+from ..backend.resources import PortBackend
 
 
 class FaultInjector:

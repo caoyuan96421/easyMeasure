@@ -149,6 +149,7 @@ class PhaseEditor {
   constructor(phase, canHook) {
     this.phase = phase;
     this.channels = [];
+    this.choices = {};
     this.listId = "ph-" + phase + Math.random().toString(36).slice(2);
     this.list = h("datalist", { id: this.listId });
     this.tbody = h("tbody");
@@ -170,10 +171,12 @@ class PhaseEditor {
         group("Record once", this.record.el)),
       group("Hook code", this.hook, bar(h("span", { text: "Action" }), this.actionBox, this.addAction), this.hookNote));
   }
-  setChannels(writable, readable) {
+  setChannels(writable, readable, choices = {}) {
     this.channels = writable;
+    this.choices = choices;
     this.list.replaceChildren(...writable.map((n) => h("option", { value: n })));
     this.record.setNames(readable);
+    for (const c of this.consts) c.sync();
   }
   setActions(actions) {
     const cur = this.actionBox.value;
@@ -191,10 +194,20 @@ class PhaseEditor {
     const ch = h("input", { value: e.channel || "", class: "w-chan" });
     ch.setAttribute("list", this.listId);
     const val = h("input", { value: e.value ?? "", class: "w-expr" });
+    // channels that only accept certain values suggest them (datalist drop-down)
+    const opts = h("datalist", { id: this.listId + "-v" + Math.random().toString(36).slice(2) });
+    val.setAttribute("list", opts.id);
     const c = { ch, val };
+    c.sync = () => {
+      const ch_ = this.choices[ch.value.trim()] || [];
+      opts.replaceChildren(...ch_.map((x) => h("option", { value: String(x) })));
+      val.title = ch_.length ? "one of: " + ch_.join(", ") : "";
+    };
+    ch.addEventListener("input", c.sync);
+    c.sync();
     const rm = h("button", { text: "−", on: { click: () => { this.consts = this.consts.filter((x) => x !== c); tr.remove(); } } });
     c.rm = rm;
-    const tr = h("tr", {}, h("td", {}, ch), h("td", {}, val), h("td", {}, rm));
+    const tr = h("tr", {}, h("td", {}, ch), h("td", {}, val, opts), h("td", {}, rm));
     ch.readOnly = val.readOnly = this.ro;
     rm.disabled = !!this.ro;
     this.consts.push(c);
@@ -293,7 +306,8 @@ export class SweepEditor {
     for (const d of this.dims) d.setChannels(w, r);
     const wall = this.model.writableChannels().concat(this.model.configChannels(true));
     const rall = r.concat(this.model.configChannels());
-    this.pre.setChannels(wall, rall); this.post.setChannels(wall, rall);
+    const ch = this.model.channelChoices();
+    this.pre.setChannels(wall, rall, ch); this.post.setChannels(wall, rall, ch);
     const acts = this.model.actions();
     this.pre.setActions(acts); this.post.setActions(acts);
     this.setReadOnly(this.readOnly);

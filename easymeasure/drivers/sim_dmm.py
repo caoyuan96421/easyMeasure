@@ -8,8 +8,8 @@ magnetic field are taken from the simulated world, by default from
 
 from __future__ import annotations
 
-from ...common.errors import ChannelError
-from ..instrument import ActionSpec, ChannelSpec
+from ..common.errors import ChannelError
+from ..backend.instrument import ActionSpec, ChannelSpec
 from ._simbase import FAULT_OPTION_DOC, SimBusInstrument, get_or_create_device
 from .simbus import FaultInjector, SCPIDevice
 from .simworld import WORLD

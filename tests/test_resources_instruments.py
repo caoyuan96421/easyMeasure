@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from easymeasure.backend.drivers import DriverRegistry
+from easymeasure.backend.registry import DriverRegistry
 from easymeasure.backend.instrument import (ChannelSpec, Instrument, InstrumentManager,
                                             coerce_value)
 from easymeasure.backend.resources import FairLock, ResourceManager
@@ -297,7 +297,8 @@ def test_dynamic_channels_after_failed_connect(mgr):
 
 def test_review_hanging_open_does_not_deadlock():
     """A port whose open() hangs must not block invalidate()/other callers forever."""
-    from easymeasure.backend.drivers import simbus, DriverRegistry
+    from easymeasure.drivers import simbus
+    from easymeasure.backend.registry import DriverRegistry
     hang = {"on": False}
     orig = simbus.SimPortBackend.open
 
@@ -350,9 +351,9 @@ def test_review_busy_instrument_bounded_wait(mgr):
 
 
 def test_review_shared_bus_not_invalidated_by_other_instrument():
-    from easymeasure.backend.drivers import DriverRegistry
-    from easymeasure.backend.drivers.sim_source import SimVoltageSource
-    from easymeasure.backend.drivers._simbase import _DEVICES
+    from easymeasure.backend.registry import DriverRegistry
+    from easymeasure.drivers.sim_source import SimVoltageSource
+    from easymeasure.drivers._simbase import _DEVICES
 
     class Src2(SimVoltageSource):
         def get_channels(self):

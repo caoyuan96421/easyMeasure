@@ -95,6 +95,19 @@ class BackendModel(QObject):
                 for c in i.get("channels", []) if c.get("config")
                 and ("w" in c.get("access", "rw") if writable else "r" in c.get("access", "rw"))]
 
+    def channel_choices(self) -> dict:
+        """``name -> list of allowed values`` for aliases and configuration channels
+        that only accept certain values (front ends offer a combo box)."""
+        out = {}
+        for a in self.aliases():
+            if a.get("choices"):
+                out[a["name"]] = list(a["choices"])
+        for i in self.instruments():
+            for c in i.get("channels", []):
+                if c.get("allowed"):
+                    out["%s.%s" % (i["name"], c["name"])] = list(c["allowed"])
+        return out
+
     def actions(self) -> List[str]:
         """All instrument actions as ``instrument.action``."""
         return ["%s.%s" % (i["name"], a["name"]) for i in self.instruments()

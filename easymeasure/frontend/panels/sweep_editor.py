@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QAbstractItemView, QStyledItemDelegate, QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                                QPlainTextEdit, QPushButton, QSpinBox, QSplitter,
@@ -245,6 +245,40 @@ class DimensionEditor(QWidget):
         self.record.set_read_only(ro)
 
 
+class _ValueDelegate(QStyledItemDelegate):
+    """Value cell of a constant: a combo box when the channel only accepts certain values."""
+
+    def __init__(self, editor: "PhaseEditor"):
+        super().__init__(editor.consts)
+        self.phase_editor = editor
+
+    def _choices(self, index):
+        cb = self.phase_editor.consts.cellWidget(index.row(), 0)
+        return self.phase_editor.choices.get(cb.currentText().strip()) if cb is not None else None
+
+    def createEditor(self, parent, option, index):          # noqa: N802 - Qt API
+        ch = self._choices(index)
+        if not ch:
+            return super().createEditor(parent, option, index)
+        box = QComboBox(parent)
+        box.addItems([c if isinstance(c, str) else "%g" % c for c in ch])
+        return box
+
+    def setEditorData(self, editor, index):                 # noqa: N802
+        if isinstance(editor, QComboBox):
+            cur = str(index.data() or "").casefold()
+            i = next((k for k in range(editor.count()) if editor.itemText(k).casefold() == cur), 0)
+            editor.setCurrentIndex(i)
+        else:
+            super().setEditorData(editor, index)
+
+    def setModelData(self, editor, model, index):           # noqa: N802
+        if isinstance(editor, QComboBox):
+            model.setData(index, editor.currentText())
+        else:
+            super().setModelData(editor, model, index)
+
+
 class PhaseEditor(QWidget):
     """Pre- or post-sweep settings: constants, one-off recordings, hook code."""
 
@@ -256,6 +290,8 @@ class PhaseEditor(QWidget):
         self.consts.horizontalHeader().setStretchLastSection(True)
         self.consts.setColumnWidth(0, 160)
         self.channels: List[str] = []
+        self.choices: dict = {}
+        self.consts.setItemDelegateForColumn(1, _ValueDelegate(self))
         add = QPushButton("+ constant")
         rm = QPushButton("− remove")
         add.clicked.connect(lambda: self.add_const())
@@ -335,8 +371,9 @@ class PhaseEditor(QWidget):
         self.consts.setCellWidget(r, 0, cb)
         self.consts.setItem(r, 1, QTableWidgetItem(str(entry.get("value", ""))))
 
-    def set_channels(self, writable, readable):
+    def set_channels(self, writable, readable, choices=None):
         self.channels = writable
+        self.choices = dict(choices or {})
         for r in range(self.consts.rowCount()):
             cb = self.consts.cellWidget(r, 0)
             cur = cb.currentText()
@@ -503,8 +540,9 @@ class SweepEditor(QWidget):
         m = self.model
         wall = (m.writable_channels() + m.config_channels(writable=True)) if m else []
         rall = (r + m.config_channels()) if m else r
-        self.pre.set_channels(wall, rall)
-        self.post.set_channels(wall, rall)
+        ch = m.channel_choices() if m else {}
+        self.pre.set_channels(wall, rall, ch)
+        self.post.set_channels(wall, rall, ch)
         acts = m.actions() if m else []
         self.pre.set_actions(acts)
         self.post.set_actions(acts)

@@ -159,18 +159,29 @@ class ChannelRow {
     this.lo = typeof meta.min === "number" ? meta.min : null;
     this.hi = typeof meta.max === "number" ? meta.max : null;
     this.typing = false;
-    this.label = h("span", { class: "man-label", text: this.name,
+    const unitText = meta.display_unit || meta.unit || "";
+    const choices = meta.choices || meta.allowed;
+    this.numChoices = !!(choices && choices.length) && meta.dtype !== "str";
+    this.label = h("span", { class: "man-label" + (meta.kind === "config" ? " config" : ""), text: this.name,
       title: `${this.name}${meta.target ? " → " + meta.target : ""}${meta.description ? "\n" + meta.description : ""}` });
     this.slider = null;
-    if (meta.dtype === "str") {
-      if (meta.allowed && meta.allowed.length) {
-        this.editor = h("select", { on: { change: () => panel.requestSet(this.name, this.editor.value) } },
-          meta.allowed.map((a) => h("option", { text: a, value: a })));
-      } else {
-        this.editor = h("input", { on: { change: () => panel.requestSet(this.name, this.editor.value) } });
-      }
+    if (choices && choices.length) {
+      // only certain values accepted: a drop-down (also for numeric settings, e.g. NPLC)
+      this.choices = choices;
+      this.editor = h("select", { on: { change: () => panel.requestSet(this.name, this.choices[Number(this.editor.value)]) } },
+        [h("option", { text: "", value: "-1", hidden: true })].concat(choices.map((a, i) =>
+          h("option", { text: this.numChoices ? `${fmt(a, 6)}${unitText ? " " + unitText : ""}` : String(a), value: String(i) }))));
+      this.editor.value = "-1";
+    } else if (meta.dtype === "str" || meta.kind === "config") {
+      // text, or a numeric setting without limits (any magnitude)
+      const numeric = meta.dtype !== "str";
+      this.editor = h("input", { placeholder: numeric ? unitText : "", class: numeric ? "man-num" : "",
+        on: { change: () => {
+          const t = this.editor.value.trim();
+          panel.requestSet(this.name, numeric && t !== "" && Number.isFinite(Number(t)) ? Number(t) : t);
+        } } });
     } else {
-      const unit = meta.unit ? ` ${meta.unit}` : "";
+      const unit = unitText ? ` ${unitText}` : "";
       this.editor = h("input", { type: "number", step: "any", class: "man-num",
         title: `Enter: set (ramped)${unit ? "\nunit:" + unit : ""}\nright click: expression / read back` });
       if (this.lo !== null) this.editor.min = this.lo;
@@ -188,7 +199,7 @@ class ChannelRow {
         this.slider.addEventListener("input", () => { this.editor.value = this._fromSlider(Number(this.slider.value)); });
         this.slider.addEventListener("change", () => panel.requestSet(this.name, this._fromSlider(Number(this.slider.value))));
       }
-      this.unit = h("span", { class: "unit", text: meta.unit || "" });
+      this.unit = h("span", { class: "unit", text: unitText });
     }
     this.read = btn("↻", () => panel.readBack(this.name), { cmd: "read_channel", title: "read the present value from the instrument" });
     this.editor.dataset.cmd = "write_channel";
@@ -233,8 +244,17 @@ class ChannelRow {
 
   show(v, force = false) {
     if (v === null || v === undefined) return;
-    if (this.editor.tagName === "SELECT") { if ([...this.editor.options].some((o) => o.value === String(v))) this.editor.value = String(v); return; }
-    if (this.editor.type !== "number") { if (document.activeElement !== this.editor) this.editor.value = String(v); return; }
+    if (this.editor.tagName === "SELECT") {
+      if (document.activeElement === this.editor) return;
+      const i = this.choices.findIndex((c) => (this.numChoices ? Math.abs(Number(v) - c) <= 1e-9 * Math.abs(c || 1)
+        : String(c).toLowerCase() === String(v).toLowerCase()));
+      this.editor.value = String(i);
+      return;
+    }
+    if (this.editor.type !== "number") {
+      if (document.activeElement !== this.editor) this.editor.value = typeof v === "number" ? String(Number(v.toPrecision(10))) : String(v);
+      return;
+    }
     const f = Number(v);
     if (!Number.isFinite(f)) return;
     const focused = document.activeElement === this.editor;
@@ -260,9 +280,11 @@ export class ManualPanel {
     this.lastExpr = {};
     this.filter = h("input", { placeholder: "filter channels", type: "search", on: { input: () => this._filter() } });
     this.ramp = h("input", { type: "checkbox", checked: true, title: "respect the alias ramp rates (recommended)" });
+    this.settings = h("input", { type: "checkbox", checked: true, on: { change: () => this._state() },
+      title: "also list the instrument settings (configuration channels: modes, ranges, time constants …)" });
     this.host = h("div", { class: "man-rows" });
     this.status = h("div", { class: "msg muted" });
-    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.ramp, " ramp")), this.host, this.status);
+    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.settings, " settings"), h("label", { class: "check" }, this.ramp, " ramp")), this.host, this.status);
     app.model.on("state", (st) => this._state(st));
   }
 
@@ -272,12 +294,22 @@ export class ManualPanel {
     const out = [];
     for (const a of this.app.model.aliases()) if (a.writable && (a.dtype === "str" || !(a.shape && a.shape.length))) out.push(a);
     for (const c of this.app.model.composites()) out.push({ ...c, dtype: "float" });
+    if (this.settings.checked) {
+      for (const i of this.app.model.instruments()) {
+        for (const c of i.channels || []) {
+          if (c.config && (c.access || "rw").includes("w") && (c.dtype === "str" || !(c.shape && c.shape.length))) {
+            out.push({ ...c, name: `${i.name}.${c.name}`, choices: c.allowed, kind: "config" });
+          }
+        }
+      }
+    }
     return out;
   }
 
   _state() {
     const chans = this._channels();
-    const sig = JSON.stringify(chans.map((m) => [m.name, m.dtype, m.min, m.max, m.unit, m.allowed || []]));
+    const sig = JSON.stringify(chans.map((m) => [m.name, m.dtype, m.min, m.max, m.display_unit || m.unit,
+      m.choices || m.allowed || [], m.kind || ""]));
     if (sig !== this.sig) {
       this.sig = sig;
       this.host.replaceChildren();
@@ -290,7 +322,7 @@ export class ManualPanel {
       }
       this.app.applyPermissions(this.host);
       this._filter();
-      this.say(chans.length ? "" : "no writable aliases or composites defined");
+      this.say(chans.length ? "" : "no writable aliases, composites or instrument settings");
     }
     for (const m of chans) {
       const r = this.rows.get(m.name);
@@ -322,12 +354,30 @@ export class ManualPanel {
     else this.app.model.scheduleRefresh();
   }
 
-  async readBack(name) {
+  /** Read-backs wait in line per instrument (a rebuild asks for every value at once,
+   *  and an instrument serves one request at a time anyway). */
+  readBack(name) {
+    const r = this.rows.get(name);
+    const target = (r && r.meta.target) || name;
+    const key = target.includes(".") ? target.split(".")[0] : "@" + name;
+    this.rbWait = this.rbWait || {};
+    this.rbBusy = this.rbBusy || {};
+    const q = (this.rbWait[key] = this.rbWait[key] || []);
+    if (!q.includes(name)) q.push(name);
+    this._nextReadBack(key);
+  }
+
+  async _nextReadBack(key) {
+    if (this.rbBusy[key] || !this.rbWait[key].length) return;
+    const name = this.rbWait[key].shift();
+    this.rbBusy[key] = true;
     try {
       const v = await this.conn.request("read_channel", { name });
       const r = this.rows.get(name);
       if (r && !this.pending[name]) r.show(v);
     } catch (e) { this.say(`✘ read ${name}: ${e.message}`); }
+    this.rbBusy[key] = false;
+    this._nextReadBack(key);
   }
 }
 
