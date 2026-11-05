@@ -516,7 +516,15 @@ def test_dimension_editor_order_hooks_and_queue_controls(app, gui):
     assert dd["hooks"]["post_sweep"] == {"enabled": False, "code": "kept = 1"}   # kept, off
     assert "pre_sweep" not in dd["hooks"]
     assert dd["hooks"]["pre_record"]["enabled"]
-    assert d.hooks["pre_record"].action_box.count() > 0             # actions to insert
+    he = d.hooks["pre_record"]
+    assert [he.action_box.itemText(n) for n in range(3)] == [      # the special actions first
+        "Skip this point", "Skip this line", "Terminate the entire sweep"]
+    assert he.action_box.count() > 4                               # then the instruments'
+    he.code.setPlainText("if i == 2:")
+    he.action_box.setCurrentIndex(0)
+    he.add_btn.click()
+    assert he.code.toPlainText().startswith("if i == 2:\nskip_point()")
+    he.code.setPlainText("state.setdefault('n', 0)\nstate['n'] += 1")
 
     # queue controls: idle with an empty queue -> nothing to do
     qp = w.queue_panel
@@ -547,6 +555,16 @@ def test_dimension_editor_order_hooks_and_queue_controls(app, gui):
     assert pump(app, 30, lambda: be.queue_state()["state"] == "idle"
                 and not be.queue_state()["queued"] and len(be.queue_state()["history"]) >= 2)
     assert be.scripts.state["n"] == 4
+    # live view after a sweep that skips a point: complete, that point NaN
+    d2 = {"name": "skipping", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"],
+         "hooks": {"post_sweep": {"enabled": True, "code": "if i == 3: skip_point()"}}}]}
+    be.queue_add({"kind": "sweep", "definition": d2}, start=True)
+    assert pump(app, 30, lambda: w.live.ds is not None and w.live.ds.header.get("name") == "skipping"
+                and w.live.ds.points == 5 and be.queue_state()["state"] == "idle")
+    import numpy as np
+    I = w.live.ds.data["I"]
+    assert np.isnan(I[3]) and not np.isnan(I[[0, 1, 2, 4]]).any() and w.live.ds.skipped == 1
     assert pump(app, 5, lambda: not qp.controls["queue_start"].isEnabled()
                 and not qp.controls["abort"].isEnabled())
     hist = [qp.history.item(r, 2).text() for r in range(qp.history.rowCount())]

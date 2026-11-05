@@ -22,7 +22,7 @@ export class QueuePanel {
                             { empty: "queue is empty", onSelect: () => this._copyLabel(this.copyQueued, this.queued.current()) });
     this.queued.keyOf = (r) => r.id;
     this.history = new Table([{ key: "id", label: "#" }, { key: "kind", label: "Kind" }, { key: "name", label: "Name" },
-      { key: "status", label: "Status", cls: (r) => ({ finished: "ok", error: "err", aborted: "warn" })[r.status] || "" },
+      { key: "status", label: "Status", cls: (r) => ({ finished: "ok", terminated: "ok", error: "err", aborted: "warn" })[r.status] || "" },
       { key: "ended", label: "Ended", fmt: (v) => clock(v) },
       { key: "run", label: "Run / error", fmt: (_, r) => (r.error ? r.error : r.run !== undefined && r.run !== null ? `run ${r.run}` : "") }],
       { onActivate: (r) => this._openData(r), empty: "no history yet",

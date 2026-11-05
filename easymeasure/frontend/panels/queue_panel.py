@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QGroupBox, QHBoxLayout, QHeaderView, Q
 
 from ..widgets import FlowLayout, shrinkable_label
 
-STATUS_COLORS = {"finished": "#3a3", "error": "#d44", "aborted": "#c80", "running": "#38f",
+STATUS_COLORS = {"finished": "#3a3", "terminated": "#2a9d8f", "error": "#d44", "aborted": "#c80",
+                 "running": "#38f",
                  "queued": "#888"}
 
 SCRIPT_HELP = ("# get(name), set(name, value), set_raw('inst.ch', v), sleep(s),\n"

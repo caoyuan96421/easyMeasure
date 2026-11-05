@@ -74,6 +74,7 @@ export class DataSet {
     ds.post = { ...(snap.post || {}) };
     ds.footer = snap.footer || null;
     ds.points = Number(snap.points || 0);
+    ds.skipped = Number(snap.skipped || 0);
     const li = snap.last_index;
     ds.lastIndex = li ? [Number(li[0]), li[1].map(Number)] : null;
     for (const [k, idx] of Object.entries(snap.last_by_dim || {})) ds.lastByDim[Number(k)] = idx.map(Number);
@@ -90,12 +91,13 @@ export class DataSet {
     return arr;
   }
 
-  applyPoint(k, index, values, errors) {
+  applyPoint(k, index, values, errors, skip = false) {
     const idx = index.map(Number);
     if (idx.length !== this.ndim - k) throw new Error(`bad index length for dimension ${k}`);
     const base = this.shape.slice(k);
     idx.forEach((i, j) => { if (!(i >= 0 && i < base[j])) throw new Error(`index ${idx} out of range`); });
     const fi = flatIndex(idx, base);
+    if (skip) { this._skip(k, idx, fi); return; }
     for (const [name, val0] of Object.entries(values || {})) {
       let val = val0;
       if (val === null || val === undefined) continue;
@@ -127,6 +129,28 @@ export class DataSet {
     for (const name of Object.keys(errors || {})) this.errors[name] = (this.errors[name] || 0) + 1;
     this.filled[k][fi] = 1;
     if (k === 0) this.points++;
+    this.lastIndex = [k, idx];
+    this.lastByDim[k] = idx;
+    this.version++;
+  }
+
+  /** A point skipped by skip_point(): data of dimension k at idx are NaN, and the inner
+   *  points under it that never ran count as done (they stay NaN too). */
+  _skip(k, idx, fi) {
+    for (const [name, kk] of Object.entries(this.dimOf)) {
+      const arr = this.data[name];
+      if (kk !== k || !arr) continue;
+      const block = prod(arr.shape.slice(idx.length));
+      if (arr.dtype === "O") arr.data.fill(null, fi * block, (fi + 1) * block);
+      else arr.data.fill(NaN, fi * block, (fi + 1) * block);
+    }
+    const P = prod(this.shape.slice(k));
+    for (let j = 0; j <= k; j++) {
+      const outer = prod(this.shape.slice(j, k));
+      for (let a = 0; a < outer; a++) this.filled[j][a * P + fi] = 1;
+    }
+    this.points = this.filled[0].reduce((s, x) => s + x, 0);
+    this.skipped = (this.skipped || 0) + 1;
     this.lastIndex = [k, idx];
     this.lastByDim[k] = idx;
     this.version++;

@@ -360,3 +360,165 @@ def test_instrument_last_values(demo):
     spec_inst = next(i for i in inst.values() if i["driver"] == "sim_spectrum")
     tr = next(c for c in spec_inst["channels"] if c["last"] is not None)
     assert isinstance(tr["last"], dict) and "shape" in tr["last"]   # arrays: shape only
+
+
+@pytest.mark.parametrize("hook", ["pre_sweep", "post_sweep", "pre_record", "post_record"])
+def test_skip_point_from_every_action(demo, hook):
+    """skip_point() at i == 2 ends that point: nothing after the call happens, its data
+    are NaN, and the sweep continues with the next point."""
+    trace = "state.setdefault('t', []).append((%r, i))"
+    hooks = {h: {"enabled": True, "code": trace % h} for h in
+             ("pre_sweep", "post_sweep", "pre_record", "post_record")}
+    hooks[hook]["code"] += "\nif i == 2:\n    try:\n        skip_point()\n" \
+                           "    except Exception:\n        state['swallowed'] = True"
+    d = {"name": "skip_" + hook, "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Vg", "start": 0.0, "stop": 0.4}],
+         "record": ["I", "spectrum"], "post_delay": 0.001, "hooks": hooks}]}
+    demo.scripts.state.clear()
+    demo.write_channel("Vg", -0.5, ramp=False)
+    item, ds = run(demo, d)
+    assert item["status"] == "finished", item
+    st = demo.scripts.state
+    assert "swallowed" not in st               # `except Exception` cannot swallow the skip
+    order = ["pre_sweep", "post_sweep", "pre_record", "post_record"]
+    at2 = [h for h, i in st["t"] if i == 2]
+    assert at2 == order[:order.index(hook) + 1]           # the rest of the point did not run
+    assert [i for h, i in st["t"] if h == "pre_sweep"] == [0, 1, 2, 3, 4]   # sweep went on
+    # this point's data are NaN, the others are real
+    assert np.isnan(ds.data["I"][2]) and np.isnan(ds.data["spectrum"][2]).all()
+    assert not np.isnan(np.delete(ds.data["I"], 2)).any()
+    assert ds.points == 5 and ds.skipped == 1 and ds.footer["skipped_points"] == 1
+
+
+def test_skip_outer_point_skips_inner_dims(demo):
+    d = {"name": "skip_outer", "dimensions": [
+        {"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.2}], "record": ["I"],
+         "hooks": {"pre_record": {"enabled": True,
+                                  "code": "state['inner'] = state.get('inner', 0) + 1"}}},
+        {"points": 4, "sweep": [{"channel": "Vb", "start": 0, "stop": 0.3}], "record": ["T"],
+         "hooks": {"post_sweep": {"enabled": True, "code": "if i in (1, 3): skip_point()"}}}]}
+    demo.scripts.state.clear()
+    item, ds = run(demo, d)
+    assert item["status"] == "finished", item
+    assert demo.scripts.state["inner"] == 3 * 2          # inner loop ran for i = 0, 2 only
+    assert np.isnan(ds.data["I"][:, [1, 3]]).all() and not np.isnan(ds.data["I"][:, [0, 2]]).any()
+    assert np.isnan(ds.data["T"][[1, 3]]).all() and not np.isnan(ds.data["T"][[0, 2]]).any()
+    assert ds.points == ds.total_points == 12             # progress complete
+    assert ds.skipped == 2
+    # the file reads back the same (journal and HDF5)
+    from easymeasure.backend.storage import DataSet as DS
+    again = DS.load(item["path"])
+    np.testing.assert_array_equal(np.isnan(again.data["I"]), np.isnan(ds.data["I"]))
+    assert again.points == 12 and again.skipped == 2
+    # a live client applying the events gets the same picture
+    live = DS(ds.header)
+    for f in [(0, (0, 0), {"I": 1.0}), (0, (1, 0), {"I": 2.0})]:
+        live.apply_point(f[0], f[1], f[2])
+    live.apply_point(1, (1,), {}, {}, skip=True)
+    assert live.filled[0][:, 1].all() and live.points == 2 + 3
+
+
+def test_skip_point_outside_point_actions(demo):
+    with pytest.raises(Exception, match="only works in a sweep's per-point actions"):
+        demo.scripts.run("skip_point()", "plain")
+    d = {"name": "badskip", "dimensions": [{"points": 2, "record": ["I"]}],
+         "pre": {"hook": "skip_point()"}}
+    item, _ = run(demo, d)
+    assert item["status"] == "error" and "per-point actions" in item.get("error", "")
+
+
+def test_skip_point_hdf5_export(demo):
+    d = {"name": "skip_h5", "dimensions": [
+        {"points": 4, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.3}], "record": ["I"],
+         "hooks": {"pre_record": "if i == 1: skip_point()"}}]}
+    item, ds = run(demo, d)
+    import os
+    h5 = item["path"].replace(".emj", ".h5")
+    for _ in range(100):
+        if os.path.exists(h5):
+            break
+        time.sleep(0.1)
+    time.sleep(0.3)
+    d5 = DataSet.load(h5)
+    assert np.isnan(d5.data["I"][1]) and not np.isnan(d5.data["I"][[0, 2, 3]]).any()
+    assert d5.points == 4 and d5.skipped == 1
+
+
+def test_skip_line_is_break(demo):
+    """skip_line() in the inner dimension: rest of that line skipped, outer goes on."""
+    d = {"name": "skip_line", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.4}], "record": ["I"],
+         "hooks": {"pre_record": {"enabled": True, "code":
+                                  "state.setdefault('seen', []).append(index)\n"
+                                  "if i == 2 and index[1] == 1: skip_line()"}}},
+        {"points": 3, "sweep": [{"channel": "Vb", "start": 0, "stop": 0.2}], "record": ["T"],
+         "record_after_inner": True,
+         "hooks": {"pre_record": {"enabled": True, "code": "state.setdefault('outer', []).append(i)"}}}]}
+    demo.scripts.state.clear()
+    item, ds = run(demo, d)
+    assert item["status"] == "finished", item
+    seen = demo.scripts.state["seen"]
+    assert [s for s in seen if s[1] == 1] == [(0, 1), (1, 1), (2, 1)]   # break at i = 2
+    assert len([s for s in seen if s[1] == 2]) == 5                      # next line complete
+    assert demo.scripts.state["outer"] == [0, 1, 2]       # outer point still recorded
+    I = ds.data["I"]
+    assert np.isnan(I[2:, 1]).all() and not np.isnan(I[:2, 1]).any()
+    assert not np.isnan(I[:, [0, 2]]).any() and not np.isnan(ds.data["T"]).any()
+    assert ds.points == 15 and ds.skipped == 3 and ds.footer["skipped_points"] == 3
+
+    # in the outermost dimension the sweep simply ends there
+    d2 = {"name": "skip_line_outer", "dimensions": [
+        {"points": 2, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"]},
+        {"points": 4, "sweep": [{"channel": "Vb", "start": 0, "stop": 0.3}], "record": [],
+         "hooks": {"pre_sweep": "if i == 1: skip_line()"}}]}
+    item, ds = run(demo, d2)
+    assert item["status"] == "finished"
+    assert not np.isnan(ds.data["I"][:, 0]).any() and np.isnan(ds.data["I"][:, 1:]).all()
+    assert ds.points == ds.total_points == 8
+
+
+def test_end_sweep_is_exit(demo):
+    d = {"name": "end", "dimensions": [
+        {"points": 4, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.3}], "record": ["I"],
+         "hooks": {"post_record": {"enabled": True, "code":
+                                   "if index == (1, 1):\n    try:\n        end_sweep()\n"
+                                   "    except Exception:\n        state['swallowed'] = 1"}}},
+        {"points": 3, "sweep": [{"channel": "Vb", "start": 0, "stop": 0.2}], "record": ["T"]}],
+         "post": {"constants": [{"channel": "Vg", "value": 0.0}], "hook": "state['post'] = 1"}}
+    demo.scripts.state.clear()
+    demo.queue_add({"kind": "sweep", "definition": d}, start=True)
+    demo.queue_add({"kind": "script", "code": "state['next'] = 1", "name": "after"})
+    assert demo.queue.wait_idle(30)
+    hist = demo.queue_state()["history"]
+    item = next(h for h in hist if h.get("name") == "end")
+    assert item["status"] == "terminated" and not item.get("error"), item
+    st = demo.scripts.state
+    assert "swallowed" not in st and st["post"] == 1      # post phase ran
+    assert st["next"] == 1                                # the queue went on
+    ds = DataSet.load(item["path"])
+    assert ds.status == "terminated"
+    assert ds.footer["terminated_at"] == {"dimension": 1, "action": "post_record", "index": [1, 1]}
+    assert any(e.get("event") == "terminated" for e in ds.events)
+    logs = [r["msg"] for r in demo.recent_logs(300)]
+    assert any("terminated by end_sweep() in the post-record action of dimension 1 at point "
+               "[1, 1]: 6 of 12 points measured" in m for m in logs), logs[-5:]
+    # saved like any finished run: the HDF5 copy is written too
+    import os
+    h5 = item["path"].replace(".emj", ".h5")
+    for _ in range(100):
+        if os.path.exists(h5):
+            break
+        time.sleep(0.1)
+    time.sleep(0.3)
+    d5 = DataSet.load(h5)
+    assert d5.status == "terminated" and d5.points == 6
+    I = ds.data["I"]
+    # exit after recording keeps the point just measured (index (1, 1)); nothing after it
+    assert not np.isnan(I[:, 0]).any() and not np.isnan(I[:2, 1]).any()
+    assert np.isnan(I[2:, 1]).all() and np.isnan(I[:, 2]).all()
+    assert ds.points == 6
+    assert demo.channels.get("Vg") == pytest.approx(0.0)
+    # the flow calls are refused outside the per-point actions
+    for fn in ("skip_line", "end_sweep"):
+        with pytest.raises(Exception, match="per-point actions"):
+            demo.scripts.run(fn + "()", "plain")

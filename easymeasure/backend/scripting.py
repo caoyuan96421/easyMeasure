@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
-from ..common.errors import AbortRequested, EasyMeasureError
+from ..common.errors import AbortRequested, EasyMeasureError, EndSweep, SkipLine, SkipPoint
 from .logsys import get_logger
 
 log = get_logger("script")
@@ -124,6 +124,11 @@ class ScriptRunner:
             finally:
                 self.channels.forget_instrument(inst)
 
+        def _point_only(fn):
+            def f():
+                raise ScriptError("%s() only works in a sweep's per-point actions" % fn)
+            return f
+
         def _run_sweep(defn):
             if self.run_sweep is None:
                 raise ScriptError("run_sweep not available here")
@@ -135,7 +140,8 @@ class ScriptRunner:
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
             "warn": slog.warning, "print": _print, "instrument": _instrument,
             "run_sweep": _run_sweep, "action": _action, "np": np, "math": math, "time": time,
-            "state": self.state, "AbortRequested": AbortRequested,
+            "state": self.state, "AbortRequested": AbortRequested, "skip_point": _point_only("skip_point"), "skip_line": _point_only("skip_line"),
+            "end_sweep": _point_only("end_sweep"),
         }
 
     def run(self, code: str, name: str = "script", extra: Optional[dict] = None) -> None:
@@ -174,7 +180,7 @@ class ScriptRunner:
         sys.settrace(global_trace)
         try:
             exec(compiled, ns)  # noqa: S102 - user scripts are the point
-        except AbortRequested:
+        except (AbortRequested, SkipPoint, SkipLine, EndSweep):
             raise
         except SystemExit as exc:
             raise ScriptError("%s called exit(%s)" % (name, exc.code)) from None

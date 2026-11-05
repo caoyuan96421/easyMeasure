@@ -157,7 +157,19 @@ HOOKS = [("pre_sweep", "Pre-sweep action", "before the swept channels are set"),
          ("post_record", "Post-record action", "right after recording (also sees 'values')")]
 HOOK_HELP = ("# Python, runs at every point of this dimension.  Names: k (dimension), i (index),\n"
              "# index (this and outer indices), setpoints {channel: value}%s; get, set, action,\n"
-             "# sleep, log, state ... (as in scripts).  e.g.  action('dmm.trigger')")
+             "# sleep, log, state ... (as in scripts).  e.g.  action('dmm.trigger')\n"
+             "# skip_point() / skip_line() / end_sweep(): like continue / break / exit")
+#: special actions offered first in every per-point action: (label, code, explanation)
+FLOW_ACTIONS = [
+    ("Skip this point", "skip_point()   # like 'continue': rest of this point skipped, its data NaN",
+     "skip_point(): end this point now (its data stay NaN); go on with the next point of "
+     "this dimension"),
+    ("Skip this line", "skip_line()   # like 'break': rest of this dimension's line skipped (NaN)",
+     "skip_line(): skip this point and the remaining points of this dimension (data NaN); "
+     "the outer dimension continues"),
+    ("Terminate the entire sweep", "end_sweep()   # like 'exit': stop the sweep here",
+     "end_sweep(): stop the whole sweep (status 'terminated'); the post-sweep phase still runs"),
+]
 
 
 class HookEditor(QGroupBox):
@@ -187,14 +199,20 @@ class HookEditor(QGroupBox):
         row.addWidget(self.action_box)
         row.addWidget(self.add_btn)
         lay.addLayout(row)
+        self.set_actions([])
 
     def set_actions(self, actions: List[str]) -> None:
         cur = self.action_box.currentText()
         self.action_box.clear()
+        # the special flow actions first, then the instruments' actions
+        for n, (label, _, tip) in enumerate(FLOW_ACTIONS):
+            self.action_box.addItem(label)
+            self.action_box.setItemData(n, tip, Qt.ToolTipRole)
+        self.action_box.insertSeparator(len(FLOW_ACTIONS))
         self.action_box.addItems(actions)
-        if cur in actions:
+        if cur in actions or cur in [f[0] for f in FLOW_ACTIONS]:
             self.action_box.setCurrentText(cur)
-        self.add_btn.setEnabled(bool(actions) and not self.code.isReadOnly())
+        self.add_btn.setEnabled(not self.code.isReadOnly())
 
     def _append_action(self) -> None:
         ref = self.action_box.currentText().strip()
@@ -202,12 +220,14 @@ class HookEditor(QGroupBox):
             t = self.code.toPlainText()
             if t and not t.endswith("\n"):
                 t += "\n"
-            self.code.setPlainText(t + "action(%r)\n" % ref)
+            flow = {label: code for label, code, _ in FLOW_ACTIONS}
+            line = flow.get(ref) or "action(%r)" % ref
+            self.code.setPlainText(t + line + "\n")
 
     def set_read_only(self, ro: bool) -> None:
         self.code.setReadOnly(ro)
         self.action_box.setEnabled(not ro)
-        self.add_btn.setEnabled(not ro and self.action_box.count() > 0)
+        self.add_btn.setEnabled(not ro)
 
 
 class DimensionEditor(QWidget):

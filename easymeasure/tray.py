@@ -162,7 +162,7 @@ class TrayController:
             msg = "Run %s %s %s" % (data.get("run"), name, status)
             if data.get("error"):
                 msg += "\n" + str(data["error"])[:200]
-            icon = QSystemTrayIcon.Information if status == "finished" else QSystemTrayIcon.Warning
+            icon = QSystemTrayIcon.Information if status in ("finished", "terminated") else QSystemTrayIcon.Warning
             if self.tray is not None:
                 self.tray.showMessage("easyMeasure", msg, icon, 8000)
             self.run = None

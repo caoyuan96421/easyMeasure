@@ -221,6 +221,25 @@ duration is chosen so that no target exceeds its own ramp rate.
   `post_record`, `values` (what was just recorded). An error in an action stops the
   sweep (the post phase still runs). Like the pre/post hooks they need the admin
   role over remote access. Code is compiled once per sweep.
+* **Flow control from point actions** — think of the dimensions as nested `for` loops
+  (each action's *+ action* helper offers these first):
+
+  | call | entry in the helper | like | effect |
+  |---|---|---|---|
+  | `skip_point()` | Skip this point | `continue` | the rest of this point (and its inner dimensions, unless they already ran) is skipped; its data are NaN; next point of the same dimension |
+  | `skip_line()` | Skip this line | `break` | this point and the remaining points of this dimension are skipped (NaN); the outer dimension continues (in the outermost dimension the sweep is done) |
+  | `end_sweep()` | Terminate the entire sweep | `exit` | the sweep ends with status `terminated`; called in `post_record` it keeps the point just recorded |
+
+  A terminated sweep is a normal end: the post phase runs, the file, HDF5 copy and
+  slide are written as usual, every point not reached is NaN, the log says where it
+  ended (and the file footer has `terminated_at`). Skipped points count as done for the
+  progress (`skipped_points` in the footer). The calls cannot be swallowed by an
+  `except Exception` in the action, and outside per-point actions they are an error.
+  ```python
+  # post_record: stop the I-V curve once the current exceeds 1 µA
+  if abs(values["I"]) > 1e-6:
+      end_sweep()
+  ```
 * All setpoints are computed and limit-checked before the sweep starts.
 
 ### Run queue (`backend/runqueue.py`)

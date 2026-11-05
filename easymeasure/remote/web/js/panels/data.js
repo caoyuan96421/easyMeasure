@@ -143,7 +143,7 @@ export class LiveDataView extends DataView {
         this.setDataset(new DataSet(hdr));
       } else if (kind === "sweep_point") {
         if (!this.ds || data.run !== this.run) { this.resync(); return; }
-        this.ds.applyPoint(data.k, data.i, data.v || {}, data.e);
+        this.ds.applyPoint(data.k, data.i, data.v || {}, data.e, !!data.skip);
         this.dataChanged();
       } else if (kind === "sweep_phase" && this.ds && data.run === this.run) {
         Object.assign(data.phase === "pre" ? this.ds.pre : this.ds.post, data.v || {});

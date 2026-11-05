@@ -40,6 +40,20 @@ see ``k`` (dimension), ``i`` (index in it), ``index`` (indices of this and the o
 dimensions), ``setpoints`` (the dimension's channel -> value at this point) and,
 in ``post_record``, ``values`` (what was just recorded).
 
+Three special calls change the flow (think of nested ``for`` loops):
+
+``skip_point()`` (``continue``) ends the point at once: the rest of its sequence
+    (and, unless they already ran, its inner dimensions) is skipped, the data
+    recorded at this point stay NaN, and the sweep continues with the next point
+    of the same dimension.
+``skip_line()`` (``break``) does the same for this point *and all remaining
+    points of this dimension's line*; the outer dimension continues (for the
+    outermost dimension the sweep is done).
+``end_sweep()`` (``exit``) stops the whole sweep: status ``terminated``, the
+    post-sweep phase still runs, unvisited points stay NaN.  Called in
+    ``post_record`` it keeps the point just recorded (e.g. stop when a threshold
+    is crossed and see that point); the skips discard it.
+
 Mapping expressions may use ``i`` (index), ``N`` (points), ``t`` = i/(N-1),
 ``start``, ``stop``, ``x`` (= linear value between start and stop) and numpy.
 A mapping is mandatory for vector/tensor channels.
@@ -63,7 +77,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from ..common.errors import (AbortRequested, ChannelError, EasyMeasureError, LimitError,
-                             SweepDefinitionError)
+                             EndSweep, SkipLine, SkipPoint, SweepDefinitionError)
 from ..common.exprs import Expression
 from .logsys import get_logger
 from .storage import EVENT, FOOTER, HEADER, PHASE, POINT, DataSet, JournalWriter
@@ -463,6 +477,24 @@ class RunControl:
             self._abort.wait(min(remaining, 0.05))
 
 
+def _skip_point() -> None:
+    """In a per-point action: skip the rest of this point (its data stay NaN)."""
+    raise SkipPoint()
+
+
+def _skip_line() -> None:
+    """In a per-point action: skip the rest of this dimension's line."""
+    raise SkipLine()
+
+
+def _end_sweep() -> None:
+    """In a per-point action: stop the sweep (status 'terminated')."""
+    raise EndSweep()
+
+
+_FLOW = {"skip_point": _skip_point, "skip_line": _skip_line, "end_sweep": _end_sweep}
+
+
 class SweepRunner:
     """Executes one sweep definition, streaming data to a journal and listeners."""
 
@@ -490,6 +522,8 @@ class SweepRunner:
         self.storage_errors = 0
         self._pass_counts = [0] * len(self.shape)
         self._hooks = [active_hooks(dim) for dim in self.d["dimensions"]]
+        self.skipped_points = 0
+        self._ended_at: Optional[dict] = None
         if any(self._hooks) and script_runner is None:
             raise EasyMeasureError("this sweep has point hooks but no script runner")
 
@@ -600,7 +634,13 @@ class SweepRunner:
     def _point_hook(self, k: int, name: str, ctx: dict) -> None:
         code = self._hooks[k].get(name)
         if code is not None:
-            self.script_runner(code, "dim%d-%s" % (k, name), ctx)
+            try:
+                self.script_runner(code, "dim%d-%s" % (k, name), dict(ctx, **_FLOW))
+            except EndSweep:
+                # where the sweep was ended: logged, journaled and kept in the footer
+                self._ended_at = {"dimension": k + 1, "action": name,
+                                  "index": [int(x) for x in ctx["index"]]}
+                raise
 
     def _phase(self, phase: str) -> None:
         p = self.d[phase]
@@ -683,6 +723,17 @@ class SweepRunner:
                 validate_against(self.d, self.channels, after_pre=True)
             self._loop(len(self.shape) - 1, ())
             self.status = "finished"
+        except EndSweep:
+            # a normal end: everything is saved as usual, unvisited points stay NaN
+            self.status = "terminated"
+            self.error = ""
+            at = self._ended_at or {}
+            log.warning("run %d terminated by end_sweep() in the %s action of dimension %s at "
+                        "point %s: %d of %d points measured, the rest are NaN",
+                        self.run_number, str(at.get("action", "?")).replace("_", "-"),
+                        at.get("dimension", "?"), at.get("index", "?"), self.dataset.points,
+                        self.dataset.total_points)
+            self._journal(EVENT, dict(event="terminated", t=time.time(), **at), sync=True)
         except AbortRequested:
             self.status = "aborted"
             log.warning("run %d aborted by user", self.run_number)
@@ -703,13 +754,16 @@ class SweepRunner:
                 log.warning("run %d: post-sweep actions aborted", self.run_number)
             except Exception as exc:
                 log.error("run %d: post-sweep actions failed: %s", self.run_number, exc)
-                if self.status == "finished":
+                if self.status in ("finished", "terminated"):
                     self.status, self.error = "error", "post-sweep: %s" % exc
             finally:
                 if was_aborted:
                     self.control.abort()
         footer = {"status": self.status, "error": self.error, "ended": time.time(),
-                  "points": self.dataset.points, "read_failures": self.read_failures}
+                  "points": self.dataset.points, "read_failures": self.read_failures,
+                  "skipped_points": self.skipped_points}
+        if self.status == "terminated":
+            footer["terminated_at"] = self._ended_at
         self._journal(FOOTER, footer, sync=True)
         self.dataset.footer = footer
         self._close_journal()
@@ -727,34 +781,66 @@ class SweepRunner:
         order = range(n - 1, -1, -1) if reverse else range(n)
         sweep_names = [s["channel"] for s in dim["sweep"]]
         hooks = self._hooks[k]
-        for i in order:
+        order = list(order)
+        for pos, i in enumerate(order):
             self.control.check(on_pause=self._on_pause)
             idx = (i,) + outer
             sp = {name: self.setpoints[k][name][i] for name in sweep_names}
             ctx = {"k": k, "i": i, "index": idx,
                    "setpoints": {n: (float(v) if np.ndim(v) == 0 else v) for n, v in sp.items()}}
-            if hooks:
-                self._point_hook(k, "pre_sweep", ctx)
-            for name in sweep_names:
-                self._set(name, ctx["setpoints"][name])
-            if hooks:
-                self._point_hook(k, "post_sweep", ctx)
-            if dim["pre_delay"]:
-                self.control.sleep(dim["pre_delay"])
-            if not dim["record_after_inner"] or k == 0:
-                self._record_event(k, idx, dim, ctx)
-            if k > 0:
-                self._loop(k - 1, idx)
-            if dim["record_after_inner"] and k > 0:
-                self._record_event(k, idx, dim, ctx)
+            try:
+                if hooks:
+                    self._point_hook(k, "pre_sweep", ctx)
+                for name in sweep_names:
+                    self._set(name, ctx["setpoints"][name])
+                if hooks:
+                    self._point_hook(k, "post_sweep", ctx)
+                if dim["pre_delay"]:
+                    self.control.sleep(dim["pre_delay"])
+                if not dim["record_after_inner"] or k == 0:
+                    self._record_event(k, idx, dim, ctx)
+                if k > 0:
+                    self._loop(k - 1, idx)      # a skip in there belongs to the inner dim
+                if dim["record_after_inner"] and k > 0:
+                    self._record_event(k, idx, dim, ctx)
+            except SkipPoint:
+                self._skip_point(k, idx)
+            except SkipLine:
+                rest = order[pos:]
+                log.info("run %d: dimension %d line %s skipped from index %d (%d points)",
+                         self.run_number, k + 1, list(outer), i, len(rest))
+                for j in rest:
+                    self._skip_point(k, (j,) + outer, quiet=True)
+                break
+
+    def _skip_point(self, k: int, idx: tuple, quiet: bool = False) -> None:
+        """skip_point() was called: store the point as skipped (its data stay NaN, its
+        inner points that did not run count as done) and go on with the next one."""
+        self.skipped_points += 1
+        if not quiet:
+            log.info("run %d: dimension %d point %s skipped", self.run_number, k + 1, list(idx))
+        frame = {"k": k, "i": list(idx), "v": {}, "e": {}, "t": time.time(), "skip": True}
+        self._journal(POINT, frame)
+        try:
+            self.dataset.apply_point(k, idx, {}, {}, skip=True)
+        except Exception as exc:
+            log.error("run %d: cannot mark point %s skipped: %s", self.run_number, idx, exc)
+        progress = self.progress()
+        self._emit("sweep_point", {"run": self.run_number, "k": k, "i": list(idx), "v": {},
+                                   "e": {}, "skip": True, "progress": progress})
+        self._emit("sweep_progress", {"run": self.run_number, "progress": progress})
 
     def _record_event(self, k: int, idx: tuple, dim: dict, ctx: Optional[dict] = None) -> None:
         hooks = self._hooks[k]
         if hooks:
             self._point_hook(k, "pre_record", ctx)
         values, errors = self._record(dim["record"])
+        ending = None
         if hooks:
-            self._point_hook(k, "post_record", dict(ctx, values=values))
+            try:
+                self._point_hook(k, "post_record", dict(ctx, values=values))
+            except EndSweep as exc:
+                ending = exc        # exit keeps what was just measured (skips discard it)
         frame = {"k": k, "i": list(idx), "v": values, "e": errors, "t": time.time()}
         self._journal(POINT, frame)
         try:
@@ -766,6 +852,8 @@ class SweepRunner:
                                    "v": values, "e": errors, "progress": progress})
         # tiny event for clients that only show progress (tray, scripts)
         self._emit("sweep_progress", {"run": self.run_number, "progress": progress})
+        if ending is not None:
+            raise ending
         if dim["post_delay"]:
             self.control.sleep(dim["post_delay"])
 

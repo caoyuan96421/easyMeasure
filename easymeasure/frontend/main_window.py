@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
         elif kind == "sweep_end":
             self.progress.setVisible(False)
             if isinstance(data, dict):
-                self._message("info" if data.get("status") == "finished" else "warning",
+                self._message("info" if data.get("status") in ("finished", "terminated") else "warning",
                               "run %s %s %s" % (data.get("run"), data.get("status"),
                                                 data.get("error") or ""))
         elif kind == "sweep_start":

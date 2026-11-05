@@ -212,10 +212,18 @@ def test_web_queue_controls_copy_and_point_actions(browser, gw, demo):
     assert "3. Pre-record action" in vis and "4. Record" in vis
     assert dim.locator("label:has-text('2. Pre-sample delay')").count() == 1
     dim.locator("fieldset.hook:visible textarea").fill("state['web'] = state.get('web', 0) + 1")
+    # "Skip this point" is the first entry of every action's helper
+    hook = dim.locator("fieldset.hook:visible")
+    assert hook.locator("select option").all_text_contents()[:3] == [
+        "Skip this point", "Skip this line", "Terminate the entire sweep"]
+    hook.locator("select").select_option("Skip this point")
+    hook.locator("button:has-text('+ action')").click()
+    assert "skip_point()" in hook.locator("textarea").input_value()
     # queue a sweep (not started) and a script
     sweep = {"name": "webhooks", "dimensions": [
         {"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"],
-         "hooks": {"pre_record": {"enabled": True, "code": "state['web'] = state.get('web', 0) + 1"}}}]}
+         "hooks": {"pre_record": {"enabled": True, "code": "state['web'] = state.get('web', 0) + 1\n"
+                                                         "if i == 1: skip_point()"}}}]}
     demo.queue_add({"kind": "sweep", "definition": sweep})
     demo.queue_add({"kind": "script", "code": "log('web script')", "name": "ws"})
     page.click(".tab:has-text('Queue')")
@@ -235,6 +243,11 @@ def test_web_queue_controls_copy_and_point_actions(browser, gw, demo):
     assert demo.queue.wait_idle(30)
     page.wait_for_function("document.querySelector('header [data-qcan=start]').disabled", timeout=10000)
     assert demo.scripts.state.get("web") == 3
+    # the live view counts the skipped point as done; its value is NaN
+    page.wait_for_function("document.querySelector('.dv-title').textContent.includes('3/3')", timeout=10000)
+    item = next(x for x in demo.queue_state()["history"] if x.get("name") == "webhooks")
+    from easymeasure.backend.storage import DataSet
+    assert np.isnan(DataSet.load(item["path"]).data["I"][1])
     assert demo.queue_state()["state"] == "idle"
     # instrument channels: last value and allowed values columns
     page.click(".tab:has-text('Instruments')")

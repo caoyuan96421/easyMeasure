@@ -210,7 +210,7 @@ class App {
       if (p.total) { this.progress.hidden = false; this.progress.max = p.total; this.progress.value = p.done; }
     } else if (kind === "sweep_end") {
       this.progress.hidden = true;
-      if (data) message(data.status === "finished" ? "info" : "warning", `run ${data.run} ${data.status} ${data.error || ""}`);
+      if (data) message(data.status === "finished" || data.status === "terminated" ? "info" : "warning", `run ${data.run} ${data.status} ${data.error || ""}`);
     } else if (kind === "sweep_start") this.dataTabs.show(this.tLive);
   }
 

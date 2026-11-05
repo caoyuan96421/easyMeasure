@@ -247,7 +247,8 @@ class LiveDataView(DataView):
                 if self.ds is None or data.get("run") != self.run:
                     self.resync()
                     return
-                self.ds.apply_point(data["k"], data["i"], data.get("v", {}), data.get("e"))
+                self.ds.apply_point(data["k"], data["i"], data.get("v", {}), data.get("e"),
+                                    skip=bool(data.get("skip")))
                 self.data_changed()
             elif kind == "sweep_phase" and self.ds is not None and data.get("run") == self.run:
                 target = self.ds.pre if data.get("phase") == "pre" else self.ds.post

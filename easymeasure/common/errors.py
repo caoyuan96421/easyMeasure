@@ -53,6 +53,23 @@ class AbortRequested(EasyMeasureError):
     """Raised inside running sweeps/scripts when the user aborts."""
 
 
+class SkipPoint(BaseException):
+    """Raised by ``skip_point()`` in a sweep's per-point action: the rest of this
+    point is skipped and its recorded data stay NaN.  A BaseException, so that a
+    hook's own ``except Exception`` cannot swallow it by accident."""
+
+
+class SkipLine(BaseException):
+    """Raised by ``skip_line()`` in a per-point action: like ``break`` - the rest of
+    this dimension's line is skipped (its data stay NaN) and the outer dimension
+    continues."""
+
+
+class EndSweep(BaseException):
+    """Raised by ``end_sweep()`` in a per-point action: like ``exit`` - the sweep stops
+    here with status ``terminated``; the post-sweep phase still runs."""
+
+
 class ExpressionError(EasyMeasureError):
     """A user expression (mapping/composite) failed to compile or evaluate."""
 

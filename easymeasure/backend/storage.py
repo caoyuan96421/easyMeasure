@@ -259,6 +259,7 @@ class DataSet:
         self.events: List[dict] = []
         self.footer: Optional[dict] = None
         self.points = 0
+        self.skipped = 0                  # points skipped by skip_point()
         self.last_index: Optional[Tuple[int, Tuple[int, ...]]] = None
         self.last_by_dim: Dict[int, Tuple[int, ...]] = {}
         self.lock = threading.RLock()
@@ -313,12 +314,15 @@ class DataSet:
         return arr
 
     def apply_point(self, k: int, index, values: Dict[str, Any],
-                    errors: Optional[Dict[str, str]] = None) -> None:
+                    errors: Optional[Dict[str, str]] = None, skip: bool = False) -> None:
         idx = tuple(int(i) for i in index)
         if len(idx) != self.ndim - k:
             raise StorageError("bad index length for dimension %d" % k)
         if any(not 0 <= i < n for i, n in zip(idx, self.shape[k:])):
             raise StorageError("index %s out of range" % (idx,))
+        if skip:
+            self._skip(k, idx)
+            return
         with self.lock:
             for name, val in values.items():
                 if val is None:
@@ -364,9 +368,25 @@ class DataSet:
             self.last_index = (k, idx)
             self.last_by_dim[k] = idx
 
+    def _skip(self, k: int, idx: Tuple[int, ...]) -> None:
+        """A skipped point: the data of dimension *k* at *idx* are NaN, and the inner
+        points under it that never ran count as done (they stay NaN too)."""
+        with self.lock:
+            for name, kk in self.dim_of.items():
+                arr = self.data.get(name)
+                if kk == k and arr is not None:
+                    arr[idx] = None if arr.dtype == object else np.nan
+            for j in range(k + 1):
+                self.filled[j][(slice(None),) * (k - j) + idx] = True
+            self.points = int(self.filled[0].sum())
+            self.skipped += 1
+            self.last_index = (k, idx)
+            self.last_by_dim[k] = idx
+
     def apply_frame(self, ftype: int, obj: dict) -> None:
         if ftype == POINT:
-            self.apply_point(obj["k"], obj["i"], obj.get("v", {}), obj.get("e"))
+            self.apply_point(obj["k"], obj["i"], obj.get("v", {}), obj.get("e"),
+                             skip=bool(obj.get("skip")))
         elif ftype == PHASE:
             target = self.pre if obj.get("phase") == "pre" else self.post
             target.update(obj.get("v", {}))
@@ -385,7 +405,7 @@ class DataSet:
                 "filled": {str(k): v.copy() for k, v in self.filled.items()},
                 "errors": dict(self.errors),
                 "pre": dict(self.pre), "post": dict(self.post),
-                "footer": self.footer, "points": self.points,
+                "footer": self.footer, "points": self.points, "skipped": self.skipped,
                 "last_index": None if self.last_index is None else
                 [self.last_index[0], list(self.last_index[1])],
                 "last_by_dim": {str(k): list(v) for k, v in self.last_by_dim.items()},
@@ -403,6 +423,7 @@ class DataSet:
         ds.post = dict(snap.get("post", {}))
         ds.footer = snap.get("footer")
         ds.points = int(snap.get("points", 0))
+        ds.skipped = int(snap.get("skipped", 0))
         li = snap.get("last_index")
         ds.last_index = None if li is None else (int(li[0]), tuple(li[1]))
         for k, idx in (snap.get("last_by_dim") or {}).items():
@@ -525,6 +546,7 @@ def load_hdf5(path) -> DataSet:
         if "footer_json" in f.attrs:
             ds.footer = json.loads(f.attrs["footer_json"])
         ds.points = int(ds.filled[0].sum()) if 0 in ds.filled else 0
+        ds.skipped = int((ds.footer or {}).get("skipped_points", 0) or 0)
         ds.header["file"] = str(path)
         return ds
 

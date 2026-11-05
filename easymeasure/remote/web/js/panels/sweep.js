@@ -96,6 +96,16 @@ class SweepChannelTable {
   setReadOnly(ro) { this.ro = ro; for (const r of this.rows) { for (const k of ["ch", "start", "stop", "mapping", "values"]) r[k].readOnly = ro; r.rm.disabled = ro; } }
 }
 
+// special actions offered first in every per-point action: [label, code, explanation]
+const FLOW_ACTIONS = [
+  ["Skip this point", "skip_point()   # like 'continue': rest of this point skipped, its data NaN",
+   "skip_point(): end this point now (its data stay NaN); go on with the next point of this dimension"],
+  ["Skip this line", "skip_line()   # like 'break': rest of this dimension's line skipped (NaN)",
+   "skip_line(): skip this point and the remaining points of this dimension (data NaN); the outer dimension continues"],
+  ["Terminate the entire sweep", "end_sweep()   # like 'exit': stop the sweep here",
+   "end_sweep(): stop the whole sweep (status 'terminated'); the post-sweep phase still runs"],
+];
+
 const HOOKS = [
   ["pre_sweep", "Pre-sweep action", "before the swept channels are set"],
   ["post_sweep", "Post-sweep action", "after the swept channels are set"],
@@ -108,23 +118,29 @@ class HookEditor {
   constructor(name, title, when) {
     this.name = name;
     this.code = h("textarea", { class: "code", rows: 3, spellcheck: false,
-      placeholder: `# Python, runs at every point ${when}. Names: k, i, index, setpoints${name === "post_record" ? ", values" : ""};\n# get, set, action, sleep, log, state ...   e.g.  action('dmm.trigger')` });
+      placeholder: `# Python, runs at every point ${when}. Names: k, i, index, setpoints${name === "post_record" ? ", values" : ""};\n# get, set, action, sleep, log, state ...   e.g.  action('dmm.trigger')\n# skip_point() / skip_line() / end_sweep(): like continue / break / exit` });
     this.actionBox = h("select", { title: "instrument actions (commands without arguments)" });
     this.addAction = btn("+ action", () => {
       const ref = this.actionBox.value;
       if (!ref) return;
       let t = this.code.value;
       if (t && !t.endsWith("\n")) t += "\n";
-      this.code.value = t + `action('${ref}')\n`;
+      const flow = FLOW_ACTIONS.find((f) => f[0] === ref);
+      this.code.value = t + (flow ? flow[1] : `action('${ref}')`) + "\n";
     }, { title: "append the selected action to this code" });
     this.legend = h("legend", { text: title });
     this.el = h("fieldset", { class: "group hook", title: "Python code run " + when, hidden: true },
       this.legend, this.code, bar(this.actionBox, this.addAction));
+    this.setActions([]);
   }
   setActions(actions) {
     const cur = this.actionBox.value;
-    this.actionBox.replaceChildren(...actions.map((a) => h("option", { text: a, value: a })));
-    if (actions.includes(cur)) this.actionBox.value = cur;
+    // the special flow actions first, then the instruments' actions
+    this.actionBox.replaceChildren(
+      ...FLOW_ACTIONS.map(([label, , tip]) => h("option", { text: label, value: label, title: tip })),
+      ...(actions.length ? [h("option", { text: "──────────", disabled: true })] : []),
+      ...actions.map((a) => h("option", { text: a, value: a })));
+    if (actions.includes(cur) || FLOW_ACTIONS.some((f) => f[0] === cur)) this.actionBox.value = cur;
   }
   setReadOnly(ro) { this.code.readOnly = ro; this.actionBox.disabled = ro; this.addAction.disabled = ro; }
 }
