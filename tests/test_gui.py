@@ -466,8 +466,91 @@ def test_allowed_values_and_mode_switch_in_gui(app, gui):
     pump(app, 0.2)
     names = [sp.raw.item(r, 0).text() for r in range(sp.raw.rowCount())]
     assert names[0] == "Vdc"
-    assert "vdc" in sp.raw.item(names.index("mode"), 0).toolTip()
+    hdr = [sp.raw.horizontalHeaderItem(c).text() for c in range(sp.raw.columnCount())]
+    col_allowed, col_last = hdr.index("Allowed values"), hdr.index("Last value")
+    assert sp.raw.item(names.index("mode"), col_allowed).text().startswith("vdc | vac")
+    assert sp.raw.item(names.index("Vdc"), col_allowed).text() == ""
+    # last values: nothing is read just to fill the table; get/set update the cell
+    # (the settings were read back by the manual panel, the reading was not)
+    assert sp.raw.item(names.index("Vdc"), col_last).text() == ""
+    assert sp.raw.item(names.index("nplc"), col_last).text() == "0.2"     # set above
+    sp.raw.selectRow(names.index("Vdc"))
+    sp._raw_get()
+    assert pump(app, 5, lambda: sp.raw.item(names.index("Vdc"), col_last).text().startswith("1.2345"))
+    be.write_channel("hp.range", "10 V")           # set elsewhere: shown after the refresh
+    w.model.refresh()
+    assert pump(app, 5, lambda: sp.raw.item(
+        [sp.raw.item(r, 0).text() for r in range(sp.raw.rowCount())].index("range"), col_last).text() == "10 V")
     # sweep editor constants know the choices
     w.editor.refresh_channels()
     assert w.editor.pre.choices["smu.mode"] == ["Voltage", "Current"]
     be.write_channel("smu.mode", "Voltage")
+
+
+def test_dimension_editor_order_hooks_and_queue_controls(app, gui):
+    """Dimension editor in point order with optional actions; queue buttons follow the
+    queue state; queue items copy back into the sweep / script editor."""
+    w, be, _, _ = gui
+    ed = w.editor
+    ed.load_definition({"name": "h", "dimensions": [
+        {"points": 4, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"],
+         "pre_delay": 0.01,
+         "hooks": {"pre_record": {"enabled": True, "code": "state.setdefault('n', 0)\nstate['n'] += 1"},
+                   "post_sweep": {"enabled": False, "code": "kept = 1"}}}]})
+    d = ed.dims[0]
+    lay = d.layout()
+    order = [lay.itemAt(i).widget() for i in range(lay.count()) if lay.itemAt(i).widget() is not None]
+    pos = {x: order.index(x) for x in (d.hooks["pre_sweep"], d.sweep_box, d.hooks["post_sweep"],
+                                       d.hooks["pre_record"], d.rec_box, d.hooks["post_record"])}
+    assert pos[d.hooks["pre_sweep"]] < pos[d.sweep_box] < pos[d.hooks["post_sweep"]] < \
+        pos[d.hooks["pre_record"]] < pos[d.rec_box] < pos[d.hooks["post_record"]]
+    # hidden unless ticked; ticked ones are numbered in sequence
+    assert d.hooks["pre_record"].isVisibleTo(d) and not d.hooks["post_sweep"].isVisibleTo(d)
+    assert d.sweep_box.title() == "1. Set swept channels"
+    assert d.pre_label.text() == "2. Pre-sample delay"
+    assert d.hooks["pre_record"].title() == "3. Pre-record action" and d.rec_box.title() == "4. Record"
+    d.hook_checks["pre_sweep"].setChecked(True)
+    assert d.hooks["pre_sweep"].isVisibleTo(d) and d.sweep_box.title() == "2. Set swept channels"
+    d.hook_checks["pre_sweep"].setChecked(False)
+    dd = d.to_dict()
+    assert dd["hooks"]["post_sweep"] == {"enabled": False, "code": "kept = 1"}   # kept, off
+    assert "pre_sweep" not in dd["hooks"]
+    assert dd["hooks"]["pre_record"]["enabled"]
+    assert d.hooks["pre_record"].action_box.count() > 0             # actions to insert
+
+    # queue controls: idle with an empty queue -> nothing to do
+    qp = w.queue_panel
+    w.model.refresh()
+    assert pump(app, 5, lambda: not qp.controls["queue_start"].isEnabled())
+    assert not any(b.isEnabled() for b in qp.controls.values())
+    assert not any(a.isEnabled() for a in w.queue_actions.values())
+    be.queue_add({"kind": "sweep", "definition": dict(ed.definition(), name="hooked")})
+    assert pump(app, 5, lambda: qp.controls["queue_start"].isEnabled()
+                and w.queue_actions["queue_start"].isEnabled())
+    assert not qp.controls["abort"].isEnabled()
+    # copy the queued sweep back into the editor; a script goes to the script editor
+    be.queue_add({"kind": "script", "code": "log('from the queue')", "name": "s1"})
+    assert pump(app, 5, lambda: qp.queued.rowCount() == 2)
+    qp.queued.selectRow(1)
+    assert qp.copy_queued.text() == "Copy to script editor"
+    qp.copy_queued.click()
+    assert qp.script.toPlainText() == "log('from the queue')" and qp.script_name.text() == "s1"
+    qp.queued.selectRow(0)
+    assert qp.copy_queued.text() == "Copy to sweep editor"
+    ed.load_definition({"name": "other", "dimensions": [{"points": 2}]})
+    qp.copy_queued.click()
+    assert ed.definition()["name"] == "hooked"
+    assert ed.dims[0].hook_checks["pre_record"].isChecked()
+    # run it: the pre-record action ran at every point; afterwards back to idle
+    be.scripts.state.clear()
+    qp.controls["queue_start"].click()
+    assert pump(app, 30, lambda: be.queue_state()["state"] == "idle"
+                and not be.queue_state()["queued"] and len(be.queue_state()["history"]) >= 2)
+    assert be.scripts.state["n"] == 4
+    assert pump(app, 5, lambda: not qp.controls["queue_start"].isEnabled()
+                and not qp.controls["abort"].isEnabled())
+    hist = [qp.history.item(r, 2).text() for r in range(qp.history.rowCount())]
+    qp.history.selectRow(hist.index("s1"))
+    assert qp.copy_hist.text() == "Copy to script editor"
+    qp.history.selectRow(hist.index("hooked"))
+    assert qp.copy_hist.text() == "Copy to sweep editor" and qp.copy_hist.isEnabled()

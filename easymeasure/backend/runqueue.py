@@ -66,8 +66,17 @@ class RunQueue:
 
     def describe(self) -> dict:
         with self._lock:
+            st = self.state
+            cur = self._current is not None
             return {
-                "state": self.state,
+                "state": st,
+                # what the controls can do right now (front ends enable buttons by it)
+                "can": {"start": not cur and bool(self._items) and not self._processing,
+                        "stop": self._processing,
+                        "pause": st == RUNNING and cur,
+                        "resume": st == PAUSED,
+                        "abort": cur and st != ABORTING,
+                        "abort_all": cur or self._processing},
                 "processing": self._processing,
                 "stop_on_error": self.stop_on_error,
                 "current": _public(self._current),
@@ -150,13 +159,24 @@ class RunQueue:
         raise ChannelError("no item %d" % item_id)
 
     # -- control ---------------------------------------------------------------------
-    def start(self) -> None:
+    def start(self) -> bool:
+        """Process the queued items.  With nothing queued the queue stays idle (an
+        item added later waits for the next start, or is added with start=True)."""
         with self._cv:
-            self._processing = True
-            self._stop_after_current = False
-            self._cv.notify_all()
-        log.info("queue started")
+            if not self._items:
+                if self._current is None:
+                    self._processing = False
+                log.info("queue start: nothing queued")
+                started = False
+            else:
+                self._processing = True
+                self._stop_after_current = False
+                self._cv.notify_all()
+                started = True
+        if started:
+            log.info("queue started")
         self._changed()
+        return started
 
     def stop(self) -> None:
         """Finish the current item, then go idle."""
@@ -167,13 +187,15 @@ class RunQueue:
         self._changed()
 
     def pause(self) -> None:
-        if self._current is None:
+        if self._current is None or self.control.paused:
             return
         self.control.pause()
         log.info("pause requested")
         self._changed()
 
     def resume(self) -> None:
+        if not self.control.paused:
+            return
         self.control.resume()
         log.info("resumed")
         self._changed()

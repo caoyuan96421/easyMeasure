@@ -136,6 +136,7 @@ table.grid.edit input { width: 100%; }
 .dimitem.active { background: var(--sel); }
 .dimstack { flex: 1 1 auto; min-width: 0; }
 .dim-editor, .phase { display: flex; flex-direction: column; gap: 6px; }
+.group.hook textarea.code { min-height: 3.6em; }
 
 /* ---- data views & plots ------------------------------------------------------ */
 .dataview { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; height: 100%; }

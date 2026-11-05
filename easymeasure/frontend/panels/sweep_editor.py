@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -151,7 +151,73 @@ class SweepChannelTable(QTableWidget):
                 w.setEnabled(not ro)
 
 
+HOOKS = [("pre_sweep", "Pre-sweep action", "before the swept channels are set"),
+         ("post_sweep", "Post-sweep action", "after the swept channels are set"),
+         ("pre_record", "Pre-record action", "right before recording (e.g. trigger a meter)"),
+         ("post_record", "Post-record action", "right after recording (also sees 'values')")]
+HOOK_HELP = ("# Python, runs at every point of this dimension.  Names: k (dimension), i (index),\n"
+             "# index (this and outer indices), setpoints {channel: value}%s; get, set, action,\n"
+             "# sleep, log, state ... (as in scripts).  e.g.  action('dmm.trigger')")
+
+
+class HookEditor(QGroupBox):
+    """Code of one per-point hook, with a helper to insert an instrument action."""
+
+    def __init__(self, name: str, title: str, when: str, parent=None):
+        super().__init__(title, parent)
+        self.name = name
+        self.setToolTip("Python code run " + when)
+        self.code = QPlainTextEdit()
+        from ..display import register_font
+        register_font(self.code, 1.0, monospace=True)
+        self.code.setPlaceholderText(HOOK_HELP % (", values {channel: value}"
+                                                  if name == "post_record" else ""))
+        self.code.setMinimumHeight(60)
+        self.code.setMaximumHeight(110)
+        self.action_box = QComboBox()
+        self.action_box.setToolTip("instrument actions (commands without arguments)")
+        self.action_box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.add_btn = QPushButton("+ action")
+        self.add_btn.setToolTip("append the selected action to this code")
+        self.add_btn.clicked.connect(self._append_action)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.addWidget(self.code)
+        row = FlowLayout()
+        row.addWidget(self.action_box)
+        row.addWidget(self.add_btn)
+        lay.addLayout(row)
+
+    def set_actions(self, actions: List[str]) -> None:
+        cur = self.action_box.currentText()
+        self.action_box.clear()
+        self.action_box.addItems(actions)
+        if cur in actions:
+            self.action_box.setCurrentText(cur)
+        self.add_btn.setEnabled(bool(actions) and not self.code.isReadOnly())
+
+    def _append_action(self) -> None:
+        ref = self.action_box.currentText().strip()
+        if ref:
+            t = self.code.toPlainText()
+            if t and not t.endswith("\n"):
+                t += "\n"
+            self.code.setPlainText(t + "action(%r)\n" % ref)
+
+    def set_read_only(self, ro: bool) -> None:
+        self.code.setReadOnly(ro)
+        self.action_box.setEnabled(not ro)
+        self.add_btn.setEnabled(not ro and self.action_box.count() > 0)
+
+
 class DimensionEditor(QWidget):
+    """One dimension, laid out in the order every point runs:
+
+    [pre-sweep action] → set swept channels → [post-sweep action] → pre-sample delay
+    → [pre-record action] → record → [post-record action] → post-sample delay
+
+    The four actions (per-point hooks) are hidden and off until ticked."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.points = QSpinBox()
@@ -161,51 +227,116 @@ class DimensionEditor(QWidget):
         self.pre.setRange(0, 1e5)
         self.pre.setDecimals(4)
         self.pre.setSuffix(" s")
+        self.pre.setToolTip("wait after setting, before recording (settling time)")
         self.post = QDoubleSpinBox()
         self.post.setRange(0, 1e5)
         self.post.setDecimals(4)
         self.post.setSuffix(" s")
+        self.post.setToolTip("wait after recording, before the next point")
         self.snake = QCheckBox("snake scan")
         self.snake.setToolTip("alternate the sweep direction on every pass")
         self.after = QCheckBox("record after inner dims")
         self.after.setToolTip("record this dimension's channels after the inner dimensions "
                               "have run instead of before")
         self.label = QLineEdit()
-        form = QFormLayout()
-        form.addRow("Points", self.points)
-        form.addRow("Pre-sampling delay", self.pre)
-        form.addRow("Post-sampling delay", self.post)
-        form.addRow("Label", self.label)
-        form.addRow(self.snake)
-        form.addRow(self.after)
+        self.label.setPlaceholderText("optional")
+        top = FlowLayout()
+        top.addWidget(QLabel("Points"))
+        top.addWidget(self.points)
+        top.addWidget(QLabel("Label"))
+        top.addWidget(self.label)
+        top.addWidget(self.snake)
+        top.addWidget(self.after)
+
+        # optional per-point actions
+        self.hooks: Dict[str, HookEditor] = {}
+        self.hook_checks: Dict[str, QCheckBox] = {}
+        hrow = FlowLayout()
+        hl = QLabel("Actions:")
+        hl.setToolTip("Python code run at every point of this dimension; tick to add one")
+        hrow.addWidget(hl)
+        for name, title, when in HOOKS:
+            ed = HookEditor(name, title, when)
+            ed.setVisible(False)
+            cb = QCheckBox(title.replace(" action", "").lower())
+            cb.setToolTip("run Python code %s (%s action)" % (when, title.split()[0].lower()))
+            cb.toggled.connect(lambda on, n=name: self._hook_toggled(n, on))
+            self.hooks[name] = ed
+            self.hook_checks[name] = cb
+            hrow.addWidget(cb)
+
         self.table = SweepChannelTable()
         add = QPushButton("+ sweep channel")
         rm = QPushButton("− remove selected")
         add.clicked.connect(lambda: self.table.add_row())
         rm.clicked.connect(self._remove_rows)
         self._row_buttons = [add, rm]
-        self.record = CheckList()
-        sweep_box = QGroupBox("Swept channels")
-        sweep_box.setToolTip("channels set at every step of this dimension")
-        sl = QVBoxLayout(sweep_box)
+        self.sweep_box = QGroupBox()
+        self.sweep_box.setToolTip("channels set at every point of this dimension")
+        sl = QVBoxLayout(self.sweep_box)
         sl.addWidget(self.table)
         hb = FlowLayout()
         hb.addWidget(add)
         hb.addWidget(rm)
         sl.addLayout(hb)
-        rec_box = QGroupBox("Recorded channels")
-        rl = QVBoxLayout(rec_box)
-        rl.addWidget(self.record)
-        form.setRowWrapPolicy(QFormLayout.WrapLongRows)   # labels go above fields when narrow
-        form_box = QWidget()
-        form_box.setLayout(form)
-        top = QSplitter(Qt.Horizontal)
-        top.addWidget(form_box)
-        top.addWidget(rec_box)
-        top.setChildrenCollapsible(False)
+        self.record = CheckList()
+        self.rec_box = QGroupBox()
+        QVBoxLayout(self.rec_box).addWidget(self.record)
+        self.pre_label = QLabel()
+        self.post_label = QLabel()
+        pre_row = QHBoxLayout()
+        pre_row.addWidget(self.pre_label)
+        pre_row.addWidget(self.pre)
+        pre_row.addStretch(1)
+        post_row = QHBoxLayout()
+        post_row.addWidget(self.post_label)
+        post_row.addWidget(self.post)
+        post_row.addStretch(1)
+
         lay = QVBoxLayout(self)
-        lay.addWidget(top)
-        lay.addWidget(sweep_box, 1)
+        lay.addLayout(top)
+        lay.addLayout(hrow)
+        seq = QLabel("Every point, in this order:")
+        seq.setStyleSheet("color: gray")
+        lay.addWidget(seq)
+        lay.addWidget(self.hooks["pre_sweep"])
+        lay.addWidget(self.sweep_box, 3)
+        lay.addWidget(self.hooks["post_sweep"])
+        lay.addLayout(pre_row)
+        lay.addWidget(self.hooks["pre_record"])
+        lay.addWidget(self.rec_box, 2)
+        lay.addWidget(self.hooks["post_record"])
+        lay.addLayout(post_row)
+        self._renumber()
+
+    def _hook_toggled(self, name: str, on: bool) -> None:
+        self.hooks[name].setVisible(on)
+        self._renumber()
+
+    def _renumber(self) -> None:
+        """Step numbers follow what is shown."""
+        steps = [("pre_sweep", None), (None, self.sweep_box), ("post_sweep", None),
+                 (None, self.pre_label), ("pre_record", None), (None, self.rec_box),
+                 ("post_record", None), (None, self.post_label)]
+        titles = {id(self.sweep_box): "Set swept channels",
+                  id(self.pre_label): "Pre-sample delay",
+                  id(self.rec_box): "Record",
+                  id(self.post_label): "Post-sample delay"}
+        n = 0
+        for hook, w in steps:
+            if hook is not None:
+                if not self.hook_checks[hook].isChecked():
+                    continue
+                n += 1
+                title = next(t for h, t, _ in HOOKS if h == hook)
+                self.hooks[hook].setTitle("%d. %s" % (n, title))
+                continue
+            n += 1
+            text = "%d. %s" % (n, titles[id(w)])
+            if isinstance(w, QGroupBox):
+                w.setTitle(text)
+            else:
+                w.setText(text)
 
     def _remove_rows(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
@@ -218,11 +349,24 @@ class DimensionEditor(QWidget):
         self.table.set_channels(writable)
         self.record.set_names(readable + SPECIAL_RECORD)
 
+    def set_actions(self, actions: List[str]) -> None:
+        for ed in self.hooks.values():
+            ed.set_actions(actions)
+
     def to_dict(self) -> dict:
-        return {"points": self.points.value(), "sweep": self.table.entries(),
-                "record": self.record.checked(), "pre_delay": self.pre.value(),
-                "post_delay": self.post.value(), "snake": self.snake.isChecked(),
-                "record_after_inner": self.after.isChecked(), "label": self.label.text()}
+        d = {"points": self.points.value(), "sweep": self.table.entries(),
+             "pre_delay": self.pre.value(), "record": self.record.checked(),
+             "post_delay": self.post.value(), "snake": self.snake.isChecked(),
+             "record_after_inner": self.after.isChecked(), "label": self.label.text()}
+        hooks = {}
+        for name, ed in self.hooks.items():
+            code = ed.code.toPlainText()
+            on = self.hook_checks[name].isChecked()
+            if on or code.strip():                # unticked code is kept, but does not run
+                hooks[name] = {"enabled": on, "code": code}
+        if hooks:
+            d["hooks"] = hooks
+        return d
 
     def load(self, d: dict) -> None:
         self.points.setValue(int(d.get("points", 1)))
@@ -235,12 +379,21 @@ class DimensionEditor(QWidget):
         for e in d.get("sweep", []):
             self.table.add_row(e)
         self.record.set_checked(list(d.get("record", [])))
+        hooks = d.get("hooks") or {}
+        for name, ed in self.hooks.items():
+            h = hooks.get(name) or {}
+            if isinstance(h, str):
+                h = {"enabled": bool(h.strip()), "code": h}
+            ed.code.setPlainText(h.get("code", "") or "")
+            self.hook_checks[name].setChecked(bool(h.get("enabled")))
 
     def set_read_only(self, ro: bool) -> None:
         for w in (self.points, self.pre, self.post, self.label):
             w.setReadOnly(ro)
-        for w in (self.snake, self.after, *self._row_buttons):
+        for w in (self.snake, self.after, *self._row_buttons, *self.hook_checks.values()):
             w.setEnabled(not ro)
+        for ed in self.hooks.values():
+            ed.set_read_only(ro)
         self.table.set_read_only(ro)
         self.record.set_read_only(ro)
 
@@ -546,6 +699,8 @@ class SweepEditor(QWidget):
         acts = m.actions() if m else []
         self.pre.set_actions(acts)
         self.post.set_actions(acts)
+        for d in self.dims:
+            d.set_actions(acts)
         if self.read_only:
             self.set_read_only(True)
 
@@ -559,6 +714,7 @@ class SweepEditor(QWidget):
         ed = DimensionEditor()
         w, r = self._channel_lists()
         ed.set_channels(w, r)
+        ed.set_actions(self.model.actions() if self.model else [])
         if d:
             ed.load(d)
         ed.points.valueChanged.connect(self._relabel)

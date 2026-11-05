@@ -4,6 +4,7 @@ manual get/set and setup save/load."""
 from __future__ import annotations
 
 import json
+import time
 from typing import Optional
 
 import numpy as np
@@ -206,6 +207,18 @@ def _table(headers):
     return t
 
 
+def _last_text(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, dict) and "shape" in v:
+        return "array %s" % "×".join(str(n) for n in v["shape"])
+    if isinstance(v, np.ndarray):
+        return "array %s" % "×".join(str(n) for n in v.shape)
+    if isinstance(v, float):
+        return "%.6g" % v
+    return _short(v)
+
+
 def _same_num(a, b) -> bool:
     try:
         return abs(float(a) - float(b)) <= 1e-9 * max(abs(float(a)), 1e-300)
@@ -229,6 +242,7 @@ class SetupPanel(QWidget):
         self.conn = conn
         self.model = model
         self.drivers: dict = {}
+        self._last_local: dict = {}          # "inst.ch" -> (value, time) of our own get/set
         # instruments
         self.inst = _table(["Name", "Driver", "Address", "State", "Calls", "Errors", "Timeouts",
                             "Last error"])
@@ -246,7 +260,10 @@ class SetupPanel(QWidget):
         il.addWidget(self.inst)
         il.addLayout(ib)
         # raw channels of selected instrument
-        self.raw = _table(["Channel", "Config", "Access", "Type", "Shape", "Unit", "Description"])
+        self.raw = _table(["Channel", "Config", "Access", "Type", "Shape", "Unit", "Last value",
+                           "Allowed values", "Description"])
+        for c, wdt in enumerate((110, 48, 52, 48, 56, 46, 110, 150)):
+            self.raw.setColumnWidth(c, wdt)
         self.raw.setToolTip("config channels (⚙) are settings: set directly, never aliased or swept")
         rb = FlowLayout()
         self.mk_alias = QPushButton("Make alias…")
@@ -429,15 +446,21 @@ class SetupPanel(QWidget):
         self.raw.setRowCount(len(chans))
         for r, c in enumerate(chans):
             shape = c.get("shape")
+            allowed = " | ".join(a if isinstance(a, str) else "%g" % a for a in c.get("allowed") or [])
+            last, last_t = c.get("last"), c.get("last_t")
+            loc = self._last_local.get("%s.%s" % (name, c["name"]))
+            if loc is not None and (last_t is None or loc[1] >= last_t):
+                last, last_t = loc                       # our own get/set, newer than the state
             vals = (c["name"], "⚙" if c.get("config") else "", c["access"], c["dtype"],
                     "scalar" if shape == [] else ("any" if shape is None else
                                                   "×".join("N" if s == -1 else str(s) for s in shape)),
-                    c.get("unit", ""), c.get("description", ""))
+                    c.get("unit", ""), _last_text(last), allowed, c.get("description", ""))
             for k, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
-                if c.get("allowed"):
-                    it.setToolTip("allowed: " + ", ".join(
-                        a if isinstance(a, str) else "%g" % a for a in c["allowed"]))
+                if k == 6 and last_t:
+                    it.setToolTip("read or set at %s" % time.strftime("%H:%M:%S", time.localtime(last_t)))
+                elif k == 7 and allowed:
+                    it.setToolTip("allowed: " + allowed.replace(" | ", ", "))
                 self.raw.setItem(r, k, it)
             if c["name"] == sel:
                 self.raw.selectRow(r)
@@ -490,7 +513,9 @@ class SetupPanel(QWidget):
                 self.m_chan.setEditText(ref)
                 self.m_value.setText(txt.strip())
                 self._manual_set()
-        self.conn.request("read_channel", {"name": ref}, on_ok=ask, on_err=lambda e: ask(""))
+        self.conn.request("read_channel", {"name": ref},
+                          on_ok=lambda v: (self._note_value(ref, v), ask(v)),
+                          on_err=lambda e: ask(""))
 
     def _run_action(self):
         inst = self._sel_name(self.inst)
@@ -596,13 +621,29 @@ class SetupPanel(QWidget):
                               on_err=self._err("remove"))
 
     # ------------------------------------------------------------------ manual --
+    def _note_value(self, ref: str, v) -> None:
+        """A value we just read or set: show it in the channel table at once."""
+        if "." not in ref:
+            return
+        self._last_local[ref] = (v, time.time())
+        inst, ch = ref.split(".", 1)
+        if inst == self._sel_name(self.inst):
+            for r in range(self.raw.rowCount()):
+                if self.raw.item(r, 0) is not None and self.raw.item(r, 0).text() == ch:
+                    it = QTableWidgetItem(_last_text(v))
+                    it.setToolTip("read or set at %s" % time.strftime("%H:%M:%S"))
+                    self.raw.setItem(r, 6, it)
+
     def _manual_get(self):
         name = self.m_chan.currentText().strip()
         if not name:
             return
         self.m_result.setText("reading %s…" % name)
-        self.conn.request("read_channel", {"name": name},
-                          on_ok=lambda v: self.m_result.setText("%s = %s" % (name, _short(v))),
+
+        def ok(v):
+            self.m_result.setText("%s = %s" % (name, _short(v)))
+            self._note_value(name, v)
+        self.conn.request("read_channel", {"name": name}, on_ok=ok,
                           on_err=lambda e: self.m_result.setText("<span style='color:#d55'>✘ %s</span>" % e))
 
     def _manual_set(self):
@@ -619,6 +660,7 @@ class SetupPanel(QWidget):
         self.m_result.setText("setting %s…" % name)
         self.conn.request("write_channel", {"name": name, "value": value, "ramp": self.m_ramp.isChecked()},
                           on_ok=lambda v: (self.m_result.setText("%s ← %s" % (name, _short(v))),
+                                           self._note_value(name, v),
                                            self.model.schedule_refresh()),
                           on_err=lambda e: self.m_result.setText("<span style='color:#d55'>✘ %s</span>" % e))
 

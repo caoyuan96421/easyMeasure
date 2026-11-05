@@ -236,9 +236,18 @@ def test_policy_matrix(tmp_path):
     # operator: no code, no setup / limit changes, no files outside the data directory
     ok("operator", "write_channel", {"name": "Vg", "value": 0.1})
     ok("operator", "queue_add", {"item": {"kind": "sweep", "definition": {"pre": {"hook": "  "}}}})
+    ok("operator", "queue_add", {"item": {"kind": "sweep", "definition": {"dimensions": [
+        {"points": 2, "hooks": {"pre_sweep": {"enabled": True, "code": " "}}}]}}})
     for cmd, args in (("run_script_now", {"code": "1"}),
                       ("queue_add", {"item": {"kind": "script", "code": "import os"}}),
                       ("queue_add", {"item": {"kind": "sweep", "definition": {"post": {"hook": "x=1"}}}}),
+                      # per-point hooks, enabled or not, in any of the accepted forms
+                      ("queue_add", {"item": {"kind": "sweep", "definition": {"dimensions": [
+                          {"points": 2, "hooks": {"pre_record": {"enabled": False, "code": "x=1"}}}]}}}),
+                      ("queue_add", {"item": {"kind": "sweep", "definition": {"dimensions": [
+                          {"points": 2}, {"points": 2, "hooks": {"post_sweep": "x=1"}}]}}}),
+                      ("queue_add", {"item": {"kind": "sweep", "definition": {"dimensions": [
+                          {"points": 2, "hooks": "x=1"}]}}}),
                       ("queue_add", {"item": {"kind": "weird"}}),
                       ("define_alias", {"name": "Vg", "max": 100}), ("raw_write", {}),
                       ("load_setup", {}), ("set_settings", {}), ("shutdown", {}),

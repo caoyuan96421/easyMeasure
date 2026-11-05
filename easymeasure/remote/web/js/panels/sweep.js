@@ -96,35 +96,116 @@ class SweepChannelTable {
   setReadOnly(ro) { this.ro = ro; for (const r of this.rows) { for (const k of ["ch", "start", "stop", "mapping", "values"]) r[k].readOnly = ro; r.rm.disabled = ro; } }
 }
 
+const HOOKS = [
+  ["pre_sweep", "Pre-sweep action", "before the swept channels are set"],
+  ["post_sweep", "Post-sweep action", "after the swept channels are set"],
+  ["pre_record", "Pre-record action", "right before recording (e.g. trigger a meter)"],
+  ["post_record", "Post-record action", "right after recording (also sees 'values')"],
+];
+
+/** Code of one per-point hook, with a helper to insert an instrument action. */
+class HookEditor {
+  constructor(name, title, when) {
+    this.name = name;
+    this.code = h("textarea", { class: "code", rows: 3, spellcheck: false,
+      placeholder: `# Python, runs at every point ${when}. Names: k, i, index, setpoints${name === "post_record" ? ", values" : ""};\n# get, set, action, sleep, log, state ...   e.g.  action('dmm.trigger')` });
+    this.actionBox = h("select", { title: "instrument actions (commands without arguments)" });
+    this.addAction = btn("+ action", () => {
+      const ref = this.actionBox.value;
+      if (!ref) return;
+      let t = this.code.value;
+      if (t && !t.endsWith("\n")) t += "\n";
+      this.code.value = t + `action('${ref}')\n`;
+    }, { title: "append the selected action to this code" });
+    this.legend = h("legend", { text: title });
+    this.el = h("fieldset", { class: "group hook", title: "Python code run " + when, hidden: true },
+      this.legend, this.code, bar(this.actionBox, this.addAction));
+  }
+  setActions(actions) {
+    const cur = this.actionBox.value;
+    this.actionBox.replaceChildren(...actions.map((a) => h("option", { text: a, value: a })));
+    if (actions.includes(cur)) this.actionBox.value = cur;
+  }
+  setReadOnly(ro) { this.code.readOnly = ro; this.actionBox.disabled = ro; this.addAction.disabled = ro; }
+}
+
+/** One dimension, laid out in the order every point runs:
+ *  [pre-sweep action] → set swept channels → [post-sweep action] → pre-sample delay
+ *  → [pre-record action] → record → [post-record action] → post-sample delay.
+ *  The four actions are hidden and off until ticked. */
 class DimensionEditor {
-  constructor(onChange) {
+  constructor(onChange, canHook = () => true) {
+    this.canHook = canHook;
     this.points = numIn(11, { min: 1, step: 1, width: "w-num" });
     this.pre = numIn(0, { width: "w-num" });
     this.post = numIn(0, { width: "w-num" });
-    this.label = h("input", { class: "w-chan" });
+    this.pre.title = "wait after setting, before recording (settling time)";
+    this.post.title = "wait after recording, before the next point";
+    this.label = h("input", { class: "w-chan", placeholder: "optional" });
     this.snake = h("input", { type: "checkbox", title: "alternate the sweep direction on every pass" });
     this.after = h("input", { type: "checkbox", title: "record this dimension's channels after the inner dimensions have run" });
     this.table = new SweepChannelTable(onChange);
     this.record = new CheckList();
     this.addBtn = btn("+ sweep channel", () => { this.table.addRow(); onChange(); });
     this.points.addEventListener("input", onChange);
+    this.hooks = {};
+    this.hookChecks = {};
+    for (const [name, title, when] of HOOKS) {
+      this.hooks[name] = new HookEditor(name, title, when);
+      this.hookChecks[name] = h("input", { type: "checkbox", title: `run Python code ${when}`,
+        on: { change: () => { this.hooks[name].el.hidden = !this.hookChecks[name].checked; this._renumber(); this._note(); } } });
+    }
+    this.hookNote = h("div", { class: "help" });
+    this.sweepLegend = h("legend");
+    this.recLegend = h("legend");
+    this.preLabel = h("label");
+    this.postLabel = h("label");
     this.el = h("div", { class: "dim-editor" },
-      h("div", { class: "row2" },
-        h("div", { class: "form compact" },
-          h("label", { text: "Points" }), this.points,
-          h("label", { text: "Pre-sampling delay (s)" }), this.pre,
-          h("label", { text: "Post-sampling delay (s)" }), this.post,
-          h("label", { text: "Label" }), this.label,
-          h("span"), h("label", { class: "check" }, this.snake, " snake scan"),
-          h("span"), h("label", { class: "check" }, this.after, " record after inner dims")),
-        group("Recorded channels", this.record.el)),
-      group("Swept channels", this.table.el, bar(this.addBtn)));
+      bar(h("label", { text: "Points" }), this.points, h("label", { text: "Label" }), this.label,
+        h("label", { class: "check" }, this.snake, " snake scan"),
+        h("label", { class: "check" }, this.after, " record after inner dims")),
+      bar(h("span", { text: "Actions:", title: "Python code run at every point of this dimension; tick to add one" }),
+        ...HOOKS.map(([name, title]) => h("label", { class: "check" }, this.hookChecks[name], " " + title.replace(" action", "").toLowerCase()))),
+      this.hookNote,
+      h("div", { class: "help", text: "Every point, in this order:" }),
+      this.hooks.pre_sweep.el,
+      h("fieldset", { class: "group" }, this.sweepLegend, this.table.el, bar(this.addBtn)),
+      this.hooks.post_sweep.el,
+      bar(this.preLabel, this.pre),
+      this.hooks.pre_record.el,
+      h("fieldset", { class: "group" }, this.recLegend, this.record.el),
+      this.hooks.post_record.el,
+      bar(this.postLabel, this.post));
+    this._renumber();
+  }
+  _renumber() {
+    let n = 0;
+    const step = (hook, set) => {
+      if (hook) { if (this.hookChecks[hook].checked) { n += 1; this.hooks[hook].legend.textContent = `${n}. ${HOOKS.find((x) => x[0] === hook)[1]}`; } return; }
+      n += 1; set(n);
+    };
+    step("pre_sweep");
+    step(null, (k) => { this.sweepLegend.textContent = `${k}. Set swept channels`; });
+    step("post_sweep");
+    step(null, (k) => { this.preLabel.textContent = `${k}. Pre-sample delay (s)`; });
+    step("pre_record");
+    step(null, (k) => { this.recLegend.textContent = `${k}. Record`; });
+    step("post_record");
+    step(null, (k) => { this.postLabel.textContent = `${k}. Post-sample delay (s)`; });
   }
   setChannels(writable, readable) { this.table.setChannels(writable); this.record.setNames(readable.concat(SPECIAL_RECORD)); }
+  setActions(actions) { for (const ed of Object.values(this.hooks)) ed.setActions(actions); }
   toDict() {
-    return { points: Math.max(1, Math.round(Number(this.points.value) || 1)), sweep: this.table.entries(), record: this.record.checked(),
-             pre_delay: Number(this.pre.value) || 0, post_delay: Number(this.post.value) || 0,
-             snake: this.snake.checked, record_after_inner: this.after.checked, label: this.label.value };
+    const d = { points: Math.max(1, Math.round(Number(this.points.value) || 1)), sweep: this.table.entries(),
+                pre_delay: Number(this.pre.value) || 0, record: this.record.checked(), post_delay: Number(this.post.value) || 0,
+                snake: this.snake.checked, record_after_inner: this.after.checked, label: this.label.value };
+    const hooks = {};
+    for (const [name] of HOOKS) {
+      const code = this.hooks[name].code.value, on = this.hookChecks[name].checked;
+      if (on || code.trim()) hooks[name] = { enabled: on, code };   // unticked code is kept, not run
+    }
+    if (Object.keys(hooks).length) d.hooks = hooks;
+    return d;
   }
   load(d) {
     this.points.value = d.points ?? 1;
@@ -136,12 +217,30 @@ class DimensionEditor {
     this.table.clear();
     for (const e of d.sweep || []) this.table.addRow(e);
     this.record.setChecked(d.record || []);
+    const hooks = d.hooks || {};
+    for (const [name] of HOOKS) {
+      let hk = hooks[name] || {};
+      if (typeof hk === "string") hk = { enabled: !!hk.trim(), code: hk };
+      this.hooks[name].code.value = hk.code || "";
+      this.hookChecks[name].checked = !!hk.enabled;
+      this.hooks[name].el.hidden = !hk.enabled;
+    }
+    this._renumber();
   }
   setReadOnly(ro) {
     for (const w of [this.points, this.pre, this.post, this.label]) w.readOnly = ro;
     this.snake.disabled = ro; this.after.disabled = ro; this.addBtn.disabled = ro;
     this.addBtn.dataset.lockedRo = ro ? "1" : "";
+    for (const cb of Object.values(this.hookChecks)) cb.disabled = ro;
+    for (const ed of Object.values(this.hooks)) ed.setReadOnly(ro);
     this.table.setReadOnly(ro); this.record.setReadOnly(ro);
+    this.ro = ro;
+    this._note();
+  }
+  _note() {
+    const used = Object.values(this.hookChecks).some((cb) => cb.checked);
+    this.hookNote.textContent = !this.ro && used && !this.canHook()
+      ? "Actions run Python on the backend and need the admin role (sweeps with action code are refused for your role)." : "";
   }
 }
 
@@ -310,6 +409,7 @@ export class SweepEditor {
     this.pre.setChannels(wall, rall, ch); this.post.setChannels(wall, rall, ch);
     const acts = this.model.actions();
     this.pre.setActions(acts); this.post.setActions(acts);
+    for (const d of this.dims) d.setActions(acts);
     this.setReadOnly(this.readOnly);
   }
 
@@ -330,9 +430,10 @@ export class SweepEditor {
   }
 
   addDimension(d = null) {
-    const ed = new DimensionEditor(() => this._relabel());
+    const ed = new DimensionEditor(() => this._relabel(), () => this.conn.can("run_script_now"));
     const [w, r] = this._lists();
     ed.setChannels(w, r);
+    ed.setActions(this.model.actions());
     if (d) ed.load(d);
     this.dims.push(ed);
     this.dimStack.append(ed.el);

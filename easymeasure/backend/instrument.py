@@ -390,6 +390,8 @@ class InstrumentHandle:
         #: called (outside the call lock) when the driver's channel/action list changed
         self.on_specs_changed: Optional[Callable[["InstrumentHandle"], None]] = None
         self._specs_dirty = False
+        #: channel -> (value, unix time) of the last successful read or write
+        self.last_values: Dict[str, Tuple[Any, float]] = {}
         self._channels: Dict[str, ChannelSpec] = {}
         self._actions: Dict[str, ActionSpec] = {}
         self._worker: Optional[_Worker] = None
@@ -830,7 +832,9 @@ class InstrumentHandle:
             except ChannelError as exc:
                 raise _GarbledReply(str(exc)) from None
 
-        return self._guarded("read %s" % channel, spec, do)
+        v = self._guarded("read %s" % channel, spec, do)
+        self.last_values[channel] = (v, time.time())
+        return v
 
     def write(self, channel: str, value: Any) -> None:
         spec = self._io_spec(channel)
@@ -844,6 +848,7 @@ class InstrumentHandle:
                 self._refresh_specs(drv)    # a mode switch may change the channel list
 
         self._guarded("write %s" % channel, spec, do)
+        self.last_values[channel] = (value, time.time())
 
     def query(self, channel: str, value: Any) -> Any:
         """Write *value* to the channel and read it back in one transaction."""
@@ -862,7 +867,9 @@ class InstrumentHandle:
             except ChannelError as exc:
                 raise _GarbledReply(str(exc)) from None
 
-        return self._guarded("query %s" % channel, spec, do)
+        v = self._guarded("query %s" % channel, spec, do)
+        self.last_values[channel] = (v, time.time())
+        return v
 
     def raw_query(self, command: str) -> str:
         spec = ChannelSpec("__raw__", "rw", "str")
@@ -896,9 +903,23 @@ class InstrumentHandle:
             "last_error": self.last_error,
             "stats": dict(self.stats),
             "quarantined": self.breaker_state(),
-            "channels": [c.to_dict() for c in self.channels.values()],
+            "channels": [dict(c.to_dict(), **self._last_of(c.name)) for c in self.channels.values()],
             "actions": [a.to_dict() for a in self.actions.values()],
         }
+
+
+    def _last_of(self, channel: str) -> dict:
+        """Last value for status displays: scalars and text as they are, arrays only
+        as their shape (a state snapshot must stay small)."""
+        lv = self.last_values.get(channel)
+        if lv is None:
+            return {"last": None, "last_t": None}
+        v, t = lv
+        if isinstance(v, np.ndarray):
+            v = {"shape": list(v.shape)}
+        elif isinstance(v, str) and len(v) > 200:
+            v = v[:200] + "…"
+        return {"last": v, "last_t": t}
 
 
 class _GarbledReply(InstrumentError):

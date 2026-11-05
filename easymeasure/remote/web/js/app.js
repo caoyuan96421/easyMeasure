@@ -2,7 +2,7 @@
 
 import { Connection, login, logout, session } from "./conn.js";
 import { Model } from "./model.js";
-import { h, $, btn, Tabs, splitter, modal, formDialog, confirmDialog, applyPermissions, message,
+import { h, $, btn, Tabs, splitter, modal, formDialog, confirmDialog, applyPermissions, applyQueueControls, qcan, message,
          setStatusElement, Table, fmt } from "./ui.js";
 import { SetupPanel } from "./panels/setup.js";
 import { SweepEditor, RunningSweepView } from "./panels/sweep.js";
@@ -130,10 +130,10 @@ class App {
     const header = h("header", { class: "toolbar" },
       h("span", { class: "brand", text: "easyMeasure" }), this.connLabel,
       h("span", { class: "sep" }),
-      btn("▶ Start queue", () => this._cmd("queue_start"), { cmd: "queue_start" }),
-      btn("⏸ Pause", () => this._cmd("pause"), { cmd: "pause" }),
-      btn("Resume", () => this._cmd("resume"), { cmd: "resume" }),
-      btn("■ Abort", () => this._cmd("abort"), { cmd: "abort", cls: "danger" }),
+      qcan(btn("▶ Start queue", () => this._cmd("queue_start"), { cmd: "queue_start" }), "start"),
+      qcan(btn("⏸ Pause", () => this._cmd("pause"), { cmd: "pause" }), "pause"),
+      qcan(btn("Resume", () => this._cmd("resume"), { cmd: "resume" }), "resume"),
+      qcan(btn("■ Abort", () => this._cmd("abort"), { cmd: "abort", cls: "danger" }), "abort"),
       h("span", { class: "sep" }),
       btn("Add slide to PPT", () => this._ppt(), { cmd: "make_ppt", title: "append a slide for the running / last sweep" }),
       btn("Open data…", () => this.browseRuns(), { cmd: "list_runs" }),
@@ -153,7 +153,7 @@ class App {
     this.conn.on("auth", (why) => { this.conn.stop(); this._showLogin(`session ended: ${why}`); });
     this.conn.on("event", (k, d) => this._event(k, d));
     this.model.on("message", (lvl, text) => message(lvl, text));
-    this.model.on("queue", (q) => { this.queueLabel.textContent = `queue: ${q.state}`; });
+    this.model.on("queue", (q) => { this.queueLabel.textContent = `queue: ${q.state}`; applyQueueControls(document.body, q); });
     setInterval(() => this._rates(), 2000);
     window.addEventListener("beforeunload", () => this.conn.stop());
   }

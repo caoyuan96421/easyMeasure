@@ -14,7 +14,8 @@ Definition (JSON-compatible dict)::
          "pre_delay": 0.05,                 # after setting, before recording
          "post_delay": 0.0,                 # after recording
          "snake": false,                    # alternate direction on each pass
-         "record_after_inner": false},      # (outer dims) record after the inner loop
+         "record_after_inner": false,       # (outer dims) record after the inner loop
+         "hooks": {"pre_record": {"enabled": true, "code": "action('dmm.trigger')"}}},
         {"points": 21, "sweep": [{"channel": "Vb", "start": -0.3, "stop": 0.3}],
          "record": ["T"]}
       ],
@@ -26,6 +27,18 @@ Definition (JSON-compatible dict)::
       "run_post_on_abort": true,
       "metadata": {"sample": "D17", "comment": "..."}
     }
+
+Every point of a dimension runs, in this order::
+
+    pre_sweep hook -> set the swept channels -> post_sweep hook -> pre_delay
+      -> pre_record hook -> record -> post_record hook -> post_delay
+      (-> the inner dimensions; with record_after_inner they run before pre_record)
+
+The four hooks are optional Python snippets (like the pre/post-sweep hook, see
+:mod:`.scripting`), each switched on with ``enabled``.  Besides the script API they
+see ``k`` (dimension), ``i`` (index in it), ``index`` (indices of this and the outer
+dimensions), ``setpoints`` (the dimension's channel -> value at this point) and,
+in ``post_record``, ``values`` (what was just recorded).
 
 Mapping expressions may use ``i`` (index), ``N`` (points), ``t`` = i/(N-1),
 ``start``, ``stop``, ``x`` (= linear value between start and stop) and numpy.
@@ -65,6 +78,40 @@ log = get_logger("sweep")
 MAX_POINTS_PER_DIM = 10_000_000
 MAX_TOTAL_POINTS = 100_000_000
 MAX_SETPOINT_ELEMENTS = 20_000_000
+#: per-point hooks of a dimension, in the order they run
+POINT_HOOKS = ("pre_sweep", "post_sweep", "pre_record", "post_record")
+
+
+def _normalize_hooks(hooks, k: int) -> dict:
+    if hooks is None:
+        hooks = {}
+    if not isinstance(hooks, dict):
+        raise SweepDefinitionError("dimension %d: 'hooks' must be a dict" % k)
+    unknown = [h for h in hooks if h not in POINT_HOOKS]
+    if unknown:
+        raise SweepDefinitionError("dimension %d: unknown hook(s) %s (use %s)"
+                                   % (k, ", ".join(map(str, unknown)), ", ".join(POINT_HOOKS)))
+    out = {}
+    for name in POINT_HOOKS:
+        h = hooks.get(name)
+        if h is None:
+            h = {}
+        elif isinstance(h, str):
+            h = {"enabled": bool(h.strip()), "code": h}
+        if not isinstance(h, dict):
+            raise SweepDefinitionError("dimension %d: hook %s must be code or "
+                                       "{'enabled': ..., 'code': ...}" % (k, name))
+        code = h.get("code", "")
+        if not isinstance(code, str):
+            raise SweepDefinitionError("dimension %d: hook %s code must be text" % (k, name))
+        out[name] = {"enabled": h.get("enabled", False) is True, "code": code}
+    return out
+
+
+def active_hooks(dim: dict) -> Dict[str, str]:
+    """``name -> code`` of the hooks of a (normalised) dimension that will run."""
+    return {n: h["code"] for n, h in (dim.get("hooks") or {}).items()
+            if h.get("enabled") and h.get("code", "").strip()}
 
 
 def normalize_definition(d: dict) -> dict:
@@ -108,6 +155,7 @@ def normalize_definition(d: dict) -> dict:
         dim["snake"] = bool(dim.get("snake", False))
         dim["record_after_inner"] = bool(dim.get("record_after_inner", False))
         dim.setdefault("label", "")
+        dim["hooks"] = _normalize_hooks(dim.get("hooks"), k)
         if not isinstance(sweep, list):
             raise SweepDefinitionError("dimension %d: 'sweep' must be a list" % k)
         for j, s in enumerate(sweep):
@@ -293,6 +341,12 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
                 errors.append(str(exc))
             except ChannelError as exc:
                 problem(ch, str(exc))
+        for name, code in active_hooks(dim).items():
+            try:
+                compile(code, "<%s-hook>" % name, "exec")
+            except SyntaxError as exc:
+                errors.append("dimension %d %s hook: syntax error line %s: %s"
+                              % (k, name, exc.lineno, exc.msg))
         for r in dim["record"]:
             if r in ("@time", "@elapsed"):
                 continue
@@ -435,6 +489,9 @@ class SweepRunner:
         self.read_failures = 0
         self.storage_errors = 0
         self._pass_counts = [0] * len(self.shape)
+        self._hooks = [active_hooks(dim) for dim in self.d["dimensions"]]
+        if any(self._hooks) and script_runner is None:
+            raise EasyMeasureError("this sweep has point hooks but no script runner")
 
     # -- helpers ------------------------------------------------------------------
     def _emit(self, kind: str, payload: dict) -> None:
@@ -539,6 +596,11 @@ class SweepRunner:
                 raise EasyMeasureError("no script runner for hooks")
             log.info("run %d: running %s-sweep hook", self.run_number, phase)
             self.script_runner(code, "%s-hook" % phase)
+
+    def _point_hook(self, k: int, name: str, ctx: dict) -> None:
+        code = self._hooks[k].get(name)
+        if code is not None:
+            self.script_runner(code, "dim%d-%s" % (k, name), ctx)
 
     def _phase(self, phase: str) -> None:
         p = self.d[phase]
@@ -664,23 +726,35 @@ class SweepRunner:
         self._pass_counts[k] += 1
         order = range(n - 1, -1, -1) if reverse else range(n)
         sweep_names = [s["channel"] for s in dim["sweep"]]
+        hooks = self._hooks[k]
         for i in order:
             self.control.check(on_pause=self._on_pause)
+            idx = (i,) + outer
+            sp = {name: self.setpoints[k][name][i] for name in sweep_names}
+            ctx = {"k": k, "i": i, "index": idx,
+                   "setpoints": {n: (float(v) if np.ndim(v) == 0 else v) for n, v in sp.items()}}
+            if hooks:
+                self._point_hook(k, "pre_sweep", ctx)
             for name in sweep_names:
-                v = self.setpoints[k][name][i]
-                self._set(name, float(v) if np.ndim(v) == 0 else v)
+                self._set(name, ctx["setpoints"][name])
+            if hooks:
+                self._point_hook(k, "post_sweep", ctx)
             if dim["pre_delay"]:
                 self.control.sleep(dim["pre_delay"])
-            idx = (i,) + outer
             if not dim["record_after_inner"] or k == 0:
-                self._record_event(k, idx, dim)
+                self._record_event(k, idx, dim, ctx)
             if k > 0:
                 self._loop(k - 1, idx)
             if dim["record_after_inner"] and k > 0:
-                self._record_event(k, idx, dim)
+                self._record_event(k, idx, dim, ctx)
 
-    def _record_event(self, k: int, idx: tuple, dim: dict) -> None:
+    def _record_event(self, k: int, idx: tuple, dim: dict, ctx: Optional[dict] = None) -> None:
+        hooks = self._hooks[k]
+        if hooks:
+            self._point_hook(k, "pre_record", ctx)
         values, errors = self._record(dim["record"])
+        if hooks:
+            self._point_hook(k, "post_record", dict(ctx, values=values))
         frame = {"k": k, "i": list(idx), "v": values, "e": errors, "t": time.time()}
         self._journal(POINT, frame)
         try:

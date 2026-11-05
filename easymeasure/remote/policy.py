@@ -104,6 +104,19 @@ def _has_code(definition) -> bool:
         p = definition.get(ph)
         if isinstance(p, dict) and str(p.get("hook") or "").strip():
             return True
+    # per-point hooks of the dimensions: any code counts, enabled or not (the
+    # backend's rules for "enabled" need not be repeated here to be safe)
+    dims = definition.get("dimensions")
+    for dim in dims if isinstance(dims, list) else []:
+        hooks = dim.get("hooks") if isinstance(dim, dict) else None
+        if hooks is None:
+            continue
+        if not isinstance(hooks, dict):
+            return True
+        for h in hooks.values():
+            code = h.get("code") if isinstance(h, dict) else h
+            if str(code or "").strip():
+                return True
     return False
 
 
@@ -157,7 +170,7 @@ def check(role: str, cmd: str, args: dict, data_roots: Iterable[str]) -> dict:
             raise Denied("unknown queue item kind %r" % kind)
         if _has_code(item.get("definition")):
             raise Denied("sweep hooks run Python code on the backend: admin role required "
-                         "(clear the pre/post hook code)")
+                         "(clear the pre/post and point hook code)")
     elif cmd == "monitor_add":
         try:
             iv = float(args.get("interval", 1.0))

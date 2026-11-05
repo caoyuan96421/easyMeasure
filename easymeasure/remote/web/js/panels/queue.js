@@ -1,6 +1,6 @@
 // Run queue: state, queued items, history (rerun, open data), scripts.
 
-import { h, Table, btn, bar, group, clock, confirmDialog } from "../ui.js";
+import { h, Table, btn, bar, group, clock, confirmDialog, qcan } from "../ui.js";
 
 const SCRIPT_HELP = `# Script API: get(name), set(name, value), action('inst.act'), sleep(s),
 # log(msg), run_sweep(definition), instrument(name) ...
@@ -18,34 +18,42 @@ export class QueuePanel {
     this.current = h("div", { class: "msg", text: "current: —" });
     this.msg = h("div", { class: "msg" });
     this.queued = new Table([{ key: "id", label: "#" }, { key: "kind", label: "Kind" }, { key: "name", label: "Name" },
-                             { key: "info", label: "Shape / info", fmt: (_, r) => info(r) }], { empty: "queue is empty" });
+                             { key: "info", label: "Shape / info", fmt: (_, r) => info(r) }],
+                            { empty: "queue is empty", onSelect: () => this._copyLabel(this.copyQueued, this.queued.current()) });
     this.queued.keyOf = (r) => r.id;
     this.history = new Table([{ key: "id", label: "#" }, { key: "kind", label: "Kind" }, { key: "name", label: "Name" },
       { key: "status", label: "Status", cls: (r) => ({ finished: "ok", error: "err", aborted: "warn" })[r.status] || "" },
       { key: "ended", label: "Ended", fmt: (v) => clock(v) },
       { key: "run", label: "Run / error", fmt: (_, r) => (r.error ? r.error : r.run !== undefined && r.run !== null ? `run ${r.run}` : "") }],
-      { onActivate: (r) => this._openData(r), empty: "no history yet" });
+      { onActivate: (r) => this._openData(r), empty: "no history yet",
+        onSelect: () => this._copyLabel(this.copyHist, this.history.current()) });
+    this.copyQueued = btn("Copy to sweep editor", () => this._copy(this.queued.current()),
+      { title: "copy the selected item into the sweep (or script) editor" });
+    this.copyHist = btn("Copy to sweep editor", () => this._copy(this.history.current()),
+      { title: "copy the selected item into the sweep (or script) editor" });
+    this.copyQueued.disabled = this.copyHist.disabled = true;
     this.history.keyOf = (r) => r.id;
     this.scriptName = h("input", { value: "script", class: "w-chan" });
     this.script = h("textarea", { class: "code", rows: 8, spellcheck: false });
     this.script.value = SCRIPT_HELP + "set('Vg', 0.1)\nsleep(1)\nlog('I = %g' % get('I'))\n";
     this.el = h("div", { class: "panel queue" },
       bar(this.state,
-        btn("▶ Start queue", () => this._cmd("queue_start"), { cmd: "queue_start" }),
-        btn("Stop after current", () => this._cmd("queue_stop"), { cmd: "queue_stop" }),
-        btn("⏸ Pause", () => this._cmd("pause"), { cmd: "pause" }),
-        btn("Resume", () => this._cmd("resume"), { cmd: "resume" }),
-        btn("■ Abort current", () => this._cmd("abort"), { cmd: "abort", cls: "danger" }),
-        btn("Abort all", () => this._cmd("abort_all"), { cmd: "abort_all", cls: "danger" }),
+        qcan(btn("▶ Start queue", () => this._cmd("queue_start"), { cmd: "queue_start", title: "run the queued items" }), "start"),
+        qcan(btn("Stop after current", () => this._cmd("queue_stop"), { cmd: "queue_stop", title: "finish the running item, then stay idle" }), "stop"),
+        qcan(btn("⏸ Pause", () => this._cmd("pause"), { cmd: "pause" }), "pause"),
+        qcan(btn("Resume", () => this._cmd("resume"), { cmd: "resume" }), "resume"),
+        qcan(btn("■ Abort current", () => this._cmd("abort"), { cmd: "abort", cls: "danger", title: "abort the running item; the queue continues" }), "abort"),
+        qcan(btn("Abort all", () => this._cmd("abort_all"), { cmd: "abort_all", cls: "danger", title: "abort the running item and stop the queue" }), "abort_all"),
         h("label", { class: "check" }, this.stopOnError, " stop queue on error")),
       group("Queued", this.current, this.queued.el, bar(
         btn("▲ up", () => this._move(-1), { cmd: "queue_move" }), btn("▼ down", () => this._move(1), { cmd: "queue_move" }),
         btn("Remove", () => this._remove(), { cmd: "queue_remove" }),
-        btn("Clear queue", async () => { if (await confirmDialog("Clear queue", "Remove all queued items?")) this._cmd("queue_clear"); }, { cmd: "queue_clear" }))),
+        btn("Clear queue", async () => { if (await confirmDialog("Clear queue", "Remove all queued items?")) this._cmd("queue_clear"); }, { cmd: "queue_clear" }),
+        this.copyQueued)),
       group("History", this.history.el, bar(
         btn("⟳ Rerun selected", () => this._rerun(), { cmd: "queue_add", title: "queue the selected sweep or script again and start" }),
-        btn("Open data", () => this._openData(this.history.current()), { cmd: "load_run" }),
-        btn("Copy sweep to editor", () => { const r = this.history.current(); if (r && r.definition) this.app.copyToEditor(r.definition); }))),
+        this.copyHist,
+        btn("Open data", () => this._openData(this.history.current()), { cmd: "load_run" }))),
       group("Script (admin)", this.script, bar(h("span", { text: "Name" }), this.scriptName,
         btn("Add script to queue", () => this._script(false), { cmd: "queue_add run_script_now" }),
         btn("Run now (front of queue)", () => this._script(true), { cmd: "run_script_now" }))),
@@ -66,6 +74,28 @@ export class QueuePanel {
     this.current.textContent = c ? `current: #${c.id} ${c.kind} ${c.name || ""} ${c.run !== undefined ? `(run ${c.run})` : ""}` : "current: —";
     this.queued.set(q.queued || []);
     this.history.set((q.history || []).slice().reverse());
+    this._copyLabel(this.copyQueued, this.queued.current());
+    this._copyLabel(this.copyHist, this.history.current());
+  }
+
+  /** The copy button says where the selected item goes (sweep or script editor). */
+  _copyLabel(b, r) {
+    const script = !!r && r.kind === "script";
+    b.textContent = script ? "Copy to script editor" : "Copy to sweep editor";
+    b.disabled = !r || !((r.kind === "sweep" && r.definition) || (script && r.code !== undefined));
+  }
+
+  _copy(r) {
+    if (!r) return;
+    if (r.kind === "script") {
+      this.script.value = r.code || "";
+      this.scriptName.value = r.name || "script";
+      this.script.focus();
+      this.say(`script #${r.id} copied to the script editor`);
+    } else if (r.definition) {
+      this.app.copyToEditor(r.definition);
+      this.say(`sweep #${r.id} copied to the sweep editor`);
+    }
   }
 
   async _move(d) {

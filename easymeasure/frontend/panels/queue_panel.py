@@ -20,9 +20,18 @@ SCRIPT_HELP = ("# get(name), set(name, value), set_raw('inst.ch', v), sleep(s),\
                "# run_sweep(definition), state (persistent dict), np, math, time\n")
 
 
+def apply_queue_controls(buttons: dict, q: dict) -> None:
+    """Enable the queue buttons {command: widget} by what the queue can do now."""
+    can = q.get("can") or {}
+    alias = {"queue_start": "start", "queue_stop": "stop"}
+    for cmd, w in buttons.items():
+        w.setEnabled(bool(can.get(alias.get(cmd, cmd))))
+
+
 class QueuePanel(QWidget):
     rerunRequested = Signal(dict)     # a history item (sweep definition or script)
     openDataRequested = Signal(str)   # path of a run's data file
+    copyToEditorRequested = Signal(dict)   # a sweep definition for the sweep editor
 
     def __init__(self, conn, model, parent=None):
         super().__init__(parent)
@@ -30,12 +39,20 @@ class QueuePanel(QWidget):
         self.model = model
         self.state_label = QLabel("<b>state: ?</b>")
         btns = []
-        for text, cmd in (("▶ Start queue", "queue_start"), ("Stop after current", "queue_stop"),
-                          ("⏸ Pause", "pause"), ("Resume", "resume"), ("■ Abort current", "abort"),
-                          ("Abort all", "abort_all")):
+        self.controls = {}
+        for text, cmd, tip in (
+                ("▶ Start queue", "queue_start", "run the queued items (enabled when items wait)"),
+                ("Stop after current", "queue_stop", "finish the running item, then stay idle"),
+                ("⏸ Pause", "pause", "pause the running item"),
+                ("Resume", "resume", "continue the paused item"),
+                ("■ Abort current", "abort", "abort the running item; the queue continues"),
+                ("Abort all", "abort_all", "abort the running item and stop the queue")):
             b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setEnabled(False)
             b.clicked.connect(lambda _=False, c=cmd: self._cmd(c))
             btns.append(b)
+            self.controls[cmd] = b
         self.stop_on_error = QCheckBox("stop queue on error")
         self.stop_on_error.toggled.connect(
             lambda v: self.conn.request("queue_options", {"stop_on_error": v}))
@@ -56,6 +73,12 @@ class QueuePanel(QWidget):
             b = QPushButton(text)
             b.clicked.connect(fn)
             qb.addWidget(b)
+        self.queued_items = []
+        self.copy_queued = QPushButton("Copy to sweep editor")
+        self.copy_queued.setToolTip("copy the selected item into the sweep (or script) editor")
+        self.copy_queued.clicked.connect(lambda: self._copy(self._selected_queued()))
+        self.queued.itemSelectionChanged.connect(self._queued_selection)
+        qb.addWidget(self.copy_queued)
         qb.addStretch(1)
         qbox = QGroupBox("Queued")
         ql = QVBoxLayout(qbox)
@@ -77,10 +100,14 @@ class QueuePanel(QWidget):
         self.open_btn = QPushButton("Open data")
         self.open_btn.setToolTip("open the data file of the selected run")
         self.open_btn.clicked.connect(self._open_data)
+        self.copy_hist = QPushButton("Copy to sweep editor")
+        self.copy_hist.setToolTip("copy the selected item into the sweep (or script) editor")
+        self.copy_hist.clicked.connect(lambda: self._copy(self._selected_history()))
         self.history.itemSelectionChanged.connect(self._hist_selection)
         self._hist_selection()
         hb = FlowLayout()
         hb.addWidget(self.rerun_btn)
+        hb.addWidget(self.copy_hist)
         hb.addWidget(self.open_btn)
         hb.addStretch(1)
         hbox = QGroupBox("History")
@@ -116,6 +143,7 @@ class QueuePanel(QWidget):
         lay.addWidget(split, 1)
         lay.addWidget(self.msg)
         self._ids = []
+        self._queued_selection()
         model.queueChanged.connect(self.update_queue)
 
     def _cmd(self, cmd, args=None):
@@ -155,6 +183,36 @@ class QueuePanel(QWidget):
                               on_ok=lambda i: self.msg.setText("script queued as #%s" % i),
                               on_err=lambda e: self.msg.setText("✘ %s" % e))
 
+    def _selected_queued(self):
+        r = self.queued.currentRow()
+        if not self.queued.selectedItems() or not 0 <= r < len(self.queued_items):
+            return None
+        return self.queued_items[r]
+
+    @staticmethod
+    def _copy_label(button, item) -> None:
+        """The copy button says where the selected item goes."""
+        script = item is not None and item.get("kind") == "script"
+        button.setText("Copy to script editor" if script else "Copy to sweep editor")
+        button.setEnabled(item is not None and (
+            (item.get("kind") == "sweep" and bool(item.get("definition"))) or
+            (script and item.get("code") is not None)))
+
+    def _queued_selection(self):
+        self._copy_label(self.copy_queued, self._selected_queued())
+
+    def _copy(self, item) -> None:
+        if item is None:
+            return
+        if item.get("kind") == "script":
+            self.script.setPlainText(item.get("code", ""))
+            self.script_name.setText(item.get("name") or "script")
+            self.script.setFocus()
+            self.msg.setText("script #%s copied to the script editor" % item.get("id"))
+        elif item.get("definition"):
+            self.copyToEditorRequested.emit(item["definition"])
+            self.msg.setText("sweep #%s copied to the sweep editor" % item.get("id"))
+
     def _selected_history(self):
         r = self.history.currentRow()
         if not self.history.selectedItems() or not 0 <= r < len(self._hist_items):
@@ -167,6 +225,7 @@ class QueuePanel(QWidget):
             (it.get("kind") == "sweep" and bool(it.get("definition"))) or
             (it.get("kind") == "script" and it.get("code") is not None)))
         self.open_btn.setEnabled(it is not None and bool(it.get("path")))
+        self._copy_label(self.copy_hist, it)
 
     def _rerun(self):
         it = self._selected_history()
@@ -189,6 +248,7 @@ class QueuePanel(QWidget):
         state = q.get("state", "?")
         color = {"idle": "#888", "running": "#38f", "paused": "#c80", "aborting": "#d44"}.get(state, "#888")
         self.state_label.setText("<b>state: <span style='color:%s'>%s</span></b>" % (color, state))
+        apply_queue_controls(self.controls, q)
         self.stop_on_error.blockSignals(True)
         self.stop_on_error.setChecked(bool(q.get("stop_on_error")))
         self.stop_on_error.blockSignals(False)
@@ -199,11 +259,21 @@ class QueuePanel(QWidget):
         else:
             self.current.setText("current: —")
         items = q.get("queued", [])
+        sel = self._selected_queued()
+        sel_id = sel.get("id") if sel else None
         self._ids = [i["id"] for i in items]
+        self.queued_items = items
+        self.queued.blockSignals(True)
         self.queued.setRowCount(len(items))
         for r, it in enumerate(items):
             for c, v in enumerate((it["id"], it["kind"], it.get("name", ""), self._info(it))):
                 self.queued.setItem(r, c, QTableWidgetItem(str(v)))
+        self.queued.clearSelection()
+        for r, it in enumerate(items):
+            if sel_id is not None and it.get("id") == sel_id:
+                self.queued.selectRow(r)
+        self.queued.blockSignals(False)
+        self._queued_selection()
         hist = list(reversed(q.get("history", [])))
         sel = self._selected_history()
         sel_id = sel.get("id") if sel else None

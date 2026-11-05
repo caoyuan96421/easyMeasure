@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         self.setCentralWidget(self.splitter)
         self.queue_panel.rerunRequested.connect(self._rerun)
+        self.queue_panel.copyToEditorRequested.connect(self._copy_to_editor)
         self.queue_panel.openDataRequested.connect(self.open_data)
         self.live.copyDefinition.connect(self._copy_to_editor)
         self.running.copyDefinition.connect(self._copy_to_editor)
@@ -209,11 +210,14 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.conn_label)
         self.start_action = tb.addWidget(self.start_btn)   # toolbar widgets hide via their action
         tb.addSeparator()
+        self.queue_actions = {}
         for text, cmd in (("▶ Start queue", "queue_start"), ("⏸ Pause", "pause"),
                           ("Resume", "resume"), ("■ Abort", "abort")):
             a = QAction(text, self)
             a.triggered.connect(lambda _=False, c=cmd: self.conn.request(c))
+            a.setEnabled(False)                  # follows the queue state
             tb.addAction(a)
+            self.queue_actions[cmd] = a
         tb.addSeparator()
         a = QAction("Add slide to PPT", self)
         a.setToolTip("append a slide for the running / last sweep to the configured PPT file")
@@ -368,12 +372,17 @@ class MainWindow(QMainWindow):
     def _on_disconnected(self):
         self._message("warning", "lost connection to backend – retrying")
         self.start_action.setVisible(True)
+        from .panels.queue_panel import apply_queue_controls
+        apply_queue_controls(self.queue_actions, {})          # nothing to control now
+        apply_queue_controls(self.queue_panel.controls, {})
 
     def _message(self, level, text):
         self.statusBar().showMessage(("⚠ " if level in ("error", "warning") else "") + str(text), 8000)
 
     def _queue_changed(self, q):
         self.state_label.setText("queue: %s  " % q.get("state", "?"))
+        from .panels.queue_panel import apply_queue_controls
+        apply_queue_controls(self.queue_actions, q)
 
     def _on_event(self, kind, data):
         if kind == "sweep_point" and isinstance(data, dict):

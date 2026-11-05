@@ -81,6 +81,7 @@ class ScriptRunner:
         self.control = control
         self.run_sweep = run_sweep
         self.state: Dict[str, Any] = {}
+        self._compiled: Dict[tuple, Any] = {}
 
     def namespace(self, name: str) -> dict:
         ctl = self.control
@@ -137,14 +138,26 @@ class ScriptRunner:
             "state": self.state, "AbortRequested": AbortRequested,
         }
 
-    def run(self, code: str, name: str = "script") -> None:
-        """Execute *code* in the calling thread.  Raises on error/abort."""
+    def run(self, code: str, name: str = "script", extra: Optional[dict] = None) -> None:
+        """Execute *code* in the calling thread.  Raises on error/abort.
+
+        *extra* adds names to the script's namespace (the per-point sweep hooks get
+        the point's indices and setpoints this way)."""
         filename = _SCRIPT_PREFIX + name + ">"
-        try:
-            compiled = compile(code, filename, "exec")
-        except SyntaxError as exc:
-            raise ScriptError("syntax error in %s line %s: %s" % (name, exc.lineno, exc.msg)) from None
+        key = (code, filename)
+        compiled = self._compiled.get(key)
+        if compiled is None:
+            try:
+                compiled = compile(code, filename, "exec")
+            except SyntaxError as exc:
+                raise ScriptError("syntax error in %s line %s: %s"
+                                  % (name, exc.lineno, exc.msg)) from None
+            if len(self._compiled) > 64:        # per-point hooks run thousands of times
+                self._compiled.clear()
+            self._compiled[key] = compiled
         ns = self.namespace(name)
+        if extra:
+            ns.update(extra)
         ctl = self.control
 
         def local_trace(frame, event, arg):

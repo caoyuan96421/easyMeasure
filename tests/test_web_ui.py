@@ -192,3 +192,57 @@ def test_web_settings_combos_and_mode_switch(browser, gw, demo):
     assert page.locator("td:text-is('Vdc')").count() == 0
     assert not errors, errors
     page.context.close()
+
+
+def test_web_queue_controls_copy_and_point_actions(browser, gw, demo):
+    errors = []
+    page = open_page(browser, gw, "ada", errors)          # admin: may use actions (code)
+    # idle, empty queue: no queue button can be pressed
+    page.wait_for_function("document.querySelector('header [data-qcan=start]').disabled")
+    assert page.is_disabled("header [data-qcan=abort]") and page.is_disabled("header [data-qcan=pause]")
+    # dimension editor in point order; actions hidden until ticked
+    page.click(".tab:has-text('Sweep editor')")
+    dim = page.locator(".dim-editor").first
+    legends = dim.locator("legend:visible").all_text_contents()
+    assert legends[:2] == ["1. Set swept channels", "3. Record"]       # 2 = pre-sample delay
+    assert dim.locator("fieldset.hook:visible").count() == 0
+    dim.locator("label.check:has-text('pre-record') input").check()
+    page.wait_for_timeout(100)
+    vis = dim.locator("legend:visible").all_text_contents()
+    assert "3. Pre-record action" in vis and "4. Record" in vis
+    assert dim.locator("label:has-text('2. Pre-sample delay')").count() == 1
+    dim.locator("fieldset.hook:visible textarea").fill("state['web'] = state.get('web', 0) + 1")
+    # queue a sweep (not started) and a script
+    sweep = {"name": "webhooks", "dimensions": [
+        {"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"],
+         "hooks": {"pre_record": {"enabled": True, "code": "state['web'] = state.get('web', 0) + 1"}}}]}
+    demo.queue_add({"kind": "sweep", "definition": sweep})
+    demo.queue_add({"kind": "script", "code": "log('web script')", "name": "ws"})
+    page.click(".tab:has-text('Queue')")
+    page.wait_for_function("!document.querySelector('header [data-qcan=start]').disabled")
+    assert page.is_disabled(".panel.queue [data-qcan=abort]")
+    page.click(".panel.queue td:text-is('ws')")
+    page.click(".panel.queue button:has-text('Copy to script editor')")
+    assert page.input_value(".panel.queue textarea.code") == "log('web script')"
+    page.click(".panel.queue td:text-is('webhooks')")
+    page.click(".panel.queue button:has-text('Copy to sweep editor') >> nth=0")
+    page.wait_for_timeout(200)
+    dim = page.locator(".dim-editor").first
+    assert dim.locator("label.check:has-text('pre-record') input").is_checked()
+    # start: runs, then the queue goes back to idle by itself
+    demo.scripts.state.clear()
+    page.click("header [data-qcan=start]")
+    assert demo.queue.wait_idle(30)
+    page.wait_for_function("document.querySelector('header [data-qcan=start]').disabled", timeout=10000)
+    assert demo.scripts.state.get("web") == 3
+    assert demo.queue_state()["state"] == "idle"
+    # instrument channels: last value and allowed values columns
+    page.click(".tab:has-text('Instruments')")
+    page.click("td:text-is('lockin')")
+    hdr = page.locator(".panel.setup th").all_text_contents()
+    assert "Last value" in hdr and "Allowed values" in hdr
+    page.click("td:text-is('sensitivity')")
+    page.click("button:has-text('Get') >> nth=0")
+    page.wait_for_selector("tr:has(td:text-is('sensitivity')) td:text-is('1e-3')", timeout=10000)
+    assert not errors, errors
+    page.context.close()

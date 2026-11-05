@@ -458,8 +458,9 @@ class Backend:
     def queue_clear(self) -> None:
         self.queue.clear()
 
-    def queue_start(self) -> None:
-        self.queue.start()
+    def queue_start(self) -> bool:
+        """Start processing the queue; False (and the queue stays idle) if it is empty."""
+        return self.queue.start()
 
     def queue_stop(self) -> None:
         self.queue.stop()

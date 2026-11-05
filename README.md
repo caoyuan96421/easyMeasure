@@ -200,9 +200,27 @@ duration is chosen so that no target exceeds its own ramp rate.
   A mapping is mandatory for vector/tensor channels. Text channels cannot be swept.
 * Recording: a channel recorded in dimension *k* is stored as an array of shape
   `(N_k, …, N_{D-1}) + value_shape`. `@time` / `@elapsed` are built in.
-* Order per step: set sweep channels → `pre_delay` → record → `post_delay` →
-  inner dimensions. Pre phase: hook → constants → record. Post phase (always run,
-  also after errors and — by default — aborts): record → constants → hook.
+* Order per point of a dimension (the editor lays a dimension out in this order):
+
+  `pre_sweep` action → set the swept channels → `post_sweep` action → `pre_delay`
+  → `pre_record` action → record → `post_record` action → `post_delay` → inner
+  dimensions (with `record_after_inner` the inner dimensions run before `pre_record`).
+
+  Pre phase: hook → constants → record. Post phase (always run, also after errors
+  and — by default — aborts): record → constants → hook.
+* **Point actions** are optional Python snippets run at every point (trigger a
+  meter before recording, wait for a magnet, log a value …). They are off and
+  hidden until ticked in the editor; unticked code is kept in the definition but
+  not run:
+  ```json
+  "hooks": {"pre_record": {"enabled": true, "code": "action('dmm.trigger')"},
+            "post_record": {"enabled": true, "code": "if values['I'] > 1e-6: log('high at %s' % (index,))"}}
+  ```
+  Besides the script API they see `k` (dimension), `i` (index in it), `index` (this
+  and the outer indices), `setpoints` (channel → value of this point) and, in
+  `post_record`, `values` (what was just recorded). An error in an action stops the
+  sweep (the post phase still runs). Like the pre/post hooks they need the admin
+  role over remote access. Code is compiled once per sweep.
 * All setpoints are computed and limit-checked before the sweep starts.
 
 ### Run queue (`backend/runqueue.py`)
@@ -211,6 +229,11 @@ States `idle`, `running`, `paused`, `aborting`. Items are sweeps or **scripts**
 `instrument(name).raw_query()`, `run_sweep(definition)`, a persistent `state`
 dict, `np`). Pause / resume / abort (current) / abort all / stop after current.
 Abort reaches scripts on *every line*, so even `while True: pass` stops.
+*Start* processes what is queued; on an empty queue it does nothing, and a queue that
+runs empty goes back to `idle` by itself, so an item added later waits for the next
+*Start* (or is added with `start=True`, e.g. *Add & start*). `queue_state()["can"]`
+tells which controls apply right now; the GUI and the web page enable their buttons
+from it (no *Abort* without a running item, no *Resume* unless paused …).
 
 ### Storage (`backend/storage.py`)
 `<data_dir>/<date>/<run>_<name>.emj`: an append-only sequence of frames, each
@@ -260,13 +283,17 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
 | ![setup](docs/screenshots/setup.png) | ![editor](docs/screenshots/sweep_editor.png) |
 
 * **Instruments & channels** – add/edit/reconnect instruments (driver list with
-  default options), inspect raw channels, define aliases and composites, manual
-  get/set, save/load setups.
+  default options), inspect raw channels (with their allowed values and the *last
+  value* read or set — nothing is read just to fill the table), define aliases and
+  composites, manual get/set, save/load setups.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
   file, validate against the backend, queue. **Running sweep** shows the
   executing definition read-only.
-* **Queue** – controls, queued items (reorder/remove), history (*Rerun selected*
-  queues the same sweep/script again, *Open data* opens its file), script editor.
+* **Queue** – controls (enabled by what the queue can do now), queued items
+  (reorder/remove), history (*Rerun selected* queues the same sweep/script again,
+  *Open data* opens its file), script editor. *Copy to sweep editor* on a queued or
+  finished sweep loads its definition into the editor; on a script the button reads
+  *Copy to script editor* and fills the script editor.
 * **Live data / data files** – N-D plot grid: choose X and Y among all sweep and
   value axes, other axes become sliders (*follow latest* tracks new data); curve,
   stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.

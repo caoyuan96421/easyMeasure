@@ -38,9 +38,13 @@ export class SetupPanel {
       { key: "name", label: "Channel" }, { key: "config", label: "Config", fmt: (v) => (v ? "⚙" : ""), title: "config channels are settings: set directly, never aliased or swept" },
       { key: "access", label: "Access" }, { key: "dtype", label: "Type" },
       { key: "shape", label: "Shape", fmt: (s) => (s === null || s === undefined ? "any" : s.length === 0 ? "scalar" : s.map((x) => (x === -1 ? "N" : x)).join("×")) },
-      { key: "unit", label: "Unit" }, { key: "description", label: "Description" },
-      { key: "allowed", label: "Values", fmt: (v) => (v && v.length ? v.join(" | ") : "") },
+      { key: "unit", label: "Unit" },
+      { key: "last", label: "Last value", fmt: (v) => lastText(v) },
+      { key: "allowed", label: "Allowed values", fmt: (v) => (v && v.length ? v.join(" | ") : "") },
+      { key: "description", label: "Description" },
     ], { empty: "select an instrument" });
+    this.raw.keyOf = (r) => r.name;
+    this.lastLocal = new Map();          // "inst.ch" -> [value, unix time] of our own get/set
     this.actions = new Table([{ key: "name", label: "Action" }, { key: "description", label: "Description" }],
       { onActivate: () => this._runAction(), empty: "no actions" });
     this.alias = new Table([
@@ -117,13 +121,26 @@ export class SetupPanel {
 
   _showRaw() {
     const inst = this._selInst();
-    this.raw.set(inst ? inst.channels || [] : []);
+    const rows = (inst ? inst.channels || [] : []).map((c) => {
+      const loc = this.lastLocal.get(`${inst.name}.${c.name}`);
+      // our own get/set may be newer than the last state snapshot
+      return loc && (c.last_t === null || c.last_t === undefined || loc[1] >= c.last_t) ? { ...c, last: loc[0], last_t: loc[1] } : c;
+    });
+    this.raw.set(rows, { rowTitle: (r) => (r.last_t ? `last value read or set at ${new Date(r.last_t * 1000).toLocaleTimeString()}` : null) });
     this.actions.set(inst ? inst.actions || [] : []);
+  }
+
+  /** A value we just read or set: show it in the channel table at once. */
+  _noteValue(ref, v) {
+    if (!String(ref).includes(".")) return;
+    this.lastLocal.set(ref, [v, Date.now() / 1000]);
+    this._showRaw();
   }
 
   async _do(cmd, args, ok) {
     try {
       const r = await this.conn.request(cmd, args, { timeout: 600000 });
+      if ((cmd === "read_channel" || cmd === "write_channel") && args.name) this._noteValue(args.name, r);
       this.say(typeof ok === "function" ? ok(r) : ok);
       this.model.scheduleRefresh();
       return r;
@@ -190,7 +207,7 @@ export class SetupPanel {
     const c = this.raw.current();
     if (!c.config) { this.say("use an alias to set measurement channels (limits and ramps apply)", true); }
     let current = "";
-    try { current = await this.conn.request("read_channel", { name: ref }); } catch (e) { /* unknown */ }
+    try { current = await this.conn.request("read_channel", { name: ref }); this._noteValue(ref, current); } catch (e) { /* unknown */ }
     if (c.allowed && c.allowed.length) {
       // only certain values accepted: offer them in a drop-down
       const idx = c.allowed.findIndex((x) => (typeof x === "number" ? Math.abs(Number(current) - x) <= 1e-9 * Math.abs(x || 1)
@@ -290,6 +307,7 @@ export class SetupPanel {
     if (!n) return;
     try {
       const v = await this.conn.request("read_channel", { name: n });
+      this._noteValue(n, v);
       this.mResult.textContent = `${n} = ${fmt(v, 8)}`;
       this.mResult.className = "msg";
     } catch (e) { this.mResult.textContent = `✘ ${e.message}`; this.mResult.className = "msg err"; }
@@ -302,6 +320,7 @@ export class SetupPanel {
       const value = parseValue(this.mValue.value);
       this.mResult.textContent = `setting ${n} …`;
       const v = await this.conn.request("write_channel", { name: n, value, ramp: this.mRamp.checked }, { timeout: 3600000 });
+      this._noteValue(n, v);
       this.mResult.textContent = `${n} = ${fmt(v, 8)}`;
       this.mResult.className = "msg";
       this.model.scheduleRefresh();
@@ -326,4 +345,12 @@ export class SetupPanel {
     const problems = await this._do("load_setup", { setup, replace: true }, `setup ${f.name} loaded`).catch(() => null);
     if (problems && problems.length) { this.say(`loaded with problems: ${problems.join("; ")}`, true); message("warning", problems.join("; ")); }
   }
+}
+
+function lastText(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object" && Array.isArray(v.shape)) return `array ${v.shape.join("×")}`;
+  if (v && v.shape && v.data) return `array ${v.shape.join("×")}`;
+  if (typeof v === "number") return Number.isFinite(v) ? String(Number(v.toPrecision(6))) : String(v);
+  return String(v);
 }

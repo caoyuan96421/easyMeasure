@@ -68,6 +68,19 @@ export function applyPermissions(root, can) {
   }
 }
 
+/** Queue buttons (data-qcan="start|pause|resume|abort|...") follow what the queue
+ *  can do now (q.can from the backend); role permissions still apply on top. */
+export function qcan(el, what) { el.dataset.qcan = what; el.dataset.busy = "1"; el.disabled = true; return el; }
+
+export function applyQueueControls(root, q) {
+  const can = (q && q.can) || {};
+  for (const el of root.querySelectorAll("[data-qcan]")) {
+    const ok = !!can[el.dataset.qcan];
+    el.dataset.busy = ok ? "" : "1";
+    el.disabled = !ok || el.classList.contains("denied");
+  }
+}
+
 // ------------------------------------------------------------------ table ----
 export class Table {
   /** columns: [{key, label, fmt?, cls?, width?}] */
