@@ -79,17 +79,46 @@ SCRIPTS = [
 ]
 
 
+class _Attached:
+    """Stands in for the Popen of a backend that this script did not start."""
+
+    def __init__(self, pid):
+        self.pid = pid
+
+    def poll(self):
+        try:
+            os.kill(self.pid, 0)
+            return None
+        except OSError:
+            return 1
+
+    def wait(self, timeout=None):
+        return None
+
+    def kill(self):
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=2.0)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--attach", default=None, metavar="HOME",
+                    help="hammer an already running backend (its state directory, which "
+                         "holds backend.json) instead of starting one; it is left running")
     args = ap.parse_args()
     random.seed(args.seed)
-    home = Path(tempfile.mkdtemp(prefix="em_stress_"))
-    env = dict(os.environ, EASYMEASURE_HOME=str(home), PYTHONPATH=str(ROOT))
-    print("state dir:", home)
-    be = subprocess.Popen([sys.executable, "-m", "easymeasure.backend", "--port", "0", "--quiet",
-                           "--force", "--setup", str(EX / "faulty_setup.json")], env=env, cwd=str(ROOT))
+    if args.attach:
+        home = Path(args.attach)
+        be = _Attached(json.loads((home / "backend.json").read_text())["pid"])
+        print("attached to backend pid %d in %s" % (be.pid, home))
+    else:
+        home = Path(tempfile.mkdtemp(prefix="em_stress_"))
+        env = dict(os.environ, EASYMEASURE_HOME=str(home), PYTHONPATH=str(ROOT))
+        print("state dir:", home)
+        be = subprocess.Popen([sys.executable, "-m", "easymeasure.backend", "--port", "0",
+                               "--quiet", "--force", "--setup", str(EX / "faulty_setup.json")],
+                              env=env, cwd=str(ROOT))
     rt = home / "backend.json"
     for _ in range(200):
         if rt.exists():
@@ -260,7 +289,8 @@ def main():
         print("final sweep after stress:", final["status"], final.get("error", ""))
         if final["status"] != "finished":
             ok = False
-        c.call("shutdown", force=True)
+        if not args.attach:
+            c.call("shutdown", force=True)
         c.close()
     except Exception as exc:
         print("backend NOT responsive:", exc)
