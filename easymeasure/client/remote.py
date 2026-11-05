@@ -33,6 +33,11 @@ from ..common import codec
 from ..common.errors import ProtocolError, RemoteError
 
 
+def _body(msg) -> bytes:
+    # WebSocket messages are codec frames without the 4-byte length prefix
+    return codec.encode(msg)[4:]
+
+
 class RemoteClient:
     def __init__(self, url: str, user: Optional[str] = None, password: Optional[str] = None, *,
                  token: Optional[str] = None, fingerprint: Optional[str] = None,
@@ -105,25 +110,35 @@ class RemoteClient:
         msg = await asyncio.wait_for(self._ws.receive(), timeout)
         if msg.type != aiohttp.WSMsgType.BINARY:
             raise ConnectionError("gateway closed the connection: %s" % (self._ws.close_code,))
-        w = codec.decode(msg.data)
+        w = codec.decode_body(msg.data)
         if not isinstance(w, dict) or w.get("type") != "welcome":
             raise ProtocolError("unexpected first message from the gateway")
         self.welcome = w
         if events is None:
             from ..backend.server import DEFAULT_EVENTS
             events = list(DEFAULT_EVENTS)
-        await self._ws.send_bytes(codec.encode(
+        await self._ws.send_bytes(_body(
             {"type": "subscribe", "events": events if events == "*" else list(events)}))
         self._rx = asyncio.ensure_future(self._read_loop())
 
     async def _read_loop(self):
         aiohttp = self._aiohttp
+        T = aiohttp.WSMsgType
+        self.close_code = self.close_reason = None
         try:
-            async for m in self._ws:
-                if m.type != aiohttp.WSMsgType.BINARY:
+            while True:
+                m = await self._ws.receive()
+                if m.type == T.CLOSE:
+                    # the code in the CLOSE frame is the server's reason (aiohttp may later
+                    # report 1006 if its reply races the server's TCP close)
+                    self.close_code, self.close_reason = m.data, m.extra
+                    break
+                if m.type in (T.CLOSED, T.CLOSING, T.ERROR):
+                    break
+                if m.type != T.BINARY:
                     continue
                 try:
-                    msg = codec.decode(m.data)
+                    msg = codec.decode_body(m.data)
                 except ProtocolError:
                     continue
                 t = msg.get("type") if isinstance(msg, dict) else None
@@ -142,12 +157,14 @@ class RemoteClient:
             pass
         finally:
             self.closed = True
-            self.close_code = self._ws.close_code
+            if self.close_code is None:
+                self.close_code = self._ws.close_code
             with self._lock:
                 pend = list(self._pending.values())
                 self._pending.clear()
             for slot in pend:
-                slot[1] = {"ok": False, "error": "connection closed (%s)" % self._ws.close_code,
+                slot[1] = {"ok": False, "error": "connection closed (%s%s)" % (
+                    self.close_code, ": %s" % self.close_reason if self.close_reason else ""),
                            "kind": "ConnectionError"}
                 slot[0].set()
 
@@ -157,7 +174,7 @@ class RemoteClient:
     # -- API -----------------------------------------------------------------------------
     def subscribe(self, events) -> None:
         """``"*"`` for every event or a list of names (default: status events only)."""
-        self._run(self._ws.send_bytes(codec.encode(
+        self._run(self._ws.send_bytes(_body(
             {"type": "subscribe", "events": events if events == "*" else list(events)})))
 
     def call(self, cmd: str, _timeout: float = 120.0, **args) -> Any:
@@ -168,8 +185,8 @@ class RemoteClient:
         with self._lock:
             self._pending[rid] = slot
         try:
-            self._run(self._ws.send_bytes(codec.encode({"type": "req", "id": rid, "cmd": cmd,
-                                                        "args": args})), 30.0)
+            self._run(self._ws.send_bytes(_body({"type": "req", "id": rid, "cmd": cmd,
+                                                 "args": args})), 30.0)
         except Exception as exc:
             with self._lock:
                 self._pending.pop(rid, None)

@@ -30,6 +30,9 @@ disturbing a running measurement.
 * **Live N-D plotting** (curves, stacked curves, heat maps with draggable levels
   and colormaps, sliders for extra dimensions), a monitor panel, and automatic
   PowerPoint slides at the end of every run.
+* **Remote access over the internet**: a TLS gateway (in its own process) serves a
+  browser version of the GUI and a Python `RemoteClient`, with accounts, roles,
+  brute-force lock-out, rate limits and an audit log.
 
 ## Install
 
@@ -37,6 +40,7 @@ disturbing a running measurement.
 pip install -e .                 # numpy, PySide6, pyqtgraph, h5py, python-pptx, matplotlib
 pip install -e ".[hardware]"     # + pyserial, pyvisa for real instruments
 pip install -e ".[test]"         # + pytest
+pip install -e ".[webtest]"      # + playwright (browser test of the web app)
 ```
 
 Python ≥ 3.9.
@@ -278,7 +282,31 @@ command), `garble_rate` (corrupted reply / wrong type), `hang_rate` +
 ```bash
 python -m pytest -q tests                   # ~3 min, GUI tests run offscreen
 python examples/stress_test.py --minutes 10  # soak test against faulty hardware
+python examples/remote_stress_test.py --minutes 10 --browser   # remote access under attack
 ```
+
+`tests/test_remote.py` checks the gateway: TLS versions and pinning, security headers,
+static-file traversal, cookie flags, generic login errors, brute-force lock-out,
+WebSocket authentication and Origin checks, every role's permissions end to end,
+sessions closed on account changes, malformed / oversized / non-WebSocket traffic,
+rate and in-flight limits, connection limits, slow-loris sockets, a client that never
+reads, idle connections, backend and gateway restarts (sessions survive), downloads,
+a SIGKILLed gateway (the backend restarts it), the expression sandbox and
+performance. `tests/test_web_ui.py` drives the web app in Chromium (needs
+`pip install -e ".[webtest]"` and `python -m playwright install chromium`).
+
+`remote_stress_test.py` runs the faulty-hardware stress test locally while legitimate
+remote clients work and attackers guess passwords, send random and malformed
+messages, forbidden commands, sandbox escapes, oversized messages, request floods and
+slow-loris sockets, and one client never reads; it checks that nothing forbidden ever
+succeeded, the probe client never failed, both processes survived with bounded memory,
+and a remote sweep still completes. Each group of clients runs in its own process (like
+separate remote machines). In a 10-minute run on a 2-core machine at load 12 (130 000
+fuzz messages, 590 password guesses, 11 700 forbidden requests, 155 000 rate-limited
+requests, plus the faulty-hardware stress test and a browser on the live view): no
+forbidden request succeeded, 0 of 1545 probe pings failed (p50 7 ms, p99 0.4 s through
+the gateway; p50 1.5 ms, p99 0.25 s directly to the backend), the gateway stayed at
+180–215 MB, and its event loop never stalled.
 
 The suite covers codec fuzzing, fair/priority locks, port arbitration, hung /
 crashing / garbage-returning drivers, circuit breaker, limits and ramp rates,
@@ -328,6 +356,104 @@ c.call("queue_add", item={"kind": "sweep", "definition": sweep}, start=True)
 See `examples/client_example.py`. The backend can also be used in-process:
 `from easymeasure.backend.service import Backend`.
 
+## Remote access (internet)
+
+The backend itself only listens on `127.0.0.1`. For access from other computers it
+starts a **gateway** process that speaks HTTPS and secure WebSockets and forwards
+authenticated, permitted requests to the backend over localhost:
+
+```
+browser / RemoteClient ──TLS 1.2+ (WSS, compressed)──▶ gateway ──localhost──▶ backend
+```
+
+```bash
+python -m easymeasure.remote adduser alice --role admin    # asks for a password
+python -m easymeasure.backend --remote                     # backend + gateway on port 8443
+```
+
+or in the GUI: **Backend → Remote access…** (switch it on, see who is connected,
+add / change / remove accounts). Remote access stays on across backend restarts
+until it is switched off. Then open `https://<computer>:8443` in a browser:
+
+![web app](docs/screenshots/web_app.png)
+
+The web app mirrors the GUI: instruments & channels (with actions and config
+channels), the sweep editor (load/save JSON files from your computer, load from a
+stored run, validate, queue), the queue with history and rerun, live data and stored
+runs with the same N-D plots (curve / heat map / stacked curves, X/Y axis choice,
+sliders, follow-latest, colormaps, colour levels by dragging the colour bar, zoom and
+pan), monitor tiles, the Manual panel (spin box, slider, right-click expression), the
+log, and data-file / PowerPoint download. It reconnects by itself when the network,
+gateway or backend restart, and works on a phone. Light and dark themes follow the
+system (or Backend → Settings… in the web app).
+
+From Python (same interface as `BackendClient`):
+
+```python
+from easymeasure.client import RemoteClient
+c = RemoteClient("https://lab-pc.example.org:8443", "alice", password,
+                 fingerprint="87:68:0C:…")   # python -m easymeasure.remote cert
+c.call("read_channel", name="Vg")
+c.subscribe(["monitor"]); c.on_event = lambda kind, data: print(kind, data)
+```
+
+### Roles
+
+| role | may |
+|---|---|
+| `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
+| `operator` | + set channels and config channels (alias limits and ramp rates always apply), run actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
+| `admin` | + scripts and sweep hook code (Python on the backend computer = full control), instruments, aliases and limits, raw commands, setups, settings, shutdown |
+
+Operators cannot run code: sweeps with pre/post hook code are refused for them, and
+mapping / composite formulas go through a sandboxed evaluator (an allow-list of math
+functions, no attribute or file access, size limits on arrays and powers). Remote users
+only reach files inside the data directory. Switching remote access, the tray and
+account management are only possible on the backend computer.
+
+### Security
+
+* **TLS only** (1.2+, forward-secret AEAD ciphers, no compression or renegotiation).
+  Without a configured certificate a self-signed one is generated; browsers warn once
+  (compare the SHA-256 fingerprint shown in the dialog / `python -m easymeasure.remote
+  cert`), Python clients pin it. For no browser warning, set `certfile` / `keyfile`
+  (e.g. Let's Encrypt): `python -m easymeasure.remote config certfile=… keyfile=…`.
+* **Accounts** with scrypt-hashed passwords (≥ 10 characters). Failed logins lock out
+  the address (5 failures) and the account (10, from anywhere) for 30 s, doubling up
+  to 1 h; error messages never reveal whether a user exists.
+* **Sessions**: 256-bit random tokens; the browser keeps them in a `__Host-` cookie
+  (Secure, HttpOnly, SameSite=Strict); only their hashes are stored. Sessions expire
+  after 12 h without a connection or 7 days in total, and end at once when the account
+  is removed or its password or role changes.
+* **Browser hardening**: strict Content-Security-Policy (no inline or foreign
+  scripts), Origin checks against cross-site WebSocket hijacking, clickjacking and
+  MIME-sniffing protection, no data inserted as HTML.
+* **Limits** per connection (message size, request rate, unanswered requests), per
+  user and per address (connections), TLS-handshake and first-request timeouts
+  (slow-loris), and a client that accepts no data for 90 s is dropped. Idle
+  connections are never dropped.
+* **Isolation**: the gateway is a separate process; nothing from the network is parsed
+  inside the backend before it has been authenticated and checked, and a crash or
+  memory blow-up of the gateway cannot affect a running measurement (the backend
+  restarts it).
+* **Audit log** `~/.easymeasure/logs/remote.log`: logins, lock-outs, denied commands,
+  every command that changes something (with user and address), downloads.
+
+On Windows, allow Python through the firewall when asked (private networks). Only
+forward the port (router / firewall) if you need access from outside your network; a
+VPN in front of it is better still. All limits are in
+`~/.easymeasure/remote/config.json` (`python -m easymeasure.remote config`).
+
+### Performance
+
+Backend frames are forwarded byte-for-byte, so arrays stay raw binary end to end and
+the browser decodes them without copying through JSON. WebSocket compression
+(deflate, fastest level) shrinks partially filled maps and JSON, and back-pressure from
+a slow connection makes the backend drop monitor / sweep-point events for that client
+instead of queueing them (the live view resynchronises). Plots redraw at most ~15
+times a second and only when visible. On a local network a request takes well under a
+millisecond (0.5 ms measured over WSS on localhost) and a 2 MB map ~40 ms.
+
 ## Layout
 
 ```
@@ -335,7 +461,8 @@ easymeasure/
   backend/   resources, instrument, channels, sweep, runqueue, storage, monitor,
              scripting, service, server, logsys, setup_io, drivers/
   frontend/  connection, model, main_window, panels/, plotting/
-  client/    blocking client for scripts
+  client/    blocking clients for scripts (local and RemoteClient)
+  remote/    internet gateway, accounts, access policy, web/ (browser frontend)
   common/    codec, safe expressions, N-D slicing, errors
   report/    figure rendering, PowerPoint
 examples/    setups, sweeps, driver template, client example, stress test

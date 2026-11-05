@@ -1,6 +1,7 @@
 // Wire codec - the browser side of easymeasure/common/codec.py.
 //
-// frame = u32 frame_len | u32 json_len | JSON {"m": message, "b": [buffer sizes]} | buffers
+// message = u32 json_len | JSON {"m": message, "b": [buffer sizes]} | buffers
+// (a backend frame without its u32 length prefix: WebSocket messages are delimited).
 // Arrays travel as raw little-endian buffers referenced from the JSON.
 
 const te = new TextEncoder();
@@ -108,17 +109,15 @@ function restore(obj, bufs) {
   return out;
 }
 
-/** Decode one frame (ArrayBuffer, including the length prefix). */
+/** Decode one WebSocket message: a frame without its length prefix (ArrayBuffer). */
 export function decode(ab) {
   const dv = new DataView(ab);
-  if (ab.byteLength < 8) throw new Error("frame too short");
-  const n = dv.getUint32(0, true);
-  if (n !== ab.byteLength - 4) throw new Error("frame length mismatch");
-  const jlen = dv.getUint32(4, true);
-  if (8 + jlen > ab.byteLength) throw new Error("bad json length");
-  const meta = JSON.parse(td.decode(new Uint8Array(ab, 8, jlen)));
+  if (ab.byteLength < 4) throw new Error("frame too short");
+  const jlen = dv.getUint32(0, true);
+  if (4 + jlen > ab.byteLength) throw new Error("bad json length");
+  const meta = JSON.parse(td.decode(new Uint8Array(ab, 4, jlen)));
   const bufs = [];
-  let off = 8 + jlen;
+  let off = 4 + jlen;
   for (const s of meta.b || []) {
     if (off + s > ab.byteLength) throw new Error("bad buffer length");
     bufs.push(ab.slice(off, off + s));
@@ -152,18 +151,17 @@ function flatten(obj, bufs) {
   return String(obj);
 }
 
-/** Encode a message into a frame (ArrayBuffer). */
+/** Encode a message for the WebSocket (frame without length prefix, ArrayBuffer). */
 export function encode(msg) {
   const bufs = [];
   const flat = flatten(msg, bufs);
   const js = te.encode(JSON.stringify({ m: flat, b: bufs.map((b) => b.byteLength) }));
-  const total = 8 + js.length + bufs.reduce((a, b) => a + b.byteLength, 0);
+  const total = 4 + js.length + bufs.reduce((a, b) => a + b.byteLength, 0);
   const out = new Uint8Array(total);
   const dv = new DataView(out.buffer);
-  dv.setUint32(0, total - 4, true);
-  dv.setUint32(4, js.length, true);
-  out.set(js, 8);
-  let off = 8 + js.length;
+  dv.setUint32(0, js.length, true);
+  out.set(js, 4);
+  let off = 4 + js.length;
   for (const b of bufs) { out.set(b, off); off += b.byteLength; }
   return out.buffer;
 }

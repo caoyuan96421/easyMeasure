@@ -385,3 +385,40 @@ def test_manual_expression_updates_focused_spinbox(app, gui, monkeypatch):
     row.editor.lineEdit().setModified(True)
     row.show_value(0.0, force=True)
     assert row.editor.lineEdit().text().startswith("0.3")
+
+
+def test_remote_access_dialog(app, gui):
+    """Backend → Remote access…: accounts are managed and the gateway switched on/off
+    from the GUI (local-only commands)."""
+    pytest.importorskip("aiohttp")
+    from easymeasure.frontend.remote_dialog import RemoteAccessDialog
+    from easymeasure.remote import config as rconfig
+    w, demo, srv, tmp = gui
+    cfg = rconfig.load(demo.home)
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    cfg.update(host="127.0.0.1", port=s.getsockname()[1])
+    s.close()
+    rconfig.save(cfg, demo.home)
+    dlg = RemoteAccessDialog(w.conn, w)
+    dlg.show()
+    assert pump(app, 5, lambda: dlg.status.text() == "off")
+    done = []
+    w.conn.request("remote_set_user", {"name": "alice", "password": "a-long-password-1",
+                                       "role": "operator"}, on_ok=done.append)
+    assert pump(app, 5, lambda: done)
+    dlg.refresh()
+    assert pump(app, 5, lambda: dlg.users.rowCount() == 1 and dlg.users.item(0, 1).text() == "operator")
+    errs = []
+    w.conn.request("remote_set_user", {"name": "bob", "password": "short"}, on_err=errs.append)
+    assert pump(app, 5, lambda: errs) and "10 characters" in errs[0]
+    dlg.port.setValue(cfg["port"])
+    dlg._toggle()                                    # switch on
+    assert pump(app, 25, lambda: "running" in dlg.status.text())
+    assert dlg.fp.text().count(":") >= 31 and "https://" in dlg.urls.text()
+    assert demo.settings["remote_access"] is True    # stays on across backend restarts
+    dlg._toggle()                                    # switch off
+    assert pump(app, 10, lambda: dlg.status.text() == "off")
+    assert demo.settings["remote_access"] is False
+    dlg.close()

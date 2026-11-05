@@ -111,6 +111,13 @@ def rc(gw, user, **kw):
     return RemoteClient(gw.url, user, PW[user], fingerprint=gw.fp, **kw)
 
 
+def enc(msg):
+    return codec.encode(msg)[4:]      # WebSocket messages: frames without length prefix
+
+
+dec = codec.decode_body
+
+
 def insecure():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -457,7 +464,7 @@ def test_websocket_auth_and_origin(gw):
                 assert ei.value.status == 401
             ws = await s.ws_connect(gw.url + "/ws", ssl=insecure(),
                                     headers={"Origin": "https://127.0.0.1:%d" % gw.port})
-            w = codec.decode((await ws.receive()).data)
+            w = dec((await ws.receive()).data)
             assert w["type"] == "welcome" and w["role"] == "viewer"
             # logging out ends the live connection too
             r = await s.post(gw.url + "/api/logout", ssl=insecure(),
@@ -466,7 +473,7 @@ def test_websocket_auth_and_origin(gw):
             msg = await asyncio.wait_for(ws.receive(), 5)
             while msg.type == aiohttp.WSMsgType.BINARY:
                 msg = await asyncio.wait_for(ws.receive(), 5)
-            assert ws.close_code == 4401
+            assert msg.type == aiohttp.WSMsgType.CLOSE and msg.data == 4401   # the reason
     run(go())
 
 
@@ -506,6 +513,12 @@ def test_roles_enforced_end_to_end(gw, demo):
         audit = (gw.gw.home / "logs" / "remote.log").read_text()
         assert "cmd web:olga@127.0.0.1 write_channel" in audit
         assert "denied web:olga@127.0.0.1 run_script_now" in audit
+        with pytest.raises(RemoteError):
+            a.call("remote_set_user", name="mallory", password="secret-password-123", role="admin")
+        time.sleep(0.2)
+        audit = (gw.gw.home / "logs" / "remote.log").read_text()
+        assert "secret-password-123" not in audit and '"password":"***"' in audit
+        assert PW["olga"] not in audit and PW["ada"] not in audit
 
 
 def test_account_changes_close_sessions(gw, home):
@@ -560,13 +573,13 @@ def test_malformed_traffic_is_contained(gw_factory):
     cases = [
         [ws_frame(b"hello", opcode=1)],                                   # text frame
         [ws_frame(os.urandom(1000))],                                     # garbage binary
-        [ws_frame(codec.encode([1, 2, 3]))],                              # not an object
-        [ws_frame(codec.encode({"type": "req", "id": "x", "cmd": "ping"}))],
-        [ws_frame(codec.encode({"type": "req", "id": True, "cmd": "ping"}))],
-        [ws_frame(codec.encode({"type": "hello", "token": "steal"}))],    # no backend hello
-        [ws_frame(codec.encode({"type": "subscribe", "events": [1] * 1000}))],
+        [ws_frame(enc([1, 2, 3]))],                              # not an object
+        [ws_frame(enc({"type": "req", "id": "x", "cmd": "ping"}))],
+        [ws_frame(enc({"type": "req", "id": True, "cmd": "ping"}))],
+        [ws_frame(enc({"type": "hello", "token": "steal"}))],    # no backend hello
+        [ws_frame(enc({"type": "subscribe", "events": [1] * 1000}))],
         [ws_frame(bad_json[:60000])],                                     # truncated
-        [ws_frame(codec.encode({"type": "req", "id": 1, "cmd": "ping", "args": {"x": "y" * 70000}}))],
+        [ws_frame(enc({"type": "req", "id": 1, "cmd": "ping", "args": {"x": "y" * 70000}}))],
         [os.urandom(5000)],                                               # not even WebSocket
         [ws_frame(b"\x00" * 10, opcode=9) * 1000],                        # ping flood
     ]
@@ -596,10 +609,10 @@ def test_rate_limit_and_in_flight_limit(gw_factory):
             await ws.receive()
             n = 400
             for i in range(n):
-                await ws.send_bytes(codec.encode({"type": "req", "id": i + 1, "cmd": "ping", "args": {}}))
+                await ws.send_bytes(enc({"type": "req", "id": i + 1, "cmd": "ping", "args": {}}))
             got, limited, inflight = {}, 0, 0
             while len(got) < n:
-                m = codec.decode((await asyncio.wait_for(ws.receive(), 20)).data)
+                m = dec((await asyncio.wait_for(ws.receive(), 20)).data)
                 if m.get("type") != "resp":
                     continue
                 got[m["id"]] = m
@@ -610,9 +623,9 @@ def test_rate_limit_and_in_flight_limit(gw_factory):
             assert limited > 0 and inflight > 0
             assert not ws.closed
             await asyncio.sleep(1.5)                          # budget refills
-            await ws.send_bytes(codec.encode({"type": "req", "id": 9999, "cmd": "ping", "args": {}}))
+            await ws.send_bytes(enc({"type": "req", "id": 9999, "cmd": "ping", "args": {}}))
             while True:
-                m = codec.decode((await ws.receive()).data)
+                m = dec((await ws.receive()).data)
                 if m.get("type") == "resp":
                     assert m["id"] == 9999 and m["ok"]
                     break
@@ -678,7 +691,7 @@ def test_slow_consumer_is_bounded(gw, demo, monkeypatch):
     demo.monitor.add("spectrum", 0.05)
     s, st = raw_ws(gw.port, token=tok, rcvbuf=4096)
     assert st == 101
-    s.sendall(ws_frame(codec.encode({"type": "subscribe", "events": "*"})))
+    s.sendall(ws_frame(enc({"type": "subscribe", "events": "*"})))
     # ... and never read again
     with rc(gw, "olga") as good:
         lat = []

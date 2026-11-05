@@ -70,11 +70,15 @@ class RemoteAccessDialog(QDialog):
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.urls = shrinkable_label(QLabel(""))
         self.urls.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.fp = shrinkable_label(QLabel(""))
-        self.fp.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.fp = QLineEdit("")
+        self.fp.setReadOnly(True)
+        self.fp.setToolTip("compare with the browser's certificate details, or pass to "
+                           "RemoteClient(fingerprint=...)")
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
         self.port.setValue(8443)
+        self._port_touched = False
+        self.port.valueChanged.connect(lambda _: setattr(self, "_port_touched", True))
         self.toggle = QPushButton("Enable remote access")
         self.toggle.clicked.connect(self._toggle)
         top = QGroupBox("Gateway (HTTPS / secure WebSocket)")
@@ -100,6 +104,7 @@ class RemoteAccessDialog(QDialog):
         self.conns.setHorizontalHeaderLabels(["User", "Role", "Address", "Since"])
         self.conns.horizontalHeader().setStretchLastSection(True)
         self.conns.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.conns.verticalHeader().setVisible(False)
         cbox = QGroupBox("Live remote connections")
         QVBoxLayout(cbox).addWidget(self.conns)
         self.users = QTableWidget(0, 3)
@@ -107,6 +112,7 @@ class RemoteAccessDialog(QDialog):
         self.users.horizontalHeader().setStretchLastSection(True)
         self.users.setEditTriggers(QTableWidget.NoEditTriggers)
         self.users.setSelectionBehavior(QTableWidget.SelectRows)
+        self.users.verticalHeader().setVisible(False)
         ub = QHBoxLayout()
         for text, fn in (("Add…", self._add), ("Change…", self._change), ("Remove", self._remove)):
             b = QPushButton(text)
@@ -146,10 +152,16 @@ class RemoteAccessDialog(QDialog):
                             else ("<b style='color:#e39a1b'>starting / restarting…</b>" if enabled
                                   else "off"))
         self.toggle.setText("Disable remote access" if enabled else "Enable remote access")
-        if not self.port.hasFocus():
+        if not self._port_touched or running:
+            self.port.blockSignals(True)
             self.port.setValue(int(st.get("port") or 8443))
+            self.port.blockSignals(False)
+            self._port_touched = False
         self.urls.setText("<br>".join(st.get("urls") or []) or "—")
-        self.fp.setText((st.get("fingerprint") or "—") + ("  (self-signed)" if st.get("self_signed") else ""))
+        fp = (st.get("fingerprint") or "—") + ("  (self-signed)" if st.get("self_signed") else "")
+        if self.fp.text() != fp:
+            self.fp.setText(fp)
+            self.fp.setCursorPosition(0)
         conns = st.get("connections") or []
         self.conns.setRowCount(len(conns))
         for r, c in enumerate(conns):

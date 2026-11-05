@@ -649,6 +649,11 @@ class Backend:
         env = dict(os.environ)
         pkg_root = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
+        # glibc: give large (message-sized) buffers back to the OS when they are freed
+        # instead of keeping them in the heap / per-thread arenas
+        env.setdefault("MALLOC_MMAP_THRESHOLD_", "262144")
+        env.setdefault("MALLOC_TRIM_THRESHOLD_", "1048576")
+        env.setdefault("MALLOC_ARENA_MAX", "2")
         (self.home / "logs").mkdir(parents=True, exist_ok=True)
         out = open(self.home / "logs" / "remote-gateway.out", "ab")
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out, env=env)

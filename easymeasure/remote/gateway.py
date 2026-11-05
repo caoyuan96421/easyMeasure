@@ -10,6 +10,9 @@ validated the message and checked the user's role, and a crash, hang or memory
 blow-up caused by a hostile peer can only take down the gateway (which the
 backend restarts), never the instrument backend or a running measurement.
 
+On the WebSocket each message is one codec frame without its 4-byte length
+prefix (the WebSocket already delimits messages).
+
 Each live remote connection gets its own backend connection, so the backend's
 per-client machinery (event subscriptions, droppable events for slow clients,
 stall detection) works unchanged.  Frames from the backend are forwarded
@@ -103,12 +106,66 @@ def _setup_logging(home: Path, console: bool) -> None:
         log.addHandler(sh)
 
 
+def _body(msg) -> bytes:
+    """Encode a message for the WebSocket: a codec frame without the length prefix."""
+    return codec.encode(msg)[4:]
+
+
+_SECRET_KEYS = ("password", "token", "secret", "passwd", "key")
+
+
+def _redact(obj):
+    if isinstance(obj, dict):
+        return {k: ("***" if any(x in str(k).lower() for x in _SECRET_KEYS) else _redact(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact(v) for v in obj]
+    return obj
+
+
 def _summary(args, limit: int = 160) -> str:
+    """Short, secret-free description of request arguments for the audit log."""
     try:
-        s = json.dumps(codec.to_jsonable(args), separators=(",", ":"), default=str)
+        s = json.dumps(_redact(codec.to_jsonable(args)), separators=(",", ":"), default=str)
     except Exception:
         s = repr(args)
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+# ---------------------------------------------------------------------------
+class _LoopWatchdog:
+    """Logs where the event loop is stuck if it stops ticking (diagnostics)."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, threshold: float = 2.0):
+        import threading
+        self.loop, self.threshold = loop, threshold
+        self.tick = time.monotonic()
+        self.loop_thread = threading.get_ident()
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, name="loop-watchdog", daemon=True)
+
+    async def beat(self) -> None:
+        while True:
+            self.tick = time.monotonic()
+            await asyncio.sleep(0.25)
+
+    def start(self) -> None:
+        self._t.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        import sys
+        import traceback
+        reported = 0.0
+        while not self._stop.wait(0.5):
+            lag = time.monotonic() - self.tick
+            if lag > self.threshold and time.monotonic() - reported > 10:
+                reported = time.monotonic()
+                frame = sys._current_frames().get(self.loop_thread)
+                stack = "".join(traceback.format_stack(frame, limit=12)) if frame else "?"
+                log.warning("event loop blocked for %.1f s at:\n%s", lag, stack)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +191,7 @@ class _GuardProto(asyncio.Protocol):
     def connection_made(self, transport):
         peer = transport.get_extra_info("peername")
         self._ip = peer[0] if peer else "?"
+        self._tr = transport
         self._inner.connection_made(transport)
         if not self._gw._conn_open(self._ip, transport):
             transport.abort()
@@ -145,6 +203,7 @@ class _GuardProto(asyncio.Protocol):
         return self._inner.eof_received()
 
     def connection_lost(self, exc):
+        self._gw._fresh.pop(getattr(self, "_tr", None), None)
         self._gw._conn_closed(self._ip)
         self._inner.connection_lost(exc)
 
@@ -173,6 +232,7 @@ class Bridge:
         self._send_lock = asyncio.Lock()
         self._writer: Optional[asyncio.StreamWriter] = None
         self._close_code, self._close_reason = 1000, ""
+        self._closing: Optional[asyncio.Future] = None
         self.started = time.time()
         self.name = "web:%s@%s" % (session.user, ip)
 
@@ -191,8 +251,8 @@ class Bridge:
         self.sent_bytes += len(data)
 
     async def _reply(self, rid, error: str, kind: str = "PermissionError") -> None:
-        await self._send(codec.encode({"type": "resp", "id": rid, "ok": False, "error": error,
-                                       "kind": kind}))
+        await self._send(_body({"type": "resp", "id": rid, "ok": False, "error": error,
+                                "kind": kind}))
 
     def abort(self) -> None:
         tr = self.request.transport
@@ -202,10 +262,12 @@ class Bridge:
             self._writer.close()
 
     def kick(self, code: int, reason: str) -> None:
+        """Close with a reason the client can see (the backend link follows when the
+        WebSocket has closed; a peer that ignores the close is cut off after 15 s)."""
         self._close_code, self._close_reason = code, reason
-        asyncio.ensure_future(self.ws.close(code=code, message=reason.encode()[:120]))
-        if self._writer is not None:
-            self._writer.close()
+        self._closing = asyncio.ensure_future(self.ws.close(code=code, message=reason.encode()[:120]))
+        asyncio.get_running_loop().call_later(15.0, lambda: None if self.ws.closed and
+                                              self.request.transport is None else self.abort())
 
     # -- main --------------------------------------------------------------------
     async def run(self) -> None:
@@ -227,11 +289,10 @@ class Bridge:
                                        "client": self.name,
                                        "events": list(gw.initial_events)}))
             await writer.drain()
-            frame = await asyncio.wait_for(self._read_frame(reader), 10.0)
-            welcome = codec.decode(frame)
+            welcome = codec.decode_body(await asyncio.wait_for(self._read_body(reader), 10.0))
             if not isinstance(welcome, dict) or welcome.get("type") != "welcome":
                 raise ProtocolError("backend refused the gateway")
-            await self._send(codec.encode({
+            await self._send(_body({
                 "type": "welcome", "gateway": __version__, "version": welcome.get("version"),
                 "code_stamp": welcome.get("code_stamp"), "user": s.user, "role": s.role,
                 "allowed": policy.allowed_commands(s.role),
@@ -240,8 +301,8 @@ class Bridge:
                            "max_in_flight": gw.cfg["max_in_flight"]},
                 "server_time": time.time()}))
         except Exception as exc:
-            (log.info if self.ws.closed else log.warning)(
-                "%s: backend handshake failed: %s", self.name, exc)
+            # mostly clients that hang up during the handshake
+            log.info("%s: connection setup failed: %s", self.name, exc)
             writer.close()
             await self.ws.close(code=1011, message=b"backend handshake failed")
             return
@@ -265,31 +326,37 @@ class Bridge:
                 writer.close()
             except Exception:
                 pass
-            if not self.ws.closed:
+            if self._closing is not None:
+                # let a kick's close handshake finish before the handler returns (the
+                # client then sees the reason, e.g. 4403, instead of an abnormal close)
+                await asyncio.wait([self._closing], timeout=10)
+            elif not self.ws.closed:
                 await self.ws.close(code=self._close_code, message=self._close_reason.encode()[:120])
             log.info("disconnect %s after %.0f s (%d msgs in, %d frames / %.1f MB out, %d rejected)",
                      self.name, time.time() - self.started, self.recv_msgs, self.sent_frames,
                      self.sent_bytes / 1e6, self.rejected)
 
     @staticmethod
-    async def _read_frame(reader: asyncio.StreamReader) -> bytes:
-        hdr = await reader.readexactly(4)
-        (n,) = _HDR.unpack(hdr)
+    async def _read_body(reader: asyncio.StreamReader) -> bytes:
+        """One backend frame without its length prefix (WebSocket messages are
+        delimited already, so the body is forwarded as is - no extra copy)."""
+        (n,) = _HDR.unpack(await reader.readexactly(4))
         if n < 4 or n > codec.MAX_FRAME:
             raise ProtocolError("bad frame from backend")
-        return hdr + await reader.readexactly(n)
+        return await reader.readexactly(n)
 
     async def _from_backend(self, reader: asyncio.StreamReader) -> None:
         while True:
-            frame = await self._read_frame(reader)
-            if self.in_flight and frame[8:8 + len(_RESP_PREFIX)] == _RESP_PREFIX:
+            body = await self._read_body(reader)
+            if self.in_flight and body[4:4 + len(_RESP_PREFIX)] == _RESP_PREFIX:
                 try:
-                    (jlen,) = _HDR.unpack_from(frame, 4)
-                    rid = json.loads(frame[8:8 + jlen])["m"].get("id")
+                    (jlen,) = _HDR.unpack_from(body, 0)
+                    rid = json.loads(body[4:4 + jlen])["m"].get("id")
                     self.in_flight.discard(rid)
                 except Exception:
                     pass
-            await self._send(frame)       # flow control: waits while the client is slow
+            await self._send(body)        # flow control: waits while the client is slow
+            del body
 
     async def _from_client(self, writer: asyncio.StreamWriter) -> None:
         cfg = self.gw.cfg
@@ -311,7 +378,7 @@ class Bridge:
 
     async def _handle(self, data: bytes, writer: asyncio.StreamWriter, cfg: dict) -> None:
         try:
-            msg = codec.decode(data)
+            msg = codec.decode_body(data)
         except ProtocolError as exc:
             log.warning("%s: malformed message: %s", self.name, exc)
             self._close_code, self._close_reason = 1007, "malformed message"
@@ -433,7 +500,7 @@ class Gateway:
                                            "args": {}}))
                 await writer.drain()
                 while True:
-                    msg = codec.decode(await Bridge._read_frame(reader))
+                    msg = codec.decode_body(await Bridge._read_body(reader))
                     st = None
                     if msg.get("type") == "resp" and msg.get("ok"):
                         st = msg.get("result")
@@ -818,13 +885,23 @@ class Gateway:
         await self._runner.setup()
         handler = self._runner.server
         loop = asyncio.get_running_loop()
+
+        def on_loop_error(lp, ctx):
+            exc = ctx.get("exception")
+            if isinstance(exc, (ConnectionError, OSError)) or "closing transport" in str(exc):
+                return                  # a peer went away while we were sending: routine
+            lp.default_exception_handler(ctx)
+        loop.set_exception_handler(on_loop_error)
         self._server = await loop.create_server(
             lambda: _GuardProto(handler(), self), self.cfg["host"] or None, int(self.cfg["port"]),
             ssl=ctx, ssl_handshake_timeout=float(self.cfg["tls_handshake_timeout"]),
             backlog=256, reuse_address=True)
         self.port = self._server.sockets[0].getsockname()[1]
+        self._watchdog = _LoopWatchdog(loop)
+        self._watchdog.start()
         self._tasks = [asyncio.ensure_future(self._control_link()),
-                       asyncio.ensure_future(self._sweeper())]
+                       asyncio.ensure_future(self._sweeper()),
+                       asyncio.ensure_future(self._watchdog.beat())]
         self._write_status()
         log.info("gateway listening on https://%s:%d (%s certificate, SHA-256 %s); %d user(s)",
                  self.cfg["host"], self.port, "self-signed" if self.self_signed else "configured",
@@ -837,6 +914,8 @@ class Gateway:
         return await self._serve_static(request)
 
     async def stop(self) -> None:
+        if getattr(self, "_watchdog", None) is not None:
+            self._watchdog.stop()
         for t in self._tasks:
             t.cancel()
         if self._server is not None:
