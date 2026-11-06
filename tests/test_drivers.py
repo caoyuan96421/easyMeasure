@@ -10,7 +10,8 @@ from easymeasure.common.errors import ChannelError, LimitError
 from easymeasure.drivers.emulators import SCPIEmulator, compile_pattern, split_args
 from easymeasure.drivers.simbus import get_bus
 
-HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211"]
+HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211",
+      "yokogawa7651", "hp4145"]
 
 
 def emu(address: str, addr: int = 0):
@@ -468,3 +469,203 @@ def test_example_hardware_setup_and_iv_sweep(backend):
     assert be.read_channel("smu.mode") == "Voltage" and be.read_channel("smu.output") == "OFF"
     # the units in the file come from the instrument in its current-source mode
     assert ds.header["units"]["Vsrc"] == "V" and ds.header["units"]["Isrc"] == "A"
+
+
+# ---------------------------------------------------------------------------
+def test_yokogawa7651(backend):
+    be = backend
+    be.add_instrument("yk", "yokogawa7651", "SIM::yk")
+    e = emu("SIM::yk")
+    h = be.instruments.get("yk")
+    assert h.state == "connected", h.last_error
+    # a pure source: one channel named after the mode, no measurement
+    assert [c for c in h.channels if not h.channels[c].config] == ["voltage"]
+    assert be.read_channel("yk.mode") == "Voltage" and be.read_channel("yk.range") == "AUTO"
+    assert be.read_channel("yk.Icompliance") == pytest.approx(0.12)   # from OS
+    be.define_alias(name="Vy", target="yk.voltage", min=-20, max=20)
+    be.write_channel("Vy", 0.005, ramp=False)      # output off: AUTO goes to the 10 mV range
+    assert e.range == 2 and e.value == pytest.approx(0.005)
+    be.write_channel("yk.Icompliance", 0.05)
+    assert e.la == 50
+    with pytest.raises(ChannelError, match="1 mA steps"):
+        be.write_channel("yk.Icompliance", 0.0505)
+    be.write_channel("yk.output", "ON")
+    assert e.on and be.read_channel("yk.output") == "ON"
+    ranges = []
+    for v in (0.5, 5.0, 11.9, 2.0, 0.001):
+        be.write_channel("Vy", v, ramp=False)
+        assert be.read_channel("Vy") == pytest.approx(v)
+        ranges.append(e.range)
+    assert ranges == [4, 5, 5, 5, 5]               # up as needed, never down while ON
+    with pytest.raises(LimitError):
+        be.write_channel("Vy", 25)                 # alias limit first
+    with pytest.raises(ChannelError, match="largest range"):
+        h.write("voltage", 33)                     # the driver's own limit (no alias)
+    be.write_channel("yk.range", "10 V")
+    with pytest.raises(ChannelError, match="does not fit the 10 V range"):
+        be.write_channel("Vy", 12.5, ramp=False)
+    be.write_channel("Vy", 2.0, ramp=False)
+    with pytest.raises(ChannelError, match="does not fit the 100 mV range"):
+        be.write_channel("yk.range", "100 mV")     # 2 V would not survive the range change
+    assert e.range == 5 and e.value == pytest.approx(2.0)
+    with pytest.raises(ChannelError, match="switch the output OFF"):
+        be.write_channel("yk.mode", "Current")
+    be.write_channel("yk.output", "OFF")
+    be.write_channel("yk.mode", "current")
+    assert e.func == 5
+    assert "current" in h.channels and "voltage" not in h.channels
+    assert h.spec("Vcompliance").unit == "V"
+    assert h.spec("range").allowed == ["AUTO", "1 mA", "10 mA", "100 mA"]
+    be.write_channel("yk.Vcompliance", 5)
+    assert e.lv == 5
+    be.define_alias(name="Iy", target="yk.current")
+    be.write_channel("Iy", 2e-3, ramp=False)
+    assert e.range == 5 and be.read_channel("Iy") == pytest.approx(2e-3)
+    be.run_action("yk.zero")
+    assert e.value == 0.0
+    assert e.unknown == []
+
+
+def test_yokogawa7651_error_flag_and_lost_commands(backend):
+    be = backend
+    be.add_instrument("yk", "yokogawa7651", "SIM::yk2")
+    e = emu("SIM::yk2")
+    be.write_channel("yk.range", "1 V")
+    be.raw_write("yk", "S+5.0E+0;E")               # behind the driver's back: too big
+    assert e.error
+    with pytest.raises(ChannelError, match="reports an error"):
+        be.read_channel("yk.voltage")
+    # a noisy line: lost / garbled commands are caught by the read-back and retried
+    be.add_instrument("yn", "yokogawa7651", "SIM::yk3",
+                      {"error_rate": 0.05, "garble_rate": 0.05, "seed": 5, "retries": 5,
+                       "timeout": 0.2})
+    be.define_alias(name="V", target="yn.voltage")
+    for i in range(30):
+        be.write_channel("V", 0.1 * i, ramp=False)
+        assert emu("SIM::yk3").value == pytest.approx(0.1 * i)
+    assert be.instruments.get("yn").stats["retries"] > 0
+
+
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def pa(backend):
+    backend.add_instrument("pa", "hp4145", "SIM::pa", {"load_ohm": 1000.0})
+    return backend
+
+
+def test_hp4145_user_mode_smus(pa):
+    be = pa
+    e = emu("SIM::pa")
+    h = be.instruments.get("pa")
+    assert h.state == "connected", h.last_error
+    assert e.log[:3] == ["ID", "US", "IT1"] and e.user_mode
+    assert {"voltage1", "current4", "vs1", "vm2", "integration"} <= set(h.channels)
+    be.define_alias(name="Vd", target="pa.voltage1")
+    be.define_alias(name="Id", target="pa.current1")
+    assert math.isnan(be.read_channel("Id"))           # disabled: nothing measured
+    with pytest.raises(ChannelError, match="set the compliance"):
+        be.write_channel("pa.output1", "ON")
+    be.write_channel("pa.Icompliance1", 1e-3)
+    be.write_channel("Vd", 0.5, ramp=False)            # remembered while OFF ...
+    assert e.smu[1].mode is None and not e.log[-1].startswith("DV")
+    be.write_channel("pa.output1", "ON")              # ... programmed when switched ON
+    assert e.log[-1] == "DV1,0,+5.0000E-01,+1.0000E-03"
+    assert be.read_channel("Vd") == pytest.approx(0.5)   # both read back by TV / TI
+    assert be.read_channel("Id") == pytest.approx(0.5e-3)
+    be.write_channel("Vd", 5.0, ramp=False)
+    assert be.read_channel("Id") == pytest.approx(1e-3)  # compliance
+    # the power envelope is checked before anything is sent
+    be.write_channel("pa.Icompliance1", 0.1)
+    with pytest.raises(ChannelError, match="not available at 30 V"):
+        be.write_channel("Vd", 30.0, ramp=False)
+    be.write_channel("pa.Icompliance1", 0.02)
+    be.write_channel("Vd", 30.0, ramp=False)
+    with pytest.raises(ChannelError, match="beyond ±100 V"):
+        h.write("voltage1", 120)
+    # fixed range
+    be.write_channel("Vd", 1.0, ramp=False)
+    be.write_channel("pa.range1", "20 V")
+    assert e.log[-1].startswith("DV1,1,")
+    with pytest.raises(ChannelError, match="does not fit the 20 V range"):
+        be.write_channel("Vd", 25.0, ramp=False)
+    # current mode on another SMU; mode change needs output OFF
+    with pytest.raises(ChannelError, match="OFF before changing the mode"):
+        be.write_channel("pa.mode1", "Current")
+    be.write_channel("pa.mode2", "Current")
+    assert h.spec("current2").writable and not h.spec("voltage2").writable
+    assert h.spec("Vcompliance2").unit == "V" and "Icompliance2" not in h.channels
+    assert h.spec("range2").allowed[1] == "1 nA"
+    be.write_channel("pa.Vcompliance2", 10)
+    be.write_channel("pa.output2", "ON")
+    be.define_alias(name="Is", target="pa.current2")
+    be.write_channel("Is", 2e-3, ramp=False)
+    assert be.read_channel("pa.voltage2") == pytest.approx(2.0)
+    be.write_channel("Is", 0.05, ramp=False)          # 50 mA with 10 V compliance: fine
+    assert be.read_channel("pa.voltage2") == pytest.approx(10.0)   # (clamped at 10 V)
+    with pytest.raises(ChannelError, match="not available at 0.05 A"):
+        be.write_channel("pa.Vcompliance2", 50)       # at 50 mA only up to 40 V
+    # voltage sources and voltmeters
+    be.channels.set_raw("pa.vs1", 3.3)
+    assert be.read_channel("pa.vm1") == pytest.approx(3.3)
+    with pytest.raises(ChannelError, match="±20 V"):
+        be.channels.set_raw("pa.vs2", 25)
+    be.write_channel("pa.integration", "long")
+    assert e.it == 3
+    be.write_channel("pa.output2", "OFF")
+    assert e.smu[2].mode is None and e.log[-1] == "DS2"
+    be.run_action("pa.disable_all")
+    assert e.smu[1].mode is None
+    assert e.unknown == [] and e.errors == []
+
+
+def test_hp4145_reconnect_leaves_outputs_alone(pa):
+    be = pa
+    e = emu("SIM::pa")
+    be.write_channel("pa.Icompliance1", 1e-3)
+    be.write_channel("pa.output1", "ON")
+    n = len(e.log)
+    be.reconnect_instrument("pa")
+    assert e.smu[1].mode == "V"                         # bias still applied
+    assert not [c for c in e.log[n:] if c.startswith(("DS", "DV", "DI"))]
+    assert be.read_channel("pa.output1") == "OFF"       # unknown -> reported OFF
+    assert be.read_channel("pa.Icompliance1") == pytest.approx(1e-3)   # remembered
+
+
+def test_hp4145_models_and_reply_status(backend):
+    be = backend
+    h = be.add_instrument("a55", "hp4145", "SIM::p55", {"emulate_model": "4155C"})
+    assert h["state"] == "connected" and be.instruments.get("a55").driver.model == "4155C"
+    h = be.add_instrument("b55", "hp4145", "SIM::p55s", {"emulate_model": "4155C",
+                                                         "emulate_cmd_mode": 0})
+    assert h["state"] == "error" and "not in 4145 syntax mode" in h["last_error"]
+    be.add_instrument("two", "hp4145", "SIM::p2", {"smus": [1, 3], "vs_vm": False})
+    ch = be.instruments.get("two").channels
+    assert "voltage3" in ch and "voltage2" not in ch and "vs1" not in ch
+    # status characters of a reading
+    drv = be.instruments.get("a55").driver
+    for reply, want in (("NAI+1.0000E-03", 1e-3), ("CAI-2.0000E-03", -2e-3),
+                        ("VAV+1.0000E+02", math.inf), ("XAI+0.0000E+00", math.nan),
+                        ("N I +3.5E-06", 3.5e-6)):
+        drv.q = lambda c, r=reply: r
+        got = drv._measure("I", 1)
+        assert (math.isnan(got) and math.isnan(want)) or got == pytest.approx(want), reply
+
+
+def test_hp4145_iv_sweep(pa):
+    be = pa
+    be.define_alias(name="Vd", target="pa.voltage1", min=-10, max=10, ramp_rate=50)
+    be.define_alias(name="Id", target="pa.current1")
+    d = {"name": "iv4145", "dimensions": [
+        {"points": 11, "sweep": [{"channel": "Vd", "start": -1, "stop": 1}], "record": ["Id"]}],
+         "pre": {"constants": [{"channel": "pa.Icompliance1", "value": 1e-2},
+                               {"channel": "pa.output1", "value": "ON"}]},
+         "post": {"constants": [{"channel": "Vd", "value": 0},
+                                {"channel": "pa.output1", "value": "OFF"}]}}
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(60)
+    item = be.queue_state()["history"][-1]
+    assert item["status"] == "finished", item
+    from easymeasure.backend.storage import DataSet
+    ds = DataSet.load(item["path"])
+    np.testing.assert_allclose(ds.data["Id"], np.linspace(-1, 1, 11) / 1000, rtol=1e-4, atol=1e-9)
+    assert emu("SIM::pa").smu[1].mode is None

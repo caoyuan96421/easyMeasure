@@ -2,24 +2,136 @@
   "format": "easyMeasure-setup-1",
   "comment": "The hardware drivers on their built-in emulators. For real instruments replace the SIM:: / DAQ::SIM addresses, e.g. GPIB0::24::INSTR, USB0::0x2A8D::0x9201::MY12345678::INSTR, DAQ::Dev1.",
   "instruments": [
-    {"name": "smu", "driver": "keithley2400", "address": "SIM::k2400", "options": {"load_ohm": 1000.0}},
-    {"name": "smu2", "driver": "keysight_b2902", "address": "SIM::b2902", "options": {}},
-    {"name": "lockin", "driver": "sr830", "address": "SIM::sr830", "options": {}},
-    {"name": "dmm", "driver": "hp34401a", "address": "SIM::hp34401", "options": {}},
-    {"name": "daq", "driver": "ni6211", "address": "DAQ::SIM", "options": {"rate": 10000, "samples": 100}}
+    {
+      "name": "smu",
+      "driver": "keithley2400",
+      "address": "SIM::k2400",
+      "options": {
+        "load_ohm": 1000.0
+      }
+    },
+    {
+      "name": "smu2",
+      "driver": "keysight_b2902",
+      "address": "SIM::b2902",
+      "options": {}
+    },
+    {
+      "name": "lockin",
+      "driver": "sr830",
+      "address": "SIM::sr830",
+      "options": {}
+    },
+    {
+      "name": "dmm",
+      "driver": "hp34401a",
+      "address": "SIM::hp34401",
+      "options": {}
+    },
+    {
+      "name": "daq",
+      "driver": "ni6211",
+      "address": "DAQ::SIM",
+      "options": {
+        "rate": 10000,
+        "samples": 100
+      }
+    },
+    {
+      "name": "yk",
+      "driver": "yokogawa7651",
+      "address": "SIM::yk7651",
+      "options": {}
+    },
+    {
+      "name": "spa",
+      "driver": "hp4145",
+      "address": "SIM::hp4145",
+      "options": {
+        "load_ohm": 10000.0
+      }
+    }
   ],
   "aliases": [
-    {"name": "Vsrc", "target": "smu.voltage", "min": -10, "max": 10, "ramp_rate": 5},
-    {"name": "Isrc", "target": "smu.current", "min": -0.01, "max": 0.01, "ramp_rate": 0.01},
-    {"name": "Vg", "target": "smu2.voltage1", "min": -5, "max": 5, "ramp_rate": 1},
-    {"name": "Ig", "target": "smu2.current1"},
-    {"name": "Vexc", "target": "lockin.sine_out", "min": 0.004, "max": 1},
-    {"name": "X", "target": "lockin.X"},
-    {"name": "Y", "target": "lockin.Y"},
-    {"name": "Vaux", "target": "lockin.aux_out1", "min": -2, "max": 2, "ramp_rate": 1},
-    {"name": "Vdmm", "target": "dmm.Vdc"},
-    {"name": "Vdaq", "target": "daq.ao0", "min": -5, "max": 5, "ramp_rate": 10},
-    {"name": "ai0", "target": "daq.ai0"}
+    {
+      "name": "Vsrc",
+      "target": "smu.voltage",
+      "min": -10,
+      "max": 10,
+      "ramp_rate": 5
+    },
+    {
+      "name": "Isrc",
+      "target": "smu.current",
+      "min": -0.01,
+      "max": 0.01,
+      "ramp_rate": 0.01
+    },
+    {
+      "name": "Vg",
+      "target": "smu2.voltage1",
+      "min": -5,
+      "max": 5,
+      "ramp_rate": 1
+    },
+    {
+      "name": "Ig",
+      "target": "smu2.current1"
+    },
+    {
+      "name": "Vexc",
+      "target": "lockin.sine_out",
+      "min": 0.004,
+      "max": 1
+    },
+    {
+      "name": "X",
+      "target": "lockin.X"
+    },
+    {
+      "name": "Y",
+      "target": "lockin.Y"
+    },
+    {
+      "name": "Vaux",
+      "target": "lockin.aux_out1",
+      "min": -2,
+      "max": 2,
+      "ramp_rate": 1
+    },
+    {
+      "name": "Vdmm",
+      "target": "dmm.Vdc"
+    },
+    {
+      "name": "Vdaq",
+      "target": "daq.ao0",
+      "min": -5,
+      "max": 5,
+      "ramp_rate": 10
+    },
+    {
+      "name": "ai0",
+      "target": "daq.ai0"
+    },
+    {
+      "name": "Vyk",
+      "target": "yk.voltage",
+      "min": -10,
+      "max": 10,
+      "ramp_rate": 1
+    },
+    {
+      "name": "Vd",
+      "target": "spa.voltage1",
+      "min": -20,
+      "max": 20,
+      "ramp_rate": 10
+    },
+    {
+      "name": "Id",
+      "target": "spa.current1"
+    }
   ],
   "composites": [],
   "monitor": []

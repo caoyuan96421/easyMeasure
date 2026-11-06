@@ -31,7 +31,7 @@ disturbing a running measurement.
   and colormaps, sliders for extra dimensions), a monitor panel, and automatic
   PowerPoint slides at the end of every run.
 * **Ready-made hardware drivers** (Keithley 2400, Keysight B2901/B2902, SR830/SR850,
-  HP 34401A, NI USB-6211), each tested against an emulator built from the
+  HP 34401A, NI USB-6211, Yokogawa 7651, HP 4145/4155), each tested against an emulator built from the
   instrument's programming manual; mode switches rename channels and change units
   and the front ends follow.
 * **Remote access over the internet**: a TLS gateway (in its own process) serves a
@@ -340,6 +340,8 @@ callback, files load and slides render in worker threads.
 | `sr830` | SRS SR830 / SR850 (and SR810) lock-in | `X`, `Y`, `R`, `theta`, `Xn`, `Yn`, `aux_in1…4`; sources `sine_out`, `frequency`, `phase`, `aux_out1…4`; *`reference`*, *`sensitivity`*, *`time_constant`*, *`rolloff`*, *`coupling`*, *`ground`*, *`line_filter`*, *`input`*, *`reserve`*, *`harmonic`*, *`sync_filter`*; actions auto gain / phase / reserve |
 | `hp34401a` | HP/Agilent 34401A DMM | one reading named after *`mode`*: `Vdc`, `Vac`, `Idc`, `Iac`, `R2w`, `R4w`; *`range`*, *`nplc`*, *`autozero`* (DC/Ω), *`ac_filter`* (AC) |
 | `ni6211` | NI USB-6211 DAQ (NI-DAQmx) | `ai0…ai15` (`ai0…7` in DIFF), vector `ai`, `ao0`, `ao1`, `di0…3`, `do0…3`, `ctr0`, `ctr1`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`* |
+| `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
+| `hp4145` | HP 4145A/B, HP 4155/4156 in 4145 syntax (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
 
 **Source-measure units.** In `Voltage` mode `voltage` is the source (read/write) and
 `current` is measured (read-only); the compliance is the current limit `Icompliance`
@@ -366,6 +368,27 @@ in A. `frequency` is read-only with an external reference. `Xn`/`Yn` are measure
 the instrument's displays (SR830: CH1/CH2 are set to X/Y noise on the first read;
 SR850: traces 3 and 4). Sources such as `aux_out1` or `sine_out` are ordinary
 channels: alias them with limits and ramp rates and sweep them.
+
+**Yokogawa 7651.** A source only: in `Voltage` mode the channel is `voltage`, in
+`Current` mode `current` (no measurement). With `range` = `AUTO` the driver picks the
+smallest range that holds the value, but while the output is ON it only ever ranges
+*up*, so a sweep coming down does not glitch the output with range changes; a fixed
+range refuses values beyond 120 % of it. Every setting is executed (`E`) and read
+back (`OD`): an error flag or a value that did not arrive raises an error (and a
+command lost on the bus is retried).
+
+**HP 4145 / 4155 / 4156 (user mode).** The analyzer is put into HP-IB user mode
+(`US`) and every SMU is forced (`DV` / `DI`) and measured (`TV` / `TI`) point by
+point, so it works like four source-measure units — same `mode<n>` logic and
+adaptive compliance as the 2400. Settings are remembered by the driver (user mode
+has no setting queries): a value written while `output<n>` is OFF is applied when
+it is switched ON, which needs a compliance first. The SMU output envelope
+(100 mA ≤ 20 V, 50 mA ≤ 40 V, 20 mA ≤ 100 V) is checked before anything is sent.
+A reconnect does not touch the outputs (outputs then read OFF until set again).
+For a 4155/4156 select the 4145 syntax mode first; the driver checks it (`CMD?`).
+Not yet confirmed from the manual text: the VS/VM channel numbers (5, 6), `DS <ch>`
+and the exact TV/TI reply layout (the parser accepts the usual variants: status
+character first, number last; overflow → ±inf, oscillation → NaN).
 
 **34401A.** The reading channel is renamed by the mode, so an alias on `dmm.Vdc`
 cannot record a current by mistake after somebody switched the meter to `idc` (it

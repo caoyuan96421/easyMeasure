@@ -182,10 +182,12 @@ class SimPortBackend(PortBackend):
             if f.hit("error"):
                 continue  # command lost
             reply = dev.handle(cmd)
-            if reply is not None:
-                if f.hit("garble"):
-                    reply = f.garble(reply)
-                self._rx.append(reply)
+            # a list = several reply lines (e.g. a multi-line status listing)
+            for r in (reply if isinstance(reply, list) else [reply]):
+                if r is not None:
+                    if f.hit("garble"):
+                        r = f.garble(r)
+                    self._rx.append(r)
 
     def read_raw(self, size=None) -> bytes:
         self._check()
