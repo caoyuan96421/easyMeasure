@@ -65,8 +65,9 @@ detached backend (restoring the last session's setup) if none is running.
 
 While the backend runs, a **tray icon** shows its state (green idle, blue running,
 orange paused, red error, gray unreachable) with the current run and progress in the
-tooltip; its menu opens the GUI, pauses / resumes / aborts, opens the data folder or
-log and shuts the backend down, and a notification appears when a run ends. The tray
+tooltip; its menu opens the GUI, opens the web page (*Open in browser* — offers to
+switch [remote access](#remote-access-internet) on first if it is off), pauses /
+resumes / aborts, opens the data folder or log and shuts the backend down, and a notification appears when a run ends. The tray
 is a separate helper process (`easymeasure.tray`), so it can never affect the backend;
 start the backend with `--no-tray` to disable it.
 
@@ -465,8 +466,11 @@ programming:
 The generated file holds the definition as a Python literal (`DEFINITION`) and a
 small class deriving from `CommandInstrument` (`easymeasure/drivers/_command.py`);
 it can be edited by hand — override `read` / `write` for an unusual channel — and the
-wizard reopens it through `DEFINITION`. A built-in driver name or a file not made by
-the wizard is never overwritten. Over remote access the wizard is admin-only (it
+wizard reopens it through `DEFINITION`; saving from the wizard over a file that was
+extended by hand warns first and keeps the old file as `<name>.py.bak`. A built-in
+driver name or a file not made by the wizard is never overwritten. With an error
+query, a query the instrument does not understand fails at once with the instrument's
+own message (e.g. `-113,"Undefined header"`) instead of a read timeout. Over remote access the wizard is admin-only (it
 writes code to the backend computer); the backend commands are `wizard_templates`,
 `wizard_check`, `wizard_try`, `wizard_save`, `wizard_list`, `wizard_load` and
 `wizard_delete`.

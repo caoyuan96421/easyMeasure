@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
 import threading
 import time
 import traceback
@@ -212,6 +213,9 @@ class Backend:
             errors.append("%s exists and was not made with the wizard" % path)
         elif not errors and path.exists():
             warnings.append("saving replaces the existing driver %s" % definition["name"])
+            if _command.edited_by_hand(path):
+                warnings.append("%s was edited by hand outside DEFINITION; saving replaces those "
+                                "edits (the old file is kept as %s.bak)" % (path.name, path.name))
         return {"errors": errors, "warnings": warnings, "source": source, "path": str(path)}
 
     def wizard_list(self) -> list:
@@ -246,6 +250,8 @@ class Backend:
         if path.exists() and not overwrite:
             raise DriverError("driver %s exists already (save again to replace it)"
                               % definition["name"])
+        if path.exists() and _command.edited_by_hand(path):
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
         tmp = path.with_suffix(".py.tmp")
         tmp.write_text(chk["source"], encoding="utf-8")
         os.replace(tmp, path)

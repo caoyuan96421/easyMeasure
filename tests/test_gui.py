@@ -247,6 +247,70 @@ def test_tray_controller(app, demo, tmp_path):
         srv.stop()
 
 
+def test_tray_open_in_browser(app, demo, tmp_path):
+    """Tray -> Open in browser: offers to start remote access, waits for it, opens the
+    page (which is really served there); warns when there is no user account."""
+    import socket
+    import ssl
+    import urllib.request
+    from easymeasure.frontend.connection import BackendConnection
+    from easymeasure.remote import config as rconfig
+    from easymeasure.tray import TrayController
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    cfg = rconfig.load(demo.home)
+    cfg.update(host="0.0.0.0", port=port)
+    rconfig.save(cfg, demo.home)
+    srv = Server(demo, port=0, runtime_file=tmp_path / "rt.json")
+    srv.start()
+    conn = BackendConnection(runtime_file=tmp_path / "rt.json")
+    ctl = TrayController(conn, tray=None)
+    asked, opened, warned, answers = [], [], [], []
+    ctl._ask = lambda t: asked.append(t) or answers.pop(0)
+    ctl._open_url = opened.append
+    ctl._warn = warned.append
+    conn.start()
+    try:
+        assert pump(app, 10, lambda: conn.is_connected and ctl.browser_act.isEnabled())
+        assert ctl.browser_act.text() == "Open in browser"
+        # no account yet: warned first; "no" stops there
+        answers[:] = [False]
+        ctl.open_browser()
+        assert pump(app, 5, lambda: asked)
+        assert "no remote user accounts" in asked[0] and not opened
+        demo.remote_set_user("tina", "Tray-test-password-1", "viewer")
+        # off: asks to start it, then opens the page once the gateway is up
+        asked.clear()
+        answers[:] = [True]
+        ctl.open_browser()
+        assert pump(app, 30, lambda: opened or warned), (asked, warned)
+        assert not warned and "is off" in asked[0] and "network" in asked[0]
+        assert opened == ["https://127.0.0.1:%d/" % port]
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        page = urllib.request.urlopen(opened[0], context=ctx, timeout=10).read().decode()
+        assert "easyMeasure" in page
+        # running: opens straight away
+        asked.clear()
+        ctl.open_browser()
+        assert pump(app, 5, lambda: len(opened) == 2) and not asked
+        # offline: the item is greyed out
+        srv.stop()
+        assert pump(app, 5, lambda: not ctl.browser_act.isEnabled())
+    finally:
+        demo.remote_stop(persist=False)
+        ctl.timer.stop()
+        conn.stop()
+        srv.stop()
+    assert TrayController.browser_url({"host": "10.0.0.5", "port": 8443}) == "https://10.0.0.5:8443/"
+    assert TrayController.browser_url({"host": "0.0.0.0", "port": 8443, "self_signed": False,
+                                       "urls": ["https://lab.example.org:8443"]}) == \
+        "https://lab.example.org:8443/"
+
+
 def be_idle(app, demo, ctl):
     assert demo.queue.wait_idle(30)
     return pump(app, 5, lambda: ctl.state == "idle" and ctl.run is None)

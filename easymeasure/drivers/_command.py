@@ -308,6 +308,25 @@ class CommandInstrument(SCPIInstrument):
         """A query, waiting ``query_delay`` seconds before reading (slow instruments)."""
         return self.resource.query(cmd, float(self.options.get("query_delay") or 0.0)).strip()
 
+    def q_checked(self, cmd: str) -> str:
+        """A query; when it gets no reply, the error queue tells why.  A query the
+        instrument refused (``-113,"Undefined header"``) then raises a
+        :class:`ChannelError` with the instrument's message at once instead of
+        being retried as a lost reply."""
+        try:
+            return self.q(cmd)
+        except Exception as exc:
+            if not (self.DEF["error_query"] and self.options.get("check_errors", True)):
+                raise
+            try:
+                errs = self.read_errors()
+            except Exception:
+                raise exc from None
+            if errs:
+                raise ChannelError("%s refused %s: %s" % (self.name, cmd, "; ".join(errs))) \
+                    from None
+            raise
+
     # -- connection -------------------------------------------------------------
     def connect(self):
         d = self.DEF
@@ -342,7 +361,7 @@ class CommandInstrument(SCPIInstrument):
         if not cmd or cmd.startswith("#"):
             return None
         if cmd.endswith("?"):
-            r = self.q(cmd)
+            r = self.q_checked(cmd)
             log.info("%s %s: %s -> %s", self.name, what, cmd, r[:120])
             return r
         self.w(cmd)
@@ -378,7 +397,7 @@ class CommandInstrument(SCPIInstrument):
         c = self._chan.get(channel)
         if c is None or "r" not in c["access"]:
             raise ChannelError("%s: channel %s is not readable" % (self.name, channel))
-        reply = self.q(c["get"])
+        reply = self.q_checked(c["get"])
         if c["dtype"] == "str":
             return self._from_word(c, reply)
         scale = float(c["scale"]) if c["scale"] else 1.0
@@ -479,6 +498,16 @@ def read_definition(path: Path) -> dict:
                 isinstance(t, ast.Name) and t.id == "DEFINITION" for t in node.targets):
             return ast.literal_eval(node.value)
     raise DriverError("%s has no DEFINITION (not made with the Driver Wizard)" % path)
+
+
+def edited_by_hand(path: Path) -> bool:
+    """True when a wizard file differs from what its DEFINITION renders to (e.g. a
+    read() override was added); saving from the wizard would replace that."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        return text.replace("\r\n", "\n").strip() != render_source(read_definition(path)).strip()
+    except Exception:
+        return True
 
 
 def is_wizard_file(path: Path) -> bool:

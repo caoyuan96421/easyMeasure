@@ -257,6 +257,102 @@ def test_try_reports_per_channel_and_leaves_nothing_behind(backend):
     assert not [c for c in emu("SIM::wtry").log if c.startswith((":SOUR:VOLT ", ":OUTP ON"))]
 
 
+def test_generated_driver_in_a_sweep_after_a_restart_and_extended_by_hand(backend, tmp_path):
+    """The saved file is a real driver: an alias on it is limit-checked and swept, it is
+    found again by a restarted backend (with the autosaved setup), and a hand-made
+    extension of its class works and is protected from being overwritten silently."""
+    from easymeasure.backend.service import Backend
+    from easymeasure.backend.storage import DataSet
+    be = backend
+    ensure_emulator("SIM::wpers", 0, lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
+    d = template("SCPI source-measure unit", name="wiz_persist", idn_match="MODEL 2400")
+    be.wizard_save(d)
+    assert be.add_instrument("smu", "wiz_persist", "SIM::wpers")["state"] == "connected"
+    be.define_alias(name="Vs", target="smu.voltage", min=-1, max=1)
+    be.define_alias(name="Im", target="smu.current")
+    sweep = {"name": "wizsweep", "dimensions": [{"points": 11, "sweep": [
+                 {"channel": "Vs", "start": 0, "stop": 1}], "record": ["Im"]}],
+             "pre": {"constants": [{"channel": "smu.compliance", "value": 0.01},
+                                   {"channel": "smu.output", "value": "ON"}]},
+             "post": {"constants": [{"channel": "Vs", "value": 0},
+                                    {"channel": "smu.output", "value": "OFF"}]}}
+    bad = copy.deepcopy(sweep)
+    bad["dimensions"][0]["sweep"][0]["stop"] = 2                       # beyond the alias limit
+    with pytest.raises(Exception, match="(?i)limit|max|range"):
+        be.queue_add({"kind": "sweep", "definition": bad})
+    be.queue_add({"kind": "sweep", "definition": sweep}, start=True)
+    assert be.queue.wait_idle(30)
+    item = be.queue_state()["history"][-1]
+    assert item["status"] == "finished", item
+    ds = DataSet.load(item["path"])
+    np.testing.assert_allclose(ds.data["Im"], np.linspace(0, 1, 11) / 1000.0, rtol=1e-4)
+    assert not emu("SIM::wpers").out.on                                 # post constants
+    be.close()
+
+    # a restarted backend finds the driver in <home>/drivers and restores the setup
+    be2 = Backend(home=tmp_path / "emhome", log_to_console=False)
+    try:
+        assert "wiz_persist" in be2.list_drivers()["drivers"]
+        assert be2.restore_autosave() == []
+        assert be2.instruments.get("smu").state == "connected"
+        assert be2.read_channel("smu.mode") == "Voltage"
+        assert [x["name"] for x in be2.wizard_list()] == ["wiz_persist"]
+
+        # extend the class by hand: a channel computed in Python
+        path = be2.user_driver_dir / "wiz_persist.py"
+        assert not _command.edited_by_hand(path)
+        src = path.read_text()
+        src = src.replace("    DEFINITION = DEFINITION\n", """    DEFINITION = DEFINITION
+
+    def read(self, channel):
+        if channel == "voltage":
+            return 1000.0 * float(super().read(channel))     # in mV, by hand
+        return super().read(channel)
+""")
+        path.write_text(src)
+        assert _command.edited_by_hand(path)
+        be2.rescan_drivers()
+        be2.update_instrument("smu")
+        be2.write_channel("Vs", 0.25, ramp=False)
+        assert be2.read_channel("smu.voltage") == pytest.approx(250.0)
+        # the wizard still reopens it, and warns before replacing the hand-made part
+        loaded = be2.wizard_load("wiz_persist")
+        assert [c["name"] for c in loaded["channels"]][:2] == ["mode", "voltage"]
+        assert any("edited by hand" in w for w in be2.wizard_check(loaded)["warnings"])
+        be2.wizard_save(loaded, overwrite=True)
+        assert (be2.user_driver_dir / "wiz_persist.py.bak").read_text() == src
+        assert not _command.edited_by_hand(path)
+        assert be2.read_channel("smu.voltage") == pytest.approx(0.25)    # reloaded, plain again
+    finally:
+        be2.close()
+
+
+def test_generic_scpi_template_actions_and_error_queue(backend):
+    """The bare template on a real SCPI instrument: actions run, a refused setting
+    raises the instrument's own error message, and an unknown query is reported."""
+    be = backend
+    ensure_emulator("SIM::wgen", 0, lambda: Keithley2400Emulator({}))
+    d = template("Generic SCPI", name="wiz_generic")
+    d["channels"] = [
+        {"name": "nplc", "access": "rw", "dtype": "float", "config": True, "unit": "PLC",
+         "get": ":SENS:CURR:NPLC?", "set": ":SENS:CURR:NPLC {value:.2f}"},
+        {"name": "value", "access": "r", "dtype": "float", "get": "MEAS?"}]
+    be.wizard_save(d)
+    assert be.add_instrument("g", "wiz_generic", "SIM::wgen")["state"] == "connected"
+    e = emu("SIM::wgen")
+    be.write_channel("g.nplc", 2.345)
+    assert ":SENS:CURR:NPLC 2.35" in e.log and be.read_channel("g.nplc") == pytest.approx(2.35)
+    with pytest.raises(ChannelError, match="(?i)data out of range|-222"):
+        be.write_channel("g.nplc", 50)                                  # 2400: max 10 PLC
+    with pytest.raises(ChannelError, match="refused MEAS\\?: .*-113"):
+        be.read_channel("g.value")                  # MEAS? is not a 2400 command: no reply
+    assert be.instruments.get("g").state == "connected"                # and no reconnect
+    e.out.nplc = 7.0
+    be.run_action("g.reset")
+    assert e.out.nplc == 1.0 and "*RST" in e.log
+    be.run_action("g.clear_status")
+
+
 def test_wizard_commands_are_admin_only():
     from easymeasure.remote import policy
     for cmd in ("wizard_save", "wizard_try", "wizard_check", "wizard_load", "wizard_delete"):

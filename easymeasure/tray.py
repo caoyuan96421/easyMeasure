@@ -7,8 +7,8 @@ the backend goes away.
 
 The icon colour shows the state (green idle, blue running, orange paused, red
 error/aborting, gray not reachable); the tooltip shows the current run and its
-progress.  Menu: open the GUI, pause / resume / abort, open the data folder or the
-log, shut the backend down.  A notification pops up when a run ends.
+progress.  Menu: open the GUI, open the web page (starting remote access if it is off),
+pause / resume / abort, open the data folder or the log, shut the backend down.  A notification pops up when a run ends.
 """
 
 from __future__ import annotations
@@ -104,6 +104,8 @@ class TrayController:
         self.status_act.setEnabled(False)
         self.menu.addSeparator()
         self.menu.addAction("Open GUI", self.open_gui)
+        self.browser_act = self.menu.addAction("Open in browser", self.open_browser)
+        self.browser_act.setToolTip("the web page of remote access on this computer")
         self.menu.addSeparator()
         self.pause_act = self.menu.addAction("Pause", lambda: self.conn.request("pause"))
         self.resume_act = self.menu.addAction("Resume", lambda: self.conn.request("resume"))
@@ -212,6 +214,7 @@ class TrayController:
         self.pause_act.setEnabled(self.state == "running")
         self.resume_act.setEnabled(self.state == "paused")
         self.abort_act.setEnabled(busy)
+        self.browser_act.setEnabled(self.state != "offline")
         if self.tray is not None:
             self.tray.setIcon(make_icon(self.state))
             self.tray.setToolTip(self.tooltip())
@@ -226,6 +229,65 @@ class TrayController:
             _detached_popen(_gui_command())
         except Exception as exc:
             QMessageBox.warning(None, "easyMeasure", "Cannot start the GUI: %s" % exc)
+
+    # ---- web page ---------------------------------------------------------------
+    @staticmethod
+    def browser_url(status: dict) -> str:
+        """Address of the web page from this computer.  With the self-signed
+        certificate: 127.0.0.1 (in the certificate; the gateway listens on IPv4).
+        With an own certificate: the computer's name, which that certificate is for."""
+        host = str(status.get("host") or "")
+        urls = status.get("urls") or []
+        if status.get("self_signed") is False and urls and host in ("", "0.0.0.0"):
+            return urls[0].rstrip("/") + "/"
+        if host in ("", "0.0.0.0", "::", "localhost", "::1"):
+            host = "127.0.0.1"
+        elif ":" in host:
+            host = "[%s]" % host
+        return "https://%s:%s/" % (host, status.get("port"))
+
+    def _ask(self, text: str) -> bool:                       # replaced in tests
+        return QMessageBox.question(None, "easyMeasure", text) == QMessageBox.Yes
+
+    def _warn(self, text: str) -> None:
+        QMessageBox.warning(None, "easyMeasure", text)
+
+    def _open_url(self, url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
+
+    def open_browser(self) -> None:
+        """Open the web page; offers to switch remote access on when it is off."""
+        self.conn.request("remote_status", on_ok=self._browser_status,
+                          on_err=lambda e: self._warn("Cannot ask the backend: %s" % e))
+
+    def _browser_status(self, st) -> None:
+        if not isinstance(st, dict):
+            return
+        if not st.get("users") and not self._ask(
+                "There are no remote user accounts yet, so the web page cannot log in.\n"
+                "Add one in the GUI (Backend \u2192 Remote access\u2026).\n\nOpen the page anyway?"):
+            return
+        if st.get("running"):
+            self._open_url(self.browser_url(st))
+            return
+        where = "this computer only" if str(st.get("host")) in ("127.0.0.1", "localhost", "::1") \
+            else "the network (port %s)" % st.get("port")
+        if not self._ask("Remote access (the web page) is off.\nStart it now? It will be "
+                         "reachable from %s until switched off again." % where):
+            return
+        self.conn.request("remote_start", on_ok=lambda r: self._wait_gateway(r, time.monotonic()),
+                          on_err=lambda e: self._warn("Cannot start remote access: %s" % e))
+
+    def _wait_gateway(self, st, t0: float) -> None:
+        if isinstance(st, dict) and st.get("running"):
+            self._open_url(self.browser_url(st))
+        elif time.monotonic() - t0 > 20:
+            self._warn("Remote access did not come up; see its log:\n%s"
+                       % (st or {}).get("log", "remote.log"))
+        else:
+            QTimer.singleShot(400, lambda: self.conn.request(
+                "remote_status", on_ok=lambda r: self._wait_gateway(r, t0),
+                on_err=lambda e: self._warn("Cannot ask the backend: %s" % e)))
 
     def open_data_folder(self) -> None:
         d = self.settings.get("data_dir") or str(paths.default_data_dir())
