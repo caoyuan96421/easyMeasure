@@ -119,6 +119,9 @@ class DriverRegistry:
             self.scan()
         self._classes[name] = cls
 
+    def unregister(self, name: str) -> None:
+        self._classes.pop(name, None)
+
     def describe(self) -> dict:
         if not self._scanned:
             self.scan()

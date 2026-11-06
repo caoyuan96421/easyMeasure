@@ -3,7 +3,8 @@
 One module per driver; the module name is the driver name used in setups
 (``"driver": "keithley2400"``).  The backend's :class:`~easymeasure.backend.registry.DriverRegistry`
 discovers every module here (names starting with ``_`` and sub-packages are helpers,
-not drivers) plus the user's own driver directories (``driver_paths`` setting).
+not drivers) plus ``<home>/drivers`` (drivers made with the Driver Wizard, see
+:mod:`._command`) and the user's own driver directories (``driver_paths`` setting).
 
 Hardware drivers
     ``keithley2400``, ``keysight_b2901``, ``keysight_b2902`` (source-measure units),

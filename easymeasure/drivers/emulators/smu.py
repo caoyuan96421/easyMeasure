@@ -96,6 +96,8 @@ class Keithley2400Emulator(SCPIEmulator):
         a(":OUTPut[1][:STATe]", lambda x, n: setattr(self.out, "on", parse_bool(x[0])))
         a(":OUTPut[1][:STATe]?", lambda x, n: "1" if self.out.on else "0")
         a(":READ?", lambda x, n: self._read())
+        for q in ("VOLTage", "CURRent"):           # :MEASure:<function>? = configure + read
+            a(":MEASure:%s[:DC]?" % q, lambda x, n, k=q[:4].upper(): self._measure(k))
         a(":SYSTem:RSENse", lambda x, n: setattr(self.out, "rsen", parse_bool(x[0])))
         a(":SYSTem:RSENse?", lambda x, n: "1" if self.out.rsen else "0")
         a(":ROUTe:TERMinals", lambda x, n: self._term(x))
@@ -140,6 +142,11 @@ class Keithley2400Emulator(SCPIEmulator):
         if v not in ("FRON", "FRONT", "REAR"):
             raise SCPIError(-224, "Illegal parameter value")
         self.term = "REAR" if v == "REAR" else "FRON"
+
+    def _measure(self, k):
+        if not self.out.on:
+            raise SCPIError(803, "Output disabled")
+        return fmt_num(self.out.measure(k, self.load))
 
     def _read(self):
         if not self.out.on:

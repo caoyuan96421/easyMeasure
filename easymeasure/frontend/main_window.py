@@ -243,6 +243,7 @@ class MainWindow(QMainWindow):
                          ("Restart backend…", self.restart_backend),
                          ("Show tray icon", self.show_tray),
                          ("Remote access…", self.remote_access),
+                         ("Driver wizard…", lambda: self.setup_panel.driver_wizard()),
                          ("Shut down backend…", self.shutdown_backend)):
             act = QAction(text, self)
             act.triggered.connect(fn)

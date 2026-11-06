@@ -33,7 +33,8 @@ disturbing a running measurement.
 * **Ready-made hardware drivers** (Keithley 2400, Keysight B2901/B2902, SR830/SR850,
   HP 34401A, NI USB-6211, Yokogawa 7651, HP 4145/4155), each tested against an emulator built from the
   instrument's programming manual; mode switches rename channels and change units
-  and the front ends follow.
+  and the front ends follow. A **Driver Wizard** builds drivers for other
+  command-based instruments from a form (templates, init script, try-it).
 * **Remote access over the internet**: a TLS gateway (in its own process) serves a
   browser version of the GUI and a Python `RemoteClient`, with accounts, roles,
   brute-force lock-out, rate limits and an audit log.
@@ -122,9 +123,11 @@ An instrument exposes **channels** for read / write / query. A channel is
 or `str`. Each driver is one Python file with a class deriving from
 `Instrument`, declaring `CHANNELS` and implementing `_read_<ch>` / `_write_<ch>`
 (or `read`/`write`). See `examples/driver_template.py`. Drivers are found in
-`easymeasure/drivers/` and in extra directories (`driver_paths` setting);
+`easymeasure/drivers/`, in `<home>/drivers/` (wizard drivers) and in extra
+directories (`driver_paths` setting);
 a driver that fails to import is reported, never fatal. `scpi_generic` builds a
-SCPI instrument purely from options. The hardware drivers that come with
+SCPI instrument purely from options, and the [Driver Wizard](#driver-wizard) builds
+command-based drivers from a form. The hardware drivers that come with
 easyMeasure are listed under [Hardware drivers](#hardware-drivers).
 
 **Allowed values** (`ChannelSpec(..., allowed=["Voltage", "Current"])`, or numbers
@@ -304,7 +307,8 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
 * **Instruments & channels** – add/edit/reconnect instruments (driver list with
   default options), inspect raw channels (with their allowed values and the *last
   value* read or set — nothing is read just to fill the table), define aliases and
-  composites, manual get/set, save/load setups.
+  composites, manual get/set, save/load setups, *Driver wizard…* for new
+  command-based instruments.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
   file, validate against the backend, queue. **Running sweep** shows the
   executing definition read-only.
@@ -417,6 +421,55 @@ forms, optional nodes, error queue, `*ESR?`), physics good enough to see somethi
 (an SMU into a resistor with compliance clamping, a lock-in with a phase-shifted
 signal, loop-back wiring on the DAQ), and `tests/test_drivers.py` checks that every
 command a driver sends exists in the manual's table.
+
+## Driver Wizard
+
+For an instrument without a driver that is controlled by text commands (most SCPI
+instruments and many older ones) the **Driver Wizard** (*Backend → Driver wizard…*,
+or the *Driver wizard…* button under *Instruments & channels*) builds one without
+programming:
+
+![driver wizard](docs/screenshots/driver_wizard.png)
+
+1. **Start from** a template — *Generic SCPI* (identification, error queue, reset /
+   clear), *SCPI source-measure unit* (source level, mode, compliance, output, NPLC,
+   measured voltage and current), *SCPI multimeter* (function, autorange, NPLC, reading)
+   or *Simple line protocol* (non-SCPI, no error queue) — or reopen a driver made with
+   the wizard.
+2. **Basics**: driver name (`[a-z][a-z0-9_]*`), description, `*IDN?` check (reply must
+   contain one of `a | b`), error query (read after every setting, so a refused value
+   raises an error with the instrument's own message), terminations, timeout, query
+   delay.
+3. **Channels**: any number of *data* channels (measured or swept; aliased in the setup)
+   and *config* channels (settings). Per channel: access `r` / `w` / `rw`, type
+   `float`, `str` or `vector` (comma-separated numbers), unit, **Get** query (numbers:
+   the first number in the reply), **Set** command with `{value}` (or `{value:.3f}`)
+   where the value goes, **Allowed values** `a | b | c` (a drop-down in the front
+   ends), **Map** `Voltage=VOLT | Current=CURR` (value ↔ instrument word; replies are
+   recognised in SCPI short or long form and `1`/`0` as `ON`/`OFF`), **Scale**
+   (reading × scale, setting ÷ scale: instrument in mA, channel in A → 0.001).
+4. **Actions**: named command lists (`*RST | *CLS`), run like any driver action.
+5. **Initialization**: commands sent on connect (a command ending in `?` is a query
+   whose reply is logged), a **Python script** run after them — with `write(cmd)`,
+   `query(cmd)`, `read()`, `sleep(s)`, `log(msg)`, `options`, `instrument`, `np`,
+   `math`; raise an exception to refuse the connection — and commands sent on
+   disconnect (e.g. `OUTP OFF`).
+6. **Check, try and save**: the definition is checked (errors block, warnings don't),
+   the generated file can be previewed, and **Try it** connects to an address you
+   give (`SIM::…` works too), reads every readable channel once and shows value, unit
+   and time per channel — then removes the trial instrument again. **Save** writes
+   `<home>/drivers/<name>.py`, reloads the drivers and offers to add an instrument
+   with the new driver; instruments already using it are reconnected with the new
+   version (not during a sweep).
+
+The generated file holds the definition as a Python literal (`DEFINITION`) and a
+small class deriving from `CommandInstrument` (`easymeasure/drivers/_command.py`);
+it can be edited by hand — override `read` / `write` for an unusual channel — and the
+wizard reopens it through `DEFINITION`. A built-in driver name or a file not made by
+the wizard is never overwritten. Over remote access the wizard is admin-only (it
+writes code to the backend computer); the backend commands are `wizard_templates`,
+`wizard_check`, `wizard_try`, `wizard_save`, `wizard_list`, `wizard_load` and
+`wizard_delete`.
 
 ## Simulated instruments
 
@@ -571,7 +624,7 @@ c.subscribe(["monitor"]); c.on_event = lambda kind, data: print(kind, data)
 |---|---|
 | `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
 | `operator` | + set channels and config channels (alias limits and ramp rates always apply), run actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
-| `admin` | + scripts and sweep hook code (Python on the backend computer = full control), instruments, aliases and limits, raw commands, setups, settings, shutdown |
+| `admin` | + scripts and sweep hook code (Python on the backend computer = full control), Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
 
 Operators cannot run code: sweeps with pre/post hook code are refused for them, and
 mapping / composite formulas go through a sandboxed evaluator (an allow-list of math

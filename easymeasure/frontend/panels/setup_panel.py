@@ -34,7 +34,8 @@ def _fmt_opt(v) -> str:
 
 
 class InstrumentDialog(QDialog):
-    def __init__(self, drivers: dict, inst: Optional[dict] = None, parent=None):
+    def __init__(self, drivers: dict, inst: Optional[dict] = None, parent=None,
+                 preset: Optional[dict] = None):
         super().__init__(parent)
         self.setWindowTitle("Instrument")
         self.drivers = drivers
@@ -64,7 +65,12 @@ class InstrumentDialog(QDialog):
             self.driver.setCurrentText(inst["driver"])
             self.options.setPlainText(json.dumps(to_jsonable(inst.get("options", {})), indent=2))
         else:
+            if preset and preset.get("driver") in drivers:
+                self.driver.setCurrentText(preset["driver"])
             self._driver_changed(self.driver.currentText())
+            if preset:
+                self.name.setText(preset.get("name", ""))
+                self.address.setText(preset.get("address") or "NONE")
         self.result_value = None
 
     def _driver_changed(self, name):
@@ -254,6 +260,11 @@ class SetupPanel(QWidget):
             b = QPushButton(text)
             b.clicked.connect(fn)
             ib.addWidget(b)
+        wiz = QPushButton("Driver wizard…")
+        wiz.setToolTip("make a driver for a command-based instrument (SCPI or similar) "
+                       "without writing code, or edit one made before")
+        wiz.clicked.connect(self.driver_wizard)
+        ib.addWidget(wiz)
         ib.addStretch(1)
         ibox = QGroupBox("Instruments")
         il = QVBoxLayout(ibox)
@@ -528,12 +539,33 @@ class SetupPanel(QWidget):
                           on_err=self._err(ref))
 
     # ------------------------------------------------------------- instruments --
-    def _add_inst(self):
+    def driver_wizard(self):
+        from ..driver_wizard import DriverWizard
+        wiz = DriverWizard(self.conn, self)
+        wiz.exec()
+        r = wiz.saved
+        if not r:
+            return
+        self.msg.setText("driver %s saved%s" % (r["driver"], (" - reconnected: " + ", ".join(
+            r["reloaded"])) if r.get("reloaded") else ""))
+        self.model.schedule_refresh()
+        address = wiz.pages[-1].address.text().strip()
+
+        def offer(d):
+            self.drivers = d.get("drivers", {})
+            if not r.get("reloaded") and QMessageBox.question(
+                    self, "Driver saved", "Driver %s is ready.\nAdd an instrument that uses it "
+                    "now?" % r["driver"]) == QMessageBox.Yes:
+                self._add_inst(preset={"driver": r["driver"], "address": address,
+                                       "name": r["driver"].split("_")[-1] or "inst"})
+        self.conn.request("list_drivers", on_ok=offer)
+
+    def _add_inst(self, preset: Optional[dict] = None):
         if not self.drivers:
             self._load_drivers()
             self.msg.setText("loading driver list, try again in a moment")
             return
-        dlg = InstrumentDialog(self.drivers, parent=self)
+        dlg = InstrumentDialog(self.drivers, parent=self, preset=preset)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
             self.msg.setText("connecting %s…" % v["name"])

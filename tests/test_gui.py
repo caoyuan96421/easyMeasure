@@ -572,3 +572,74 @@ def test_dimension_editor_order_hooks_and_queue_controls(app, gui):
     assert qp.copy_hist.text() == "Copy to script editor"
     qp.history.selectRow(hist.index("hooked"))
     assert qp.copy_hist.text() == "Copy to sweep editor" and qp.copy_hist.isEnabled()
+
+
+def test_driver_wizard_end_to_end(app, gui):
+    """Template -> pages -> try on the (emulated) instrument -> save -> use the driver;
+    then reopen it in the wizard."""
+    from PySide6.QtWidgets import QComboBox, QWizard
+    from easymeasure.frontend.driver_wizard import DriverWizard
+    from easymeasure.drivers.emulators import ensure_emulator
+    from easymeasure.drivers.emulators.smu import Keithley2400Emulator
+    w, be, _, _ = gui
+    ensure_emulator("SIM::guiwiz", 0, lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
+    wiz = DriverWizard(w.conn, w)
+    wiz.show()
+    tp = wiz.pages[0]
+    assert pump(app, 5, lambda: tp.list.count() >= 4)
+    tp.list.setCurrentRow(1)                                   # SCPI source-measure unit
+    wiz.next()
+    bp = wiz.pages[1]
+    assert bp.name.text() == "my_smu" and bp.idn_query.text() == "*IDN?"
+    bp.name.setText("gui_smu")
+    bp.desc.setText("made in the GUI test")
+    wiz.next()
+    cp = wiz.pages[2]
+    assert cp.table.rowCount() == 6 and cp.table.item(0, 0).text() == "mode"
+    assert cp.table.item(0, 8).text() == "Voltage=VOLT | Current=CURR"
+    cp.add_row({"config": True, "dtype": "str", "access": "rw"})
+    r = cp.table.rowCount() - 1
+    cp.table.item(r, 0).setText("sense")
+    cp.table.item(r, 5).setText(":SYST:RSEN?")
+    cp.table.item(r, 6).setText(":SYST:RSEN {value}")
+    cp.table.item(r, 7).setText("ON | OFF")
+    assert isinstance(cp.table.cellWidget(r, 1), QComboBox)
+    wiz.next()
+    ap = wiz.pages[3]
+    assert ap.table.rowCount() == 1
+    wiz.next()
+    ip = wiz.pages[4]
+    assert "*CLS" in ip.cmds.toPlainText()
+    ip.script.setPlainText("log(query('*IDN?'))")
+    wiz.next()
+    fp = wiz.pages[5]
+    assert pump(app, 5, lambda: fp.ok)
+    assert "✔ ready to save" in fp.problems.text()
+    fp.show_source.setChecked(True)
+    assert "class GuiSmu(CommandInstrument)" in fp.source.toPlainText()
+    fp.address.setText("SIM::guiwiz")
+    fp.try_btn.click()
+    assert pump(app, 10, lambda: fp.results.rowCount() == 7)
+    vals = {fp.results.item(k, 0).text(): fp.results.item(k, 1).text() for k in range(7)}
+    assert vals["mode"] == "Voltage " and vals["sense"] == "OFF " and "KEITHLEY" in fp.idn.text()
+    wiz.button(QWizard.FinishButton).click()                    # save
+    assert pump(app, 10, lambda: wiz.saved is not None)
+    assert wiz.saved["driver"] == "gui_smu"
+    assert "gui_smu" in be.list_drivers()["drivers"]
+    h = be.add_instrument("gs", "gui_smu", "SIM::guiwiz")
+    assert h["state"] == "connected", h["last_error"]
+    be.write_channel("gs.sense", "on")
+    assert be.read_channel("gs.sense") == "ON"
+    # the wizard offers the saved driver for editing next time
+    wiz2 = DriverWizard(w.conn, w)
+    wiz2.show()
+    tp2 = wiz2.pages[0]
+    assert pump(app, 5, lambda: tp2.list.count() >= 5)
+    tp2.list.setCurrentRow(tp2.list.count() - 1)
+    assert tp2.list.currentItem().text().startswith("✎ Edit gui_smu")
+    wiz2.next()
+    assert wiz2.pages[1].name.text() == "gui_smu" and wiz2.pages[1].name.isReadOnly()
+    wiz2.next()
+    assert wiz2.pages[2].table.rowCount() == 7
+    wiz2.close()
+    wiz.close()

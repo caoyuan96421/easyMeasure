@@ -45,6 +45,9 @@ ADMIN = {
     "remove_instrument", "update_instrument", "raw_query", "raw_write", "define_alias",
     "remove_alias", "define_composite", "remove_composite", "load_setup", "run_script_now",
     "shutdown",
+    # the Driver Wizard writes driver code (init scripts are Python)
+    "wizard_templates", "wizard_check", "wizard_list", "wizard_load", "wizard_save",
+    "wizard_try", "wizard_delete",
 }
 #: never over the network, whatever the role
 LOCAL_ONLY = {"start_tray", "remote_status", "remote_start", "remote_stop", "remote_set_user",

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common import paths
-from ..common.errors import ChannelError, EasyMeasureError, SweepDefinitionError
+from ..common.errors import ChannelError, DriverError, EasyMeasureError, SweepDefinitionError
 from . import setup_io
 from .channels import Alias, ChannelManager, Composite
 from .registry import DriverRegistry
@@ -49,6 +49,8 @@ class Backend:
     COMMANDS = (
         "ping", "get_state", "get_settings", "set_settings",
         "list_drivers", "rescan_drivers", "discover_resources", "list_resources",
+        "wizard_templates", "wizard_check", "wizard_list", "wizard_load", "wizard_save",
+        "wizard_try", "wizard_delete",
         "add_instrument", "remove_instrument", "connect_instrument", "disconnect_instrument",
         "reconnect_instrument", "update_instrument", "list_instruments",
         "read_channel", "write_channel", "query_channel", "raw_query", "raw_write",
@@ -82,7 +84,10 @@ class Backend:
         self._listeners_lock = threading.Lock()
 
         self.resources = ResourceManager()
-        self.drivers = DriverRegistry(self.settings.get("driver_paths") or [])
+        #: drivers made with the Driver Wizard (and any others dropped here)
+        self.user_driver_dir = self.home / "drivers"
+        self.user_driver_dir.mkdir(parents=True, exist_ok=True)
+        self.drivers = DriverRegistry(self._driver_paths())
         self.drivers.scan()
         self.instruments = InstrumentManager(self.resources, self.drivers)
         self.channels = ChannelManager(self.instruments)
@@ -179,10 +184,142 @@ class Backend:
     def list_drivers(self) -> dict:
         return self.drivers.describe()
 
+    def _driver_paths(self) -> list:
+        return [self.user_driver_dir] + [Path(p) for p in self.settings.get("driver_paths") or []]
+
     def rescan_drivers(self) -> dict:
-        self.drivers.extra_paths = [Path(p) for p in self.settings.get("driver_paths") or []]
+        self.drivers.extra_paths = self._driver_paths()
         self.drivers.scan()
         return self.drivers.describe()
+
+    # ---------------------------------------------------------- driver wizard --
+    def _builtin_driver_names(self) -> set:
+        import pkgutil
+        from .. import drivers as pkg
+        return {m.name for m in pkgutil.iter_modules(pkg.__path__)}
+
+    def wizard_templates(self) -> list:
+        from ..drivers import _command
+        return _command.templates()
+
+    def wizard_check(self, definition: dict) -> dict:
+        """Problems of a definition, and the Python file it would become."""
+        from ..drivers import _command
+        errors, warnings = _command.check_definition(definition, self._builtin_driver_names())
+        source = _command.render_source(definition) if not errors else ""
+        path = self.user_driver_dir / ("%s.py" % definition.get("name", ""))
+        if not errors and path.exists() and not _command.is_wizard_file(path):
+            errors.append("%s exists and was not made with the wizard" % path)
+        elif not errors and path.exists():
+            warnings.append("saving replaces the existing driver %s" % definition["name"])
+        return {"errors": errors, "warnings": warnings, "source": source, "path": str(path)}
+
+    def wizard_list(self) -> list:
+        """Drivers made with the wizard (they can be reopened)."""
+        from ..drivers import _command
+        out = []
+        for f in sorted(self.user_driver_dir.glob("*.py")):
+            if _command.is_wizard_file(f):
+                try:
+                    d = _command.read_definition(f)
+                    out.append({"name": f.stem, "path": str(f),
+                                "description": d.get("description", ""),
+                                "channels": len(d.get("channels", []))})
+                except Exception as exc:
+                    out.append({"name": f.stem, "path": str(f), "error": str(exc)})
+        return out
+
+    def wizard_load(self, name: str) -> dict:
+        from ..drivers import _command
+        path = self.user_driver_dir / ("%s.py" % name)
+        if not path.exists():
+            raise DriverError("no wizard driver %r" % name)
+        return _command.read_definition(path)
+
+    def wizard_save(self, definition: dict, overwrite: bool = False) -> dict:
+        """Write the driver file, load it, and reconnect instruments that use it."""
+        from ..drivers import _command
+        chk = self.wizard_check(definition)
+        if chk["errors"]:
+            raise DriverError("; ".join(chk["errors"]))
+        path = Path(chk["path"])
+        if path.exists() and not overwrite:
+            raise DriverError("driver %s exists already (save again to replace it)"
+                              % definition["name"])
+        tmp = path.with_suffix(".py.tmp")
+        tmp.write_text(chk["source"], encoding="utf-8")
+        os.replace(tmp, path)
+        self.rescan_drivers()
+        err = self.drivers.describe()["errors"].get(definition["name"])
+        if err:
+            raise DriverError("saved %s but it does not load: %s" % (path, err))
+        reloaded = []
+        if self.runner is None:
+            for h in list(self.instruments.handles()):
+                if h.driver_name == definition["name"]:
+                    try:
+                        self.update_instrument(h.name)
+                        reloaded.append(h.name)
+                    except Exception as exc:
+                        log.warning("instrument %s did not reload: %s", h.name, exc)
+        log.info("driver %s saved to %s (reloaded: %s)", definition["name"], path,
+                 ", ".join(reloaded) or "-")
+        self._changed("drivers")
+        return {"path": str(path), "driver": definition["name"], "reloaded": reloaded,
+                "warnings": chk["warnings"]}
+
+    def wizard_delete(self, name: str) -> None:
+        from ..drivers import _command
+        path = self.user_driver_dir / ("%s.py" % name)
+        if not _command.is_wizard_file(path):
+            raise DriverError("no wizard driver %r" % name)
+        users = [h.name for h in self.instruments.handles() if h.driver_name == name]
+        if users:
+            raise DriverError("driver %s is used by %s" % (name, ", ".join(users)))
+        path.unlink()
+        self.rescan_drivers()
+        self._changed("drivers")
+
+    def wizard_try(self, definition: dict, address: str, options: Optional[dict] = None) -> dict:
+        """Connect a temporary instrument with this definition and read every readable
+        channel once (nothing is saved, nothing written).  Errors are reported per
+        channel, not raised."""
+        from ..drivers import _command
+        errors, warnings = _command.check_definition(definition)
+        if errors:
+            return {"connected": False, "error": "; ".join(errors), "readings": {}}
+        cls = _command.CommandInstrument.from_definition(definition)
+        tmp = "wizard_try"
+        while tmp in self.instruments.names():
+            tmp += "_"
+        self.drivers.register("__wizard_try__", cls)
+        out = {"connected": False, "error": "", "readings": {}, "idn": ""}
+        try:
+            h = self.instruments.add(tmp, "__wizard_try__", address or "NONE", options or {},
+                                     connect=True)
+            out["connected"] = h.state == "connected"
+            out["error"] = h.last_error if not out["connected"] else ""
+            if out["connected"]:
+                out["idn"] = getattr(h.driver, "idn", "")
+                for c in h.channels.values():
+                    if not c.readable:
+                        continue
+                    t0 = time.perf_counter()
+                    try:
+                        v = h.read(c.name)
+                        out["readings"][c.name] = {"value": v, "unit": c.unit,
+                                                   "ms": round((time.perf_counter() - t0) * 1e3, 1)}
+                    except Exception as exc:
+                        out["readings"][c.name] = {"error": "%s: %s" % (type(exc).__name__, exc)}
+        except Exception as exc:
+            out["error"] = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            try:
+                if tmp in self.instruments.names():
+                    self.instruments.remove(tmp)
+            finally:
+                self.drivers.unregister("__wizard_try__")
+        return out
 
     def discover_resources(self) -> list:
         return ResourceManager.discover()
