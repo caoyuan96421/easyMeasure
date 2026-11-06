@@ -33,13 +33,17 @@ programmed.  On (re)connect it assumes every SMU is OFF and does *not* touch
 the outputs (a reconnect in the middle of a measurement leaves the bias alone);
 set ``output<n>`` to ON to (re)program an SMU.
 
-4155/4156: select the 4145 syntax command mode first (front panel, or SCPI
-``:SYST:LANG COMP``); the driver checks it (``CMD?`` = 2).  Address e.g.
+4155/4156: the driver switches the analyzer into the 4145 syntax command mode
+by itself if it is not there yet (``CMD?``: 0 = SCPI, 1 = FLEX, 2 = 4145 syntax):
+from FLEX it returns to SCPI with ``:PAGE``, from SCPI it selects 4145 syntax with
+``:SYST:LANG COMP``, and checks ``CMD?`` after each step (option
+``force_4145_syntax`` = false leaves the mode alone).  Address e.g.
 ``GPIB0::17::INSTR``.  ``SIM::<name>`` uses the built-in emulator (option
 ``emulate_model`` = ``4145B`` or ``4155C``).
 
 Not verified against the manual text (the scanned manuals were not readable):
-the VS / VM channel numbers 5 and 6, the ``DS <ch>`` form and the exact reply
+the mode switch commands above, the VS / VM channel numbers 5 and 6, the
+``DS <ch>`` form and the exact reply
 layout of TV / TI (the driver takes the status from the first character and the
 number from the end, which covers the documented variants).
 """
@@ -48,11 +52,15 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from typing import List
 
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..common.errors import ChannelError
+from ..backend.logsys import get_logger
 from ._scpi import SCPIInstrument
+
+log = get_logger("drivers.hp4145")
 
 V_RANGES = [(0, "AUTO", None), (1, "20 V", 20.0), (2, "40 V", 40.0), (3, "100 V", 100.0)]
 I_RANGES = [(0, "AUTO", None)] + [(k, lab, val) for k, lab, val in (
@@ -82,7 +90,7 @@ class HP4145(SCPIInstrument):
     DESCRIPTION = "HP 4145A/B (or 4155/4156 in 4145 syntax) parameter analyzer, user mode"
     ACTIONS = [ActionSpec("disable_all", "DS: disable every SMU and source (outputs OFF)")]
     DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
-                       "smus": [1, 2, 3, 4], "vs_vm": True}
+                       "smus": [1, 2, 3, 4], "vs_vm": True, "force_4145_syntax": True}
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -139,10 +147,7 @@ class HP4145(SCPIInstrument):
             self.model = "4145B" if "4145B" in idn.upper() else "4145A"
         elif re.search(r"415[56]", idn):
             self.model = re.search(r"415[56][A-Z]?", idn).group(0)
-            mode = self.q("CMD?").strip()
-            if mode != "2":
-                raise IOError("the %s is not in 4145 syntax mode (CMD? = %s): select it on the "
-                              "front panel or with :SYST:LANG COMP" % (self.model, mode))
+            self._ensure_4145_syntax()
         else:
             raise IOError("unexpected instrument %r (expected an HP 4145 / 4155 / 4156)" % idn[:60])
         self.idn = idn
@@ -153,6 +158,38 @@ class HP4145(SCPIInstrument):
         self.st = {n: {"mode": old.get(n, {}).get("mode", "Voltage"), "on": False, "value": 0.0,
                        "comp": old.get(n, {}).get("comp"), "range": "AUTO"} for n in self._smus()}
         self.vs = {1: None, 2: None}
+
+    def _cmd_mode(self) -> str:
+        return self.q("CMD?").strip()
+
+    def _wait_mode(self, want: str, limit: float) -> str:
+        t_end = time.monotonic() + limit
+        mode = self._cmd_mode()
+        while mode != want and time.monotonic() < t_end:
+            time.sleep(0.2)                     # the analyzer needs a moment to switch
+            mode = self._cmd_mode()
+        return mode
+
+    def _ensure_4145_syntax(self) -> None:
+        """Put a 4155/4156 into its 4145 syntax command mode (CMD? = 2)."""
+        mode = self._cmd_mode()
+        if mode == "2":
+            return
+        if not self.options.get("force_4145_syntax", True):
+            raise IOError("the %s is not in 4145 syntax mode (CMD? = %s) and option "
+                          "force_4145_syntax is off" % (self.model, mode))
+        limit = float(self.options.get("mode_switch_timeout", 5.0))
+        log.info("%s: %s is in %s command mode; switching to 4145 syntax", self.name, self.model,
+                 {"0": "SCPI", "1": "FLEX"}.get(mode, "unknown (%s)" % mode))
+        if mode == "1":
+            self.w(":PAGE")                     # FLEX -> SCPI
+            mode = self._wait_mode("0", limit)
+        self.w(":SYST:LANG COMP")               # SCPI -> 4145 syntax ("compatibility")
+        mode = self._wait_mode("2", limit)
+        if mode != "2":
+            raise IOError("could not switch the %s into 4145 syntax mode (CMD? = %s after "
+                          ":SYST:LANG COMP); select it on the front panel" % (self.model, mode))
+        log.info("%s: %s now in 4145 syntax mode", self.name, self.model)
 
     # -- helpers ------------------------------------------------------------------------
     def _split(self, channel: str):

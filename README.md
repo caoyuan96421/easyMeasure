@@ -385,8 +385,10 @@ has no setting queries): a value written while `output<n>` is OFF is applied whe
 it is switched ON, which needs a compliance first. The SMU output envelope
 (100 mA ≤ 20 V, 50 mA ≤ 40 V, 20 mA ≤ 100 V) is checked before anything is sent.
 A reconnect does not touch the outputs (outputs then read OFF until set again).
-For a 4155/4156 select the 4145 syntax mode first; the driver checks it (`CMD?`).
-Not yet confirmed from the manual text: the VS/VM channel numbers (5, 6), `DS <ch>`
+A 4155/4156 is switched into its 4145 syntax command mode automatically when it is
+in SCPI (`:SYST:LANG COMP`) or FLEX mode (`:PAGE` first), checked with `CMD?`; option
+`force_4145_syntax` = false leaves the mode alone.
+Not yet confirmed from the manual text: the mode switch commands, the VS/VM channel numbers (5, 6), `DS <ch>`
 and the exact TV/TI reply layout (the parser accepts the usual variants: status
 character first, number last; overflow → ±inf, oscillation → NaN).
 

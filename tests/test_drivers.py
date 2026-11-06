@@ -635,9 +635,28 @@ def test_hp4145_models_and_reply_status(backend):
     be = backend
     h = be.add_instrument("a55", "hp4145", "SIM::p55", {"emulate_model": "4155C"})
     assert h["state"] == "connected" and be.instruments.get("a55").driver.model == "4155C"
-    h = be.add_instrument("b55", "hp4145", "SIM::p55s", {"emulate_model": "4155C",
-                                                         "emulate_cmd_mode": 0})
-    assert h["state"] == "error" and "not in 4145 syntax mode" in h["last_error"]
+    assert emu("SIM::p55").log[:2] == ["ID", "CMD?"]          # already there: nothing to do
+    # a 4155 left in SCPI or FLEX mode is switched into 4145 syntax by the driver
+    for mode, steps in ((0, [":SYST:LANG COMP"]), (1, [":PAGE", ":SYST:LANG COMP"])):
+        addr = "SIM::p55m%d" % mode
+        h = be.add_instrument("m%d" % mode, "hp4145", addr, {
+            "emulate_model": "4155C", "emulate_cmd_mode": mode, "emulate_switch_delay": 0.3})
+        assert h["state"] == "connected", h["last_error"]
+        e = emu(addr)
+        assert e.cmd_mode == 2 and e.user_mode
+        assert [c for c in e.log if c.startswith(":")] == steps
+        assert e.unknown == []
+        be.write_channel("m%d.Icompliance1" % mode, 1e-3)
+        be.write_channel("m%d.output1" % mode, "ON")
+        assert e.smu[1].mode == "V"
+    # only if the analyzer refuses to switch is there an error (and it says so)
+    h = be.add_instrument("b55", "hp4145", "SIM::p55s", {
+        "emulate_model": "4155C", "emulate_cmd_mode": 0, "emulate_no_lang": True,
+        "mode_switch_timeout": 0.5})
+    assert h["state"] == "error" and "could not switch" in h["last_error"]
+    h = be.add_instrument("b56", "hp4145", "SIM::p56s", {
+        "emulate_model": "4156C", "emulate_cmd_mode": 0, "force_4145_syntax": False})
+    assert h["state"] == "error" and "force_4145_syntax is off" in h["last_error"]
     be.add_instrument("two", "hp4145", "SIM::p2", {"smus": [1, 3], "vs_vm": False})
     ch = be.instruments.get("two").channels
     assert "voltage3" in ch and "voltage2" not in ch and "vs1" not in ch

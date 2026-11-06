@@ -10,16 +10,25 @@ not allowed or out of range set ``errors`` and change nothing; commands the
 emulator does not know go to ``unknown``.
 
 Option ``emulate_model``: ``4145B`` (default) or ``4155C``; ``emulate_cmd_mode``:
-the 4155's command mode (2 = 4145 syntax; anything else and it ignores 4145
-commands, like a 4155 left in SCPI mode).
+the 4155's command mode at power-on (0 = SCPI, 1 = FLEX, 2 = 4145 syntax).  In SCPI
+mode it understands ``:SYSTem:LANGuage COMPatibility`` (-> 4145 syntax), in FLEX
+mode ``:PAGE`` (-> SCPI); 4145 commands are ignored outside 4145 syntax mode.
+``emulate_switch_delay``: seconds a mode change takes (``CMD?`` reports the old
+mode meanwhile); ``emulate_no_lang``: the SCPI language command is refused.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from typing import List
 
+from . import compile_pattern
 from ..simbus import FaultInjector, SimDevice
+
+_LANG = re.compile(compile_pattern(":SYSTem:LANGuage").pattern[:-1] + r"\s+COMP(?:ATIBILITY)?\s*$",
+                   re.I)
+_PAGE = compile_pattern(":PAGE")
 
 V_RANGE = {0: 100.0, 1: 20.0, 2: 40.0, 3: 100.0}
 I_RANGE = {0: 0.1, **{k: 10.0 ** (k - 10) for k in range(1, 10)}}
@@ -39,6 +48,9 @@ class HP4145Emulator(SimDevice):
         super().__init__(FaultInjector(o))
         self.model = str(o.get("emulate_model", "4145B")).upper()
         self.cmd_mode = int(o.get("emulate_cmd_mode", 2))
+        self.switch_delay = float(o.get("emulate_switch_delay", 0.0))
+        self.no_lang = bool(o.get("emulate_no_lang", False))
+        self._pending_mode = None
         self.load = float(o.get("load_ohm", 1e3))
         self.smu = {n: _SMU() for n in range(1, 5)}
         self.vs = {5: None, 6: None}
@@ -53,11 +65,20 @@ class HP4145Emulator(SimDevice):
         c = command.strip()
         if c.upper() == "ID":
             return "HP%s" % self.model
-        if self.model.startswith("415") and c.upper() == "CMD?":
-            return str(self.cmd_mode)
-        if self.model.startswith("415") and self.cmd_mode != 2:
-            self.unknown.append(command)            # SCPI mode: 4145 commands mean nothing
-            return None
+        if self.model.startswith("415"):
+            self._settle()
+            if c.upper() == "CMD?":
+                return str(self.cmd_mode)
+            key = c if c.startswith(":") else ":" + c
+            if self.cmd_mode == 0 and _LANG.match(key) and not self.no_lang:
+                self._switch(2)
+                return None
+            if self.cmd_mode == 1 and _PAGE.match(key):
+                self._switch(0)
+                return None
+            if self.cmd_mode != 2:
+                self.unknown.append(command)        # SCPI / FLEX: 4145 commands mean nothing
+                return None
         m = re.fullmatch(r"([A-Z]{2})\s*(.*)", c.upper())
         if not m:
             self.unknown.append(command)
@@ -68,6 +89,17 @@ class HP4145Emulator(SimDevice):
         except (ValueError, IndexError):
             self.errors.append("syntax: " + command)
             return None
+
+    def _switch(self, mode: int) -> None:
+        if self.switch_delay:
+            self._pending_mode = (mode, time.monotonic() + self.switch_delay)
+        else:
+            self.cmd_mode = mode
+
+    def _settle(self) -> None:
+        if self._pending_mode and time.monotonic() >= self._pending_mode[1]:
+            self.cmd_mode = self._pending_mode[0]
+            self._pending_mode = None
 
     def _dispatch(self, head, args, command):
         if head == "US":
