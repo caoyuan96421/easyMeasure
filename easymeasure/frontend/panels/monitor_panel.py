@@ -37,6 +37,7 @@ class MonitorTile(QFrame):
         self.err = shrinkable_label(QLabel(""))
         self.err.setStyleSheet("color: #d55")
         rm = QPushButton("✕")
+        self.rm = rm
         rm.setFixedWidth(24)
         rm.setToolTip("stop monitoring")
         rm.clicked.connect(lambda: on_remove(name))
@@ -145,6 +146,8 @@ class MonitorPanel(QWidget):
         self.interval.setSuffix(" s")
         add = QPushButton("Monitor")
         add.clicked.connect(self._add)
+        self.add_btn = add
+        self.locked = False
         top = FlowLayout()
         top.addWidget(self.channel)
         top.addWidget(self.interval)
@@ -186,9 +189,17 @@ class MonitorPanel(QWidget):
         t = self.tiles.get(name)
         if t is None:
             t = MonitorTile(name, self._remove)
+            t.rm.setEnabled(not self.locked)
             self.tiles[name] = t
             self.vbox.insertWidget(self.vbox.count() - 1, t)
         return t
+
+    def set_locked(self, on: bool) -> None:
+        """GUI lock: no adding / removing monitors; the plots and their time span
+        stay usable."""
+        self.locked = on
+        for w in [self.channel, self.interval, self.add_btn] + [t.rm for t in self.tiles.values()]:
+            w.setEnabled(not on)
 
     def _drop_tile(self, name: str) -> None:
         t = self.tiles.pop(name, None)

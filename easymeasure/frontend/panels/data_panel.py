@@ -93,6 +93,12 @@ class DataView(QWidget):
         self._header_timer.timeout.connect(self._update_header)
         self._header_timer.start()
 
+    def set_locked(self, on: bool) -> None:
+        """GUI lock: plots and their settings stay usable; what acts on the sweep
+        editor or writes files does not."""
+        for w in (self.copy_btn, self.ppt_btn):
+            w.setEnabled(not on)
+
     # ------------------------------------------------------------------------
     def set_dataset(self, ds: Optional[DataSet]) -> None:
         old_channels = [p.channel for p in self.plots]

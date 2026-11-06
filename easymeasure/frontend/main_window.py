@@ -7,11 +7,12 @@ import time
 from typing import Optional
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
-                               QScrollArea, QSpinBox, QTabBar, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSpinBox, QTabBar, QTabWidget, QToolBar, QToolButton, QVBoxLayout,
+                               QWidget)
 
 from .. import __version__
 from .connection import BackendConnection
@@ -200,6 +201,12 @@ class MainWindow(QMainWindow):
         self.resizeDocks([ld], [170], Qt.Vertical)
         self.resizeDocks([md, self.manual_dock], [420, 320], Qt.Vertical)
 
+        # the GUI lock (button in the top right corner): actions in this group and the
+        # control panels are disabled while it is engaged
+        self.locked = False
+        self.lock_group = QActionGroup(self)
+        self.lock_group.setExclusive(False)
+
         # toolbar
         tb = QToolBar("main")
         tb.setObjectName("main_toolbar")
@@ -209,6 +216,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.start_backend)
         tb.addWidget(self.conn_label)
         self.start_action = tb.addWidget(self.start_btn)   # toolbar widgets hide via their action
+        self.lock_group.addAction(self.start_action)
         tb.addSeparator()
         self.queue_actions = {}
         for text, cmd in (("▶ Start queue", "queue_start"), ("⏸ Pause", "pause"),
@@ -217,12 +225,14 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, c=cmd: self.conn.request(c))
             a.setEnabled(False)                  # follows the queue state
             tb.addAction(a)
+            self.lock_group.addAction(a)
             self.queue_actions[cmd] = a
         tb.addSeparator()
         a = QAction("Add slide to PPT", self)
         a.setToolTip("append a slide for the running / last sweep to the configured PPT file")
         a.triggered.connect(lambda: self._ppt_backend(None))
         tb.addAction(a)
+        self.lock_group.addAction(a)
         a = QAction("Open data…", self)
         a.triggered.connect(self.open_data)
         tb.addAction(a)
@@ -238,6 +248,8 @@ class MainWindow(QMainWindow):
                 act.setShortcut(key)
             act.triggered.connect(fn)
             m.addAction(act)
+            if fn == self.edit_settings:
+                self.lock_group.addAction(act)
         b = self.menuBar().addMenu("&Backend")
         for text, fn in (("Start backend", self.start_backend), ("Reconnect", self._reconnect),
                          ("Restart backend…", self.restart_backend),
@@ -248,6 +260,8 @@ class MainWindow(QMainWindow):
             act = QAction(text, self)
             act.triggered.connect(fn)
             b.addAction(act)
+            if fn != self._reconnect:
+                self.lock_group.addAction(act)
         v = self.menuBar().addMenu("&View")
         v.addAction(md.toggleViewAction())
         v.addAction(mand.toggleViewAction())
@@ -256,14 +270,32 @@ class MainWindow(QMainWindow):
         self.running_action.toggled.connect(self._show_running)
         v.addAction(self.running_action)
         self.running_action.setChecked(self.qsettings.value("show_running", False, type=bool))
+        self.lock_btn = QToolButton()
+        self.lock_btn.setObjectName("gui_lock")
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setShortcut(QKeySequence("Ctrl+L"))
+        self.lock_btn.toggled.connect(self.set_locked)
+        if self.menuBar().isNativeMenuBar():           # macOS: no menu bar corner
+            spacer = QWidget()
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            tb.addWidget(spacer)
+            tb.addWidget(self.lock_btn)
+        else:
+            self.menuBar().setCornerWidget(self.lock_btn, Qt.TopRightCorner)
 
         # status bar
         self.state_label = QLabel("")
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setVisible(False)
+        self.lock_label = QLabel("🔒 locked ")
+        self.lock_label.setStyleSheet("color: #e39a1b; font-weight: bold")
+        self.lock_label.setVisible(False)
+        self.statusBar().addPermanentWidget(self.lock_label)
         self.statusBar().addPermanentWidget(self.state_label)
         self.statusBar().addPermanentWidget(self.progress)
+        was_locked = self.qsettings.value("locked", False, type=bool)
+        self.set_locked(was_locked)
 
         self.conn.status.connect(self._conn_status)
         self.conn.connected.connect(self._on_connected)
@@ -401,6 +433,35 @@ class MainWindow(QMainWindow):
         elif kind == "sweep_start":
             self.data_tabs.setCurrentWidget(self.live)
 
+    # ------------------------------------------------------------------ lock --
+    def set_locked(self, on: bool) -> None:
+        """Lock / unlock the GUI against accidental changes: instruments, sweep
+        editor, queue, manual control, monitors, queue / backend commands and the
+        settings are greyed out; switching tabs, the plots and their settings,
+        opening data files and the log stay usable.  Only this window is affected
+        (not other GUIs, the web page or scripts)."""
+        on = bool(on)
+        self.locked = on
+        if self.lock_btn.isChecked() != on:
+            self.lock_btn.setChecked(on)            # comes back here, harmless
+        for w in (self.setup_panel, self.editor, self.queue_panel, self.running, self.manual):
+            w.setEnabled(not on)
+        self.lock_group.setEnabled(not on)          # actions keep their own state underneath
+        self.monitor.set_locked(on)
+        for i in range(self.data_tabs.count()):
+            v = self.data_tabs.widget(i)
+            if hasattr(v, "set_locked"):
+                v.set_locked(on)
+        self.lock_btn.setText("🔒 Locked" if on else "🔓 Lock")
+        self.lock_btn.setToolTip("GUI locked against changes – click (Ctrl+L) to unlock" if on else
+                                 "lock the GUI against accidental changes (Ctrl+L); tabs and plot "
+                                 "settings stay usable")
+        self.lock_btn.setStyleSheet("QToolButton { background: #e39a1b; color: black; "
+                                    "font-weight: bold; padding: 2px 8px; border-radius: 3px }"
+                                    if on else "QToolButton { padding: 2px 8px }")
+        self.lock_label.setVisible(on)
+        self.qsettings.setValue("locked", on)
+
     # ------------------------------------------------------------------ data --
     def open_data(self, path: Optional[str] = None):
         if not path:
@@ -413,6 +474,7 @@ class MainWindow(QMainWindow):
         view = FileDataView(path)
         view.copyDefinition.connect(self._copy_to_editor)
         view.pptRequested.connect(self._ppt_for_view)
+        view.set_locked(self.locked)
         i = self.data_tabs.addTab(view, os.path.basename(path))
         self.data_tabs.setTabToolTip(i, path)
         self.data_tabs.setCurrentIndex(i)
@@ -432,6 +494,9 @@ class MainWindow(QMainWindow):
                           on_err=lambda e: self._message("error", e))
 
     def _copy_to_editor(self, definition):
+        if self.locked:
+            self._message("warning", "the GUI is locked")
+            return
         self.editor.load_definition(definition)
         self.left_tabs.setCurrentWidget(self.left_widget(self.editor))
 
@@ -469,6 +534,9 @@ class MainWindow(QMainWindow):
 
     def _rerun(self, item: dict):
         """Queue a copy of a finished/failed/aborted item from the history."""
+        if self.locked:
+            self._message("warning", "the GUI is locked")
+            return
         kind = item.get("kind")
         if kind == "sweep" and item.get("definition"):
             new = {"kind": "sweep", "definition": item["definition"]}

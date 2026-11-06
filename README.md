@@ -331,6 +331,14 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
 * **File → Settings → Display**: font size (applied immediately, also to plot axes)
   and an overall UI scale (50–300 %, applied on the next GUI start) to suit any
   screen resolution. The window can be made small: toolbars wrap, panels scroll.
+* **🔓 Lock** (top right corner, Ctrl+L) locks the GUI against accidental changes:
+  instruments, sweep editor, queue, manual control, adding/removing monitors, the
+  queue buttons, *Add slide to PPT*, *Settings* and the *Backend* menu (except
+  *Reconnect*) are greyed out. Switching tabs, the plots and all their settings, the
+  monitor time spans, opening data files and the log stay usable. Click again to
+  unlock; the state is remembered when the GUI restarts. It is a guard against slips,
+  not access control — it affects this window only (not other GUIs, the web page,
+  the tray or scripts).
 
 Nothing in the GUI blocks on the backend: every request is asynchronous with a
 callback, files load and slides render in worker threads.

@@ -316,6 +316,75 @@ def be_idle(app, demo, ctl):
     return pump(app, 5, lambda: ctl.state == "idle" and ctl.run is None)
 
 
+def test_gui_lock(app, gui):
+    """The lock button greys out every control of instruments / sweep / queue /
+    manual / monitors and the backend commands; tabs, plots and their settings stay
+    usable; the queue buttons come back in the state the queue is in now; the lock
+    survives a restart of the GUI."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QAbstractButton, QComboBox, QLineEdit
+    from easymeasure.frontend.connection import BackendConnection
+    from easymeasure.frontend.main_window import MainWindow
+    w, be, _, tmp = gui
+    be.monitor_add("I", 0.2)
+    assert pump(app, 5, lambda: "I" in w.monitor.tiles)
+    btn = w.lock_btn
+    assert w.menuBar().cornerWidget(Qt.TopRightCorner) is btn and "Lock" in btn.text()
+    btn.click()
+    pump(app, 0.1)
+    assert w.locked and "Locked" in btn.text() and w.lock_label.isVisible()
+    for panel in (w.setup_panel, w.editor, w.queue_panel, w.manual):
+        ctrls = panel.findChildren(QAbstractButton) + panel.findChildren(QComboBox) + \
+            panel.findChildren(QLineEdit)
+        assert ctrls and not any(c.isEnabled() for c in ctrls), panel
+    assert not any(a.isEnabled() for a in w.queue_actions.values())
+    acts = {a.text(): a for m in w.menuBar().actions() if m.menu() for a in m.menu().actions()}
+    for t in ("Settings…", "Driver wizard…", "Remote access…", "Shut down backend…"):
+        assert not acts[t].isEnabled(), t
+    for t in ("Open data file…", "Reconnect", "Monitor", "Log"):
+        assert acts[t].isEnabled(), t
+    assert not w.monitor.add_btn.isEnabled() and not w.monitor.tiles["I"].rm.isEnabled()
+    assert w.monitor.tiles["I"].span.isEnabled()                       # a graph setting
+    # tabs still switch
+    w.left_tabs.setCurrentIndex(2)
+    assert w.left_tabs.tabBar().isEnabled() and w.left_tabs.currentIndex() == 2
+    # a run started elsewhere (script, other GUI): plots and their settings work
+    be.queue_add({"kind": "sweep", "definition": {"name": "locked", "dimensions": [
+        {"points": 80, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"],
+         "pre_delay": 0.02}]}}, start=True)
+    assert pump(app, 10, lambda: w.live.plots and be.queue_state()["state"] == "running")
+    pl = w.live.plots[0]
+    assert pl.isEnabled() and pl.channel_box.isEnabled() and pl.mode_box.isEnabled()
+    assert w.live.add_btn.isEnabled() and w.live.cols.isEnabled()
+    assert not w.live.copy_btn.isEnabled() and not w.live.ppt_btn.isEnabled()
+    assert not any(a.isEnabled() for a in w.queue_actions.values())    # still locked
+    w._copy_to_editor({"name": "x", "dimensions": []})                  # signals are refused too
+    assert w.editor.name.text() != "x"
+    # opened data files come up locked
+    w.set_locked(False)
+    assert w.queue_actions["pause"].isEnabled() and w.queue_actions["abort"].isEnabled()
+    assert not w.queue_actions["resume"].isEnabled()
+    assert w.setup_panel.findChildren(QAbstractButton)[0].isEnabled()
+    assert w.monitor.add_btn.isEnabled() and w.live.copy_btn.isEnabled()
+    w.set_locked(True)
+    assert be.queue.wait_idle(30)
+    path = be.queue_state()["history"][-1]["path"]
+    w.open_data(path)
+    view = w.data_tabs.currentWidget()
+    assert view is not w.live and not view.copy_btn.isEnabled() and view.reload_btn.isEnabled()
+    # remembered by the next GUI
+    conn2 = BackendConnection(runtime_file=tmp / "rt.json")
+    w2 = MainWindow(conn2)
+    try:
+        assert w2.locked and w2.lock_btn.isChecked() and not w2.setup_panel.isEnabled()
+        w2.lock_btn.click()
+        assert not w2.locked and w2.setup_panel.isEnabled()
+    finally:
+        w2.close()
+        conn2.stop()
+    w.set_locked(False)
+
+
 def test_font_size_and_narrow_window(app, gui):
     from easymeasure.frontend import display
     from easymeasure.frontend.main_window import SettingsDialog
