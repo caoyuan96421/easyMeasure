@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QStyledItemDelegate, QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
@@ -27,8 +27,34 @@ def _mono() -> QFont:
     return f
 
 
+def fit_rows(view, rows: int, header: bool = False) -> None:
+    """A list / table as tall as *rows* rows (more scroll); recomputed on font changes."""
+    fm = view.fontMetrics()
+    if isinstance(view, QTableWidget):
+        row_h = max(view.verticalHeader().defaultSectionSize(), fm.height() + 8)
+    else:
+        row_h = max(view.sizeHintForRow(0) if view.count() else 0, fm.height() + 6)
+    head = view.horizontalHeader().sizeHint().height() if header else 0
+    h = head + rows * row_h + 2 * view.frameWidth() + 2
+    view.setMinimumHeight(min(h, head + 2 * row_h + 2 * view.frameWidth() + 2))
+    view.setMaximumHeight(h)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+
 class CheckList(QListWidget):
-    """List of channel names with check boxes; keeps checks across refreshes."""
+    """List of channel names with check boxes; keeps checks across refreshes.  About
+    six rows tall; scrolls for more."""
+
+    ROWS = 6
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        fit_rows(self, self.ROWS)
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() in (QEvent.FontChange, QEvent.StyleChange):
+            fit_rows(self, self.ROWS)
 
     def set_names(self, names: List[str]) -> None:
         checked = set(self.checked())
@@ -83,6 +109,14 @@ class SweepChannelTable(QTableWidget):
         self.setColumnWidth(0, 140)
         self.setColumnWidth(3, 260)
         self.channels: List[str] = []
+        fit_rows(self, self.ROWS, header=True)
+
+    ROWS = 4                       # rows shown; more scroll
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() in (QEvent.FontChange, QEvent.StyleChange):
+            fit_rows(self, self.ROWS, header=True)
 
     def set_channels(self, names: List[str]) -> None:
         self.channels = names
@@ -312,6 +346,15 @@ class DimensionEditor(QWidget):
         post_row.addWidget(self.post_label)
         post_row.addWidget(self.post)
         post_row.addStretch(1)
+        # the inner dimension's whole loop runs at every point of an outer one: before
+        # recording with "record after inner dims", else at the end
+        self.inner_text = ""
+        self.inner_mid = QLabel()
+        self.inner_end = QLabel()
+        for lab in (self.inner_mid, self.inner_end):
+            lab.setStyleSheet("color: #3a7bd5; font-weight: bold")
+            lab.setVisible(False)
+        self.after.toggled.connect(lambda *_: self._renumber())
 
         lay = QVBoxLayout(self)
         lay.addLayout(top)
@@ -320,13 +363,25 @@ class DimensionEditor(QWidget):
         seq.setStyleSheet("color: gray")
         lay.addWidget(seq)
         lay.addWidget(self.hooks["pre_sweep"])
-        lay.addWidget(self.sweep_box, 3)
+        lay.addWidget(self.sweep_box)
         lay.addWidget(self.hooks["post_sweep"])
         lay.addLayout(pre_row)
+        lay.addWidget(self.inner_mid)
         lay.addWidget(self.hooks["pre_record"])
-        lay.addWidget(self.rec_box, 2)
+        lay.addWidget(self.rec_box)
         lay.addWidget(self.hooks["post_record"])
         lay.addLayout(post_row)
+        lay.addWidget(self.inner_end)
+        lay.addStretch(1)
+        self._renumber()
+
+    def set_inner(self, text: str) -> None:
+        """What the next inner dimension is ("" = this one is the innermost)."""
+        self.inner_text = text
+        self.after.setEnabled(bool(text) and not getattr(self, "_ro", False))
+        self.after.setToolTip("record this dimension's channels after the inner dimensions "
+                              "have run instead of before" if text else
+                              "the innermost dimension has no inner dimensions")
         self._renumber()
 
     def _hook_toggled(self, name: str, on: bool) -> None:
@@ -335,13 +390,23 @@ class DimensionEditor(QWidget):
 
     def _renumber(self) -> None:
         """Step numbers follow what is shown."""
+        after = self.after.isChecked() and bool(self.inner_text)
+        self.inner_mid.setVisible(after)
+        self.inner_end.setVisible(bool(self.inner_text) and not after)
         steps = [("pre_sweep", None), (None, self.sweep_box), ("post_sweep", None),
-                 (None, self.pre_label), ("pre_record", None), (None, self.rec_box),
-                 ("post_record", None), (None, self.post_label)]
+                 (None, self.pre_label)]
+        if after:
+            steps.append((None, self.inner_mid))
+        steps += [("pre_record", None), (None, self.rec_box), ("post_record", None),
+                  (None, self.post_label)]
+        if self.inner_text and not after:
+            steps.append((None, self.inner_end))
         titles = {id(self.sweep_box): "Set swept channels",
                   id(self.pre_label): "Pre-sample delay",
                   id(self.rec_box): "Record",
-                  id(self.post_label): "Post-sample delay"}
+                  id(self.post_label): "Post-sample delay",
+                  id(self.inner_mid): "Run the %s loop (all its points)" % self.inner_text,
+                  id(self.inner_end): "Run the %s loop (all its points)" % self.inner_text}
         n = 0
         for hook, w in steps:
             if hook is not None:
@@ -408,10 +473,12 @@ class DimensionEditor(QWidget):
             self.hook_checks[name].setChecked(bool(h.get("enabled")))
 
     def set_read_only(self, ro: bool) -> None:
+        self._ro = ro
         for w in (self.points, self.pre, self.post, self.label):
             w.setReadOnly(ro)
-        for w in (self.snake, self.after, *self._row_buttons, *self.hook_checks.values()):
+        for w in (self.snake, *self._row_buttons, *self.hook_checks.values()):
             w.setEnabled(not ro)
+        self.after.setEnabled(not ro and bool(self.inner_text))
         for ed in self.hooks.values():
             ed.set_read_only(ro)
         self.table.set_read_only(ro)
@@ -725,10 +792,14 @@ class SweepEditor(QWidget):
             self.set_read_only(True)
 
     def _relabel(self):
+        texts = []
         for i in range(self.dim_list.count()):
             d = self.dims[i].to_dict() if i < len(self.dims) else {}
             sw = ", ".join(e["channel"] for e in d.get("sweep", [])) or "—"
-            self.dim_list.item(i).setText("Dim %d: %s ×%d" % (i + 1, sw, d.get("points", 0)))
+            texts.append("Dim %d: %s ×%d" % (i + 1, sw, d.get("points", 0)))
+            self.dim_list.item(i).setText(texts[-1])
+        for i, ed in enumerate(self.dims):          # Dim 1 is the innermost
+            ed.set_inner(texts[i - 1] if i > 0 and i - 1 < len(texts) else "")
 
     def add_dimension(self, d: Optional[dict] = None) -> DimensionEditor:
         ed = DimensionEditor()

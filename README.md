@@ -337,8 +337,12 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   composites, manual get/set, save/load setups, *Driver wizard…* for new
   command-based instruments.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
-  file, validate against the backend, queue. **Running sweep** shows the
-  executing definition read-only.
+  file, validate against the backend, queue. Each dimension is laid out in the order
+  of one point (numbered steps: actions, set swept channels, pre-sample delay, record,
+  post-sample delay); an outer dimension also shows where the next inner dimension's
+  loop runs (last, or before recording with *record after inner dims*). The swept
+  channel table and the record list are a few rows tall and scroll. **Running sweep**
+  shows the executing definition read-only.
 * **Queue** – controls (enabled by what the queue can do now), queued items
   (reorder/remove), history (*Rerun selected* queues the same sweep/script again,
   *Open data* opens its file), script editor. *Copy to sweep editor* on a queued or

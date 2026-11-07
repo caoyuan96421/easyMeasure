@@ -786,6 +786,47 @@ def test_allowed_values_and_mode_switch_in_gui(app, gui):
     be.write_channel("smu.mode", "Voltage")
 
 
+def test_dimension_editor_inner_loop_step_and_compact_lists(app, gui):
+    """An outer dimension lists 'Run the Dim k loop' where the engine runs it: last, or
+    before recording with 'record after inner dims'; the innermost has none. The swept
+    channel table and the record list are a few rows tall and scroll."""
+    w, be, _, _ = gui
+    ed = w.editor
+    ed.load_definition({"name": "inner", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "Vg", "start": 0, "stop": 1}], "record": ["I"]},
+        {"points": 3, "sweep": [{"channel": "Vb", "start": 0, "stop": 1}], "record": ["I"]}]})
+    inner, outer = ed.dims
+    assert not inner.inner_mid.isVisibleTo(inner) and not inner.inner_end.isVisibleTo(inner)
+    assert not inner.after.isEnabled()                          # nothing inside the innermost
+    assert outer.after.isEnabled()
+    assert outer.inner_end.isVisibleTo(outer) and not outer.inner_mid.isVisibleTo(outer)
+    assert outer.inner_end.text() == "5. Run the Dim 1: Vg ×5 loop (all its points)"
+    assert outer.post_label.text() == "4. Post-sample delay"
+    outer.after.setChecked(True)                                # record after the inner loop
+    assert outer.inner_mid.isVisibleTo(outer) and not outer.inner_end.isVisibleTo(outer)
+    assert outer.pre_label.text() == "2. Pre-sample delay"
+    assert outer.inner_mid.text().startswith("3. Run the Dim 1")
+    assert outer.rec_box.title() == "4. Record" and outer.post_label.text() == "5. Post-sample delay"
+    lay = outer.layout()
+    widgets = [lay.itemAt(i).widget() for i in range(lay.count())]
+    assert widgets.index(outer.inner_mid) < widgets.index(outer.rec_box) < \
+        widgets.index(outer.inner_end)
+    inner.points.setValue(7)                                    # follows the inner dimension
+    assert "Vg ×7" in outer.inner_mid.text()
+    ed.move_dimension(1) if ed.dim_list.currentRow() == 0 else ed.move_dimension(-1)
+    a, b = ed.dims
+    assert not a.inner_end.isVisibleTo(a) and not a.inner_mid.isVisibleTo(a)
+    assert "Dim 1" in (b.inner_mid.text() + b.inner_end.text())
+    # compact lists with scrolling
+    cur = ed.dims[0]
+    w.left_tabs.setCurrentWidget(w.left_tabs.widget(1))
+    ed.dim_list.setCurrentRow(0)
+    fm_rows = cur.record.maximumHeight() / max(1, cur.record.fontMetrics().height())
+    assert fm_rows < 10 and cur.table.maximumHeight() < 200
+    cur.record.set_names(["ch%d" % k for k in range(30)])
+    assert pump(app, 2, lambda: cur.record.verticalScrollBar().maximum() > 0)   # scrolls
+
+
 def test_dimension_editor_order_hooks_and_queue_controls(app, gui):
     """Dimension editor in point order with optional actions; queue buttons follow the
     queue state; queue items copy back into the sweep / script editor."""
