@@ -47,7 +47,7 @@ class InstrumentDialog(QDialog):
         self.desc.setWordWrap(True)
         self.desc.setStyleSheet("color: gray")
         self.address = QLineEdit(inst["address"] if inst else "NONE")
-        self.address.setPlaceholderText("GPIB0::12::INSTR, COM3, TCP::host::port, SIM::bus, NONE")
+        self.address.setPlaceholderText("GPIB0::12::INSTR, COM3, TCP::host::port, DAQ::Dev1 (NI-DAQmx), SIM::bus, NONE")
         self.options = QPlainTextEdit()
         self.options.setMinimumHeight(160)
         form = QFormLayout(self)
