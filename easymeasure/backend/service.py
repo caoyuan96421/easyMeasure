@@ -63,7 +63,7 @@ class Backend:
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
         "shutdown", "start_tray", "run_action", "remote_status", "remote_start", "remote_stop",
-        "remote_set_user", "remote_remove_user",
+        "remote_set_user", "remote_remove_user", "remote_cert_request", "remote_cert_use",
     )
 
     def __init__(self, settings: Optional[dict] = None, home: Optional[Path] = None,
@@ -750,18 +750,114 @@ class Backend:
             urls = ["https://%s:%s" % (h, port) for h in dict.fromkeys(hosts) if h]
         except Exception:
             pass
+        if cfg.get("acme") and cfg.get("certfile"):
+            d = cfg["acme"]["domain"]
+            urls = ["https://%s%s" % (d, "" if int(port) == 443 else ":%s" % port)] + \
+                [u for u in urls if d not in u]
         return {"enabled": self._remote_want, "running": running, "urls": urls,
                 "pid": self._remote.pid if self._remote_proc_alive() else None,
                 "port": port, "host": cfg["host"],
                 "fingerprint": st.get("fingerprint"), "self_signed": st.get("self_signed"),
+                "cert": self._remote_cert_info(cfg, st if running else {}),
                 "connections": st.get("connections", []) if running else [],
                 "users": users, "config": cfg, "log": str(self.home / "logs" / "remote.log")}
+
+    def _remote_cert_info(self, cfg: dict, st: dict) -> dict:
+        """Which certificate the gateway uses (or will use) and the Let's Encrypt state."""
+        from ..remote import acme
+        from ..remote import config as rconfig
+        from ..remote.tlsutil import cert_info
+        mode = "letsencrypt" if cfg.get("acme") and cfg.get("certfile") else \
+            ("files" if cfg.get("certfile") else "self-signed")
+        path = cfg.get("certfile") or str(rconfig.tls_dir(self.home) / "cert.pem")
+        out = {"mode": mode, "certfile": cfg.get("certfile"), "keyfile": cfg.get("keyfile"),
+               "acme": cfg.get("acme"), "in_use": st.get("cert")}
+        try:
+            info = cert_info(Path(path))
+            out.update(names=info["names"], expires=info["expires"], issuer=info["issuer"])
+        except Exception as exc:
+            out["error"] = "" if mode == "self-signed" else str(exc)
+        a = acme.read_status(self.home)
+        proc = getattr(self, "_acme_proc", None)
+        if a.get("state") == "running" and not (proc is not None and proc.poll() is None) and \
+                time.time() - float(a.get("started", 0)) > 600:
+            a["state"] = "error"                  # the process died without a word
+        out["request"] = a
+        return out
+
+    def remote_cert_request(self, domain: str, email: str = "", agree_tos: bool = False,
+                            staging: bool = False, http_port: int = 80) -> dict:
+        """Get a Let's Encrypt certificate for *domain* in a separate process (progress
+        in ``remote_status()["cert"]["request"]``); the gateway switches to it when done."""
+        import subprocess
+        import sys
+        from ..remote import acme
+        if not agree_tos:
+            raise ChannelError("the Let's Encrypt Subscriber Agreement must be agreed to")
+        try:
+            domain = acme.check_domain(domain)
+        except acme.AcmeError as exc:
+            raise ChannelError(str(exc)) from None
+        proc = getattr(self, "_acme_proc", None)
+        if proc is not None and proc.poll() is None:
+            raise ChannelError("a certificate request is already running")
+        args = [sys.executable, "-m", "easymeasure.remote", "--home", str(self.home),
+                "letsencrypt", domain, "--agree-tos", "--http-port", str(int(http_port))]
+        if email:
+            args += ["--email", str(email)]
+        if staging:
+            args.append("--staging")
+        args += getattr(self, "_acme_extra_args", [])          # tests: another ACME server
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2]) + os.pathsep + \
+            env.get("PYTHONPATH", "")
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
+        acme._write_status(self.home, {"state": "running", "domain": domain, "staging": staging,
+                                       "started": time.time(), "log": [],
+                                       "message": "starting…"})
+        out = open(self.home / "logs" / "acme.out", "ab")
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out, env=env)
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        self._acme_proc = subprocess.Popen(args, **kwargs)
+        out.close()
+        log.info("Let's Encrypt certificate requested for %s%s", domain,
+                 " (staging)" if staging else "")
+        return self.remote_status()
+
+    def remote_cert_use(self, mode: str, certfile: Optional[str] = None,
+                        keyfile: Optional[str] = None) -> dict:
+        """Use the self-signed certificate (``mode="self-signed"``) or certificate files
+        (``"files"``, PEM chain + key); a running gateway switches within seconds."""
+        from ..remote import config as rconfig
+        from ..remote.tlsutil import server_context
+        cfg = rconfig.load(self.home)
+        if mode == "self-signed":
+            cfg.update(certfile=None, keyfile=None, acme=None)
+        elif mode == "files":
+            if not certfile or not keyfile:
+                raise ChannelError("give the certificate (chain) file and its key file")
+            try:
+                server_context(Path(certfile), Path(keyfile))
+            except Exception as exc:
+                raise ChannelError("these files cannot be used: %s" % exc) from None
+            cfg.update(certfile=str(certfile), keyfile=str(keyfile), acme=None)
+        else:
+            raise ChannelError("mode is self-signed or files")
+        rconfig.save(cfg, self.home)
+        log.info("remote access certificate: %s", certfile if mode == "files" else mode)
+        return self.remote_status()
 
     def remote_start(self, port: Optional[int] = None, host: Optional[str] = None,
                      persist: bool = True) -> dict:
         """Start the internet gateway in its own process and keep it running."""
         if port:
             self._remote_args["port"] = int(port)
+            from ..remote import config as rconfig
+            cfg = rconfig.load(self.home)
+            if int(cfg.get("port") or 0) != int(port):
+                cfg["port"] = int(port)                 # remembered for the next start
+                rconfig.save(cfg, self.home)
         if host:
             self._remote_args["host"] = str(host)
         self._remote_want = True

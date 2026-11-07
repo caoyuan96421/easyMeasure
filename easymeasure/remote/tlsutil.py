@@ -4,7 +4,8 @@ Without a configured certificate a self-signed ECDSA P-256 certificate is create
 on first start (``<home>/remote/tls``).  Browsers will warn about it once; Python
 clients pin its SHA-256 fingerprint (``python -m easymeasure.remote cert``).  For
 a browser without warnings, configure a real certificate (e.g. Let's Encrypt)
-with ``certfile`` / ``keyfile`` in the remote config.
+with ``certfile`` / ``keyfile`` in the remote config, or let :mod:`.acme` get one
+from Let's Encrypt.  A running gateway picks up changed certificate files.
 
 Only TLS 1.2+ with forward-secret AEAD ciphers is accepted; TLS compression and
 renegotiation are disabled.
@@ -113,8 +114,11 @@ def server_context(cert: Path, key: Path) -> ssl.SSLContext:
 
 
 def fingerprint(cert: Path) -> str:
-    """SHA-256 fingerprint of the certificate, ``AB:CD:...``."""
-    der = ssl.PEM_cert_to_DER_cert(Path(cert).read_text())
+    """SHA-256 fingerprint of the certificate (the first of a chain), ``AB:CD:...``."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    der = x509.load_pem_x509_certificate(Path(cert).read_bytes()).public_bytes(
+        serialization.Encoding.DER)
     h = hashlib.sha256(der).hexdigest().upper()
     return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
 
@@ -128,5 +132,6 @@ def cert_info(cert: Path) -> dict:
     except Exception:
         names = []
     end = getattr(c, "not_valid_after_utc", None) or c.not_valid_after
-    return {"subject": c.subject.rfc4514_string(), "names": names,
+    return {"subject": c.subject.rfc4514_string(), "issuer": c.issuer.rfc4514_string(),
+            "names": names,
             "expires": end.isoformat(), "fingerprint": fingerprint(cert)}

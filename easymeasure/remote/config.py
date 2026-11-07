@@ -15,6 +15,9 @@ DEFAULTS = {
     "certfile": None,             # PEM certificate chain; None = self-signed (auto-generated)
     "keyfile": None,
     "cert_names": [],             # extra host names / IPs for the self-signed certificate
+    "acme": None,                 # Let's Encrypt: {domain, email, staging, directory, http_port}
+                                  # (set by 'letsencrypt'; the gateway renews the certificate)
+    "cert_check_s": 30.0,         # how often the gateway looks for a new certificate file
     "session_idle_hours": 12.0,   # a session with no connection for this long expires
     "session_max_days": 7.0,      # absolute session lifetime (log in again after that)
     "max_sessions_per_user": 20,

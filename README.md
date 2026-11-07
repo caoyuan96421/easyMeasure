@@ -687,6 +687,36 @@ c.call("read_channel", name="Vg")
 c.subscribe(["monitor"]); c.on_event = lambda kind, data: print(kind, data)
 ```
 
+### Certificate (Let's Encrypt)
+
+With a DNS name pointing to the backend computer (e.g. `lab.example.org`) the gateway
+can serve a real certificate, so browsers connect to `https://lab.example.org` without
+a warning. In **Backend → Remote access… → Certificate**:
+
+1. Set the gateway **Port** to 443 (the standard HTTPS port: no port number in the
+   address); remote access remembers it.
+2. On Windows, **Open Windows firewall…** allows incoming TCP 80 and the gateway port
+   (one rule, *easyMeasure remote access*; Windows asks for administrator rights). The
+   router must forward both ports to this computer.
+3. Enter the **domain name** (and an e-mail address for Let's Encrypt's expiry
+   warnings), agree to the Let's Encrypt Subscriber Agreement and press **Get Let's
+   Encrypt certificate**. Let's Encrypt checks that the name points here by fetching a
+   token from `http://<domain>/.well-known/acme-challenge/…`, which easyMeasure answers
+   on port 80 for the few seconds of the check (nothing else may use port 80 then: on
+   Windows IIS or the *World Wide Web Publishing Service*). Progress and any error
+   (e.g. "nothing reached port 80 of this computer") show in the dialog. The *test
+   certificate* box uses Let's Encrypt's staging server first, without its rate limits.
+
+The certificate (`<home>/remote/tls/acme/<domain>/fullchain.pem` + `privkey.pem`) is
+used at once — a running gateway picks up changed certificate files within 30 s,
+without dropping connections — and renewed automatically 30 days before it expires
+(the gateway checks hourly while it runs). **Use certificate files…** takes any other
+certificate (PEM chain + key, e.g. from your institution); **Use self-signed** goes
+back. Command line: `python -m easymeasure.remote letsencrypt lab.example.org
+--email me@example.org --agree-tos [--staging] [--http-port 80]`, and `letsencrypt
+--renew [--force]`. The client is built in (RFC 8555, `cryptography` only); its
+account key is kept in `<home>/remote/tls/acme/`.
+
 ### Roles
 
 | role | may |
@@ -706,8 +736,8 @@ account management are only possible on the backend computer.
 * **TLS only** (1.2+, forward-secret AEAD ciphers, no compression or renegotiation).
   Without a configured certificate a self-signed one is generated; browsers warn once
   (compare the SHA-256 fingerprint shown in the dialog / `python -m easymeasure.remote
-  cert`), Python clients pin it. For no browser warning, set `certfile` / `keyfile`
-  (e.g. Let's Encrypt): `python -m easymeasure.remote config certfile=… keyfile=…`.
+  cert`), Python clients pin it. For no browser warning use a real certificate (see
+  [Certificate](#certificate-lets-encrypt)).
 * **Accounts** with scrypt-hashed passwords (≥ 10 characters). Failed logins lock out
   the address (5 failures) and the account (10, from anywhere) for 30 s, doubling up
   to 1 h; error messages never reveal whether a user exists.

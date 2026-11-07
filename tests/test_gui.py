@@ -316,6 +316,55 @@ def be_idle(app, demo, ctl):
     return pump(app, 5, lambda: ctl.state == "idle" and ctl.run is None)
 
 
+def test_remote_dialog_certificate(app, gui, monkeypatch):
+    """Backend → Remote access: get a Let's Encrypt certificate with one button (against a
+    stand-in ACME server), open the Windows firewall, go back to self-signed."""
+    import socket
+    from PySide6.QtWidgets import QMessageBox
+    from acme_fake import FakeAcme
+    from easymeasure.frontend.remote_dialog import RemoteAccessDialog
+    w, be, _, _ = gui
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port80 = s.getsockname()[1]
+    s.close()
+    ca = FakeAcme(port80)
+    be._acme_extra_args = ["--directory", ca.directory]
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    dlg = RemoteAccessDialog(w.conn, w)
+    dlg.show()
+    try:
+        assert pump(app, 5, lambda: "self-signed" in dlg.cert_state.text())
+        dlg.le_domain.setText("lab.example.org")
+        dlg.le_http.setValue(port80)
+        dlg.le_get.click()                                  # not agreed yet: nothing happens
+        assert warned and "Subscriber Agreement" in warned[-1]
+        dlg.le_agree.setChecked(True)
+        dlg.le_get.click()
+        assert pump(app, 60, lambda: "Let's Encrypt" in dlg.cert_state.text()), \
+            dlg.cert_progress.text()
+        assert "lab.example.org" in dlg.cert_state.text() and "✔" in dlg.cert_progress.text()
+        assert dlg.cert_log.isVisible() and "verified" in dlg.cert_log.toPlainText()
+        assert dlg.le_get.isEnabled()
+        # Windows firewall (the elevation itself is Windows-only)
+        runs = []
+        dlg._run_elevated = lambda prog, params: runs.append((prog, params)) or True
+        dlg.port.setValue(443)
+        dlg._open_firewall()
+        assert runs[0][0] == "cmd.exe" and "localport=80,443" in runs[0][1]
+        assert "allowed" in dlg.msg.text()
+        dlg._run_elevated = lambda prog, params: False
+        dlg._open_firewall()
+        assert "declined" in dlg.msg.text()
+        dlg.use_self.click()
+        assert pump(app, 5, lambda: "self-signed" in dlg.cert_state.text())
+    finally:
+        dlg.close()
+        ca.close()
+
+
 def test_instrument_dialog_address_list(app, gui, monkeypatch):
     """Add instrument: the address list shows the ports the driver accepts, the
     identified matches first (and picked), the driver's suggestions last; Refresh

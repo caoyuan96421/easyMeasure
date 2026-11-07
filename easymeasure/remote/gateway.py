@@ -845,9 +845,93 @@ class Gateway:
         return ws
 
     # -- lifecycle -----------------------------------------------------------------
+    # -- certificate: reload when the files change, renew Let's Encrypt in time -----------
+    @staticmethod
+    def _cert_signature(cert, key) -> tuple:
+        out = [str(cert), str(key)]
+        for f in (cert, key):
+            try:
+                st = os.stat(f)
+                out += [st.st_mtime_ns, st.st_size]
+            except OSError:
+                out += [None, None]
+        return tuple(out)
+
+    def check_certificate(self) -> bool:
+        """Use a new certificate when the configured files (or their contents) changed;
+        the running listener keeps serving, new connections get the new one."""
+        fresh = rconfig.load(self.home)
+        for k in ("certfile", "keyfile", "acme", "cert_names"):
+            self.cfg[k] = fresh.get(k)
+        try:
+            cert, key, self_signed = ensure_certificate(
+                rconfig.tls_dir(self.home), self.cfg.get("certfile"), self.cfg.get("keyfile"),
+                self.cfg.get("cert_names") or ())
+        except Exception as exc:
+            log.error("certificate configuration: %s", exc)
+            return False
+        sig = self._cert_signature(cert, key)
+        if sig == self._cert_sig:
+            return False
+        try:
+            server_context(cert, key)            # complete and matching? (else keep the old)
+            self._ctx.load_cert_chain(str(cert), str(key))
+        except Exception as exc:
+            if sig != getattr(self, "_cert_bad", None):
+                log.error("new certificate %s not used: %s", cert, exc)
+            self._cert_bad = sig
+            return False
+        self.cert, self.key, self.self_signed, self._cert_sig = cert, key, self_signed, sig
+        info = cert_info(cert)
+        self.fingerprint, self.cert_expires = info["fingerprint"], info["expires"]
+        log.info("certificate %s now in use (%s, valid until %s, SHA-256 %s)", cert,
+                 ", ".join(info["names"][:4]), info["expires"], self.fingerprint)
+        self._write_status()
+        return True
+
+    def _renew_if_due(self) -> None:
+        from . import acme
+        a = self.cfg.get("acme")
+        if not a or not self.cfg.get("certfile") or not acme.due(self.cfg["certfile"]):
+            return
+        if self._renew_proc is not None and self._renew_proc.poll() is None:
+            return
+        if time.time() - self._renew_tried < 6 * 3600:      # a failed attempt: retry later
+            return
+        import subprocess
+        import sys
+        self._renew_tried = time.time()
+        log.info("Let's Encrypt certificate for %s expires within %d days: renewing",
+                 a.get("domain"), acme.RENEW_DAYS)
+        (self.home / "logs").mkdir(parents=True, exist_ok=True)
+        out = open(self.home / "logs" / "acme.out", "ab")
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=out, stderr=out)
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        self._renew_proc = subprocess.Popen(
+            [sys.executable, "-m", "easymeasure.remote", "--home", str(self.home),
+             "letsencrypt", "--renew"], **kwargs)
+        out.close()
+
+    async def _cert_watch(self) -> None:
+        last_renew_check = 0.0
+        while True:
+            await asyncio.sleep(max(0.2, float(self.cfg.get("cert_check_s") or 30.0)))
+            try:
+                self.check_certificate()
+                if time.time() - last_renew_check > 3600:
+                    last_renew_check = time.time()
+                    self._renew_if_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("certificate check: %s", exc)
+
     def _write_status(self) -> None:
         st = {"pid": os.getpid(), "port": self.port, "host": self.cfg["host"],
               "started": self.started, "self_signed": self.self_signed,
+              "cert": str(self.cert) if self.cert else None,
+              "cert_expires": getattr(self, "cert_expires", None),
               "fingerprint": getattr(self, "fingerprint", None),
               "connections": [{"user": b.session.user, "role": b.session.role, "ip": b.ip,
                                "since": b.started} for b in list(self.bridges)],
@@ -866,7 +950,12 @@ class Gateway:
             rconfig.tls_dir(self.home), self.cfg.get("certfile"), self.cfg.get("keyfile"),
             self.cfg.get("cert_names") or ())
         ctx = server_context(self.cert, self.key)
+        self._ctx = ctx
+        self._cert_sig = self._cert_signature(self.cert, self.key)
+        self._renew_proc = None
+        self._renew_tried = 0.0
         self.fingerprint = cert_info(self.cert)["fingerprint"]
+        self.cert_expires = cert_info(self.cert)["expires"]
         self._load_static()
         app = web.Application(middlewares=[self._mw], client_max_size=64 * 1024)
         app.on_response_prepare.append(self._on_prepare)
@@ -901,7 +990,8 @@ class Gateway:
         self._watchdog.start()
         self._tasks = [asyncio.ensure_future(self._control_link()),
                        asyncio.ensure_future(self._sweeper()),
-                       asyncio.ensure_future(self._watchdog.beat())]
+                       asyncio.ensure_future(self._watchdog.beat()),
+                       asyncio.ensure_future(self._cert_watch())]
         self._write_status()
         log.info("gateway listening on https://%s:%d (%s certificate, SHA-256 %s); %d user(s)",
                  self.cfg["host"], self.port, "self-signed" if self.self_signed else "configured",

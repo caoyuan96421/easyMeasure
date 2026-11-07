@@ -51,7 +51,7 @@ ADMIN = {
 }
 #: never over the network, whatever the role
 LOCAL_ONLY = {"start_tray", "remote_status", "remote_start", "remote_stop", "remote_set_user",
-              "remote_remove_user"}
+              "remote_remove_user", "remote_cert_request", "remote_cert_use"}
 
 MIN_MONITOR_INTERVAL = 0.1
 

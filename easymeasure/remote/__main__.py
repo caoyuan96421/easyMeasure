@@ -69,6 +69,19 @@ def main(argv=None) -> int:
     p = sub.add_parser("cert")
     p.add_argument("--regenerate", action="store_true",
                    help="make a new self-signed certificate (clients must re-pin it)")
+    p = sub.add_parser("letsencrypt", help="get (or renew) a Let's Encrypt certificate")
+    p.add_argument("domain", nargs="?", help="DNS name of this computer, e.g. lab.example.org")
+    p.add_argument("--email", default="", help="for expiry warnings from Let's Encrypt")
+    p.add_argument("--agree-tos", action="store_true",
+                   help="agree to the Let's Encrypt Subscriber Agreement (%s)" % "letsencrypt.org/repository")
+    p.add_argument("--staging", action="store_true",
+                   help="a test certificate from Let's Encrypt's staging server (not trusted)")
+    p.add_argument("--http-port", type=int, default=80,
+                   help="port for the HTTP-01 check (80 unless a router forwards 80 to another)")
+    p.add_argument("--directory", default=None, help="ACME directory URL (other CAs)")
+    p.add_argument("--renew", action="store_true",
+                   help="renew the configured certificate if it expires within 30 days")
+    p.add_argument("--force", action="store_true", help="with --renew: renew now")
     sub.add_parser("status")
     p = sub.add_parser("config")
     p.add_argument("settings", nargs="*", help="key=value (JSON values)")
@@ -130,6 +143,22 @@ def main(argv=None) -> int:
             print("SHA-256:     %s" % info["fingerprint"])
             if args.regenerate:
                 print("restart the gateway (or the backend) to use the new certificate")
+        elif args.cmd == "letsencrypt":
+            from . import acme
+            if args.renew:
+                st = acme.renew_if_due(home, force=args.force)
+                if st is None:
+                    print("nothing to renew (no Let's Encrypt certificate configured, or it is "
+                          "valid for more than %d days)" % acme.RENEW_DAYS)
+                    return 0
+            else:
+                if not args.domain:
+                    raise SystemExit("give the domain name, e.g. lab.example.org")
+                st = acme.obtain(home, args.domain, args.email, agree_tos=args.agree_tos,
+                                 staging=args.staging, directory=args.directory,
+                                 http_port=args.http_port)
+            print("\n".join(st.get("log", [])))
+            return 0 if st.get("state") == "ok" else 1
         elif args.cmd == "status":
             try:
                 st = json.loads(rconfig.status_path(home).read_text())
