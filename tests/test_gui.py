@@ -434,6 +434,34 @@ def test_instrument_dialog_address_list(app, gui, monkeypatch):
     InstrumentDialog.scan_cache = None
 
 
+def test_ui_scale_not_stuck_on_an_inherited_value(app, monkeypatch):
+    """A GUI (or tray) started by another easyMeasure process inherits its QT_SCALE_FACTOR:
+    the current setting must still win; only a QT_SCALE_FACTOR the user set is kept."""
+    from easymeasure.frontend import display
+    st = display.settings()
+    old = st.value("ui_scale", 100)
+    try:
+        # inherited from a process that started with 150 %; the setting is now 125 %
+        monkeypatch.setenv("QT_SCALE_FACTOR", "1.5")
+        monkeypatch.setenv(display.SCALE_MARK, "1.5")
+        st.setValue("ui_scale", 125)
+        display.prepare_environment()
+        assert os.environ["QT_SCALE_FACTOR"] == "1.25" == os.environ[display.SCALE_MARK]
+        st.setValue("ui_scale", 100)                     # back to 100 %: no factor at all
+        display.prepare_environment()
+        assert "QT_SCALE_FACTOR" not in os.environ and display.SCALE_MARK not in os.environ
+        st.setValue("ui_scale", 150)
+        display.prepare_environment()
+        assert os.environ["QT_SCALE_FACTOR"] == "1.5"
+        # the user's own (no mark) is respected
+        monkeypatch.setenv("QT_SCALE_FACTOR", "2")
+        monkeypatch.delenv(display.SCALE_MARK)
+        display.prepare_environment()
+        assert os.environ["QT_SCALE_FACTOR"] == "2" and display.SCALE_MARK not in os.environ
+    finally:
+        st.setValue("ui_scale", old)
+
+
 def test_monitor_tile_shows_long_names(app, gui):
     """A long channel name uses the width of its tile and is cut with "…" only when the
     tile is too narrow (full name in the tooltip)."""

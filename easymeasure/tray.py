@@ -346,6 +346,8 @@ def main(argv=None) -> int:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("easyMeasure.Backend")
         except Exception:
             pass
+    from .frontend.display import prepare_environment
+    prepare_environment()              # the current UI scale (not one inherited from a parent)
     app = QApplication(sys.argv[:1])
     app.setApplicationName("easyMeasure backend")
     app.setApplicationDisplayName("easyMeasure backend")

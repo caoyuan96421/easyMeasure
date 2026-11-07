@@ -17,6 +17,9 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 ORG, APP = "easyMeasure", "gui"
+#: marks a QT_SCALE_FACTOR that easyMeasure set (child processes - backend, tray, the
+#: GUI opened from the tray - inherit it; it must not count as the user's own)
+SCALE_MARK = "EASYMEASURE_QT_SCALE"
 _default_pt = None
 _scaled = weakref.WeakKeyDictionary()
 
@@ -49,9 +52,16 @@ def prepare_environment() -> None:
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     except Exception:
         pass
+    if "QT_SCALE_FACTOR" in os.environ and SCALE_MARK not in os.environ:
+        return                          # set by the user outside easyMeasure: theirs wins
     pct = ui_scale_percent()
-    if pct != 100 and "QT_SCALE_FACTOR" not in os.environ:
-        os.environ["QT_SCALE_FACTOR"] = "%g" % (max(25, min(400, pct)) / 100.0)
+    if pct != 100:
+        val = "%g" % (max(25, min(400, pct)) / 100.0)
+        os.environ["QT_SCALE_FACTOR"] = val
+        os.environ[SCALE_MARK] = val
+    else:                               # inherited from an earlier setting: drop it
+        os.environ.pop("QT_SCALE_FACTOR", None)
+        os.environ.pop(SCALE_MARK, None)
 
 
 def current_font_pt() -> float:
