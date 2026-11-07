@@ -34,12 +34,14 @@ that level (reading it then returns the driven level); the action
 ``release_digital`` makes all of them inputs (high impedance) again.  A counter
 reserves its source PFI line, which then cannot be used as a digital line.
 
-Settings (configuration channels): ``model``, ``rate`` (samples/s per input;
-multiplexed models: all scanned inputs together at most the aggregate rate),
+Settings (configuration channels): ``model``, ``rate`` (samples/s per input:
+a single input ``aiK`` is acquired alone, up to the single-input rate; the ``ai``
+vector acquires all scanned inputs, which on multiplexed models share the
+aggregate rate),
 ``samples`` (per reading, averaged; 1 = one on-demand conversion, fastest),
 ``terminal`` (RSE / NRSE / DIFF), ``ai_range`` and ``ao_range`` (those of the
-model).  Option ``ai_channels`` (e.g. ``"0-3"``) limits the scanned and exposed
-inputs, which allows higher rates on the multiplexed models.
+model).  Option ``ai_channels`` (e.g. ``"0-3"``) limits the exposed inputs and those of
+the ``ai`` vector (which then allows a higher rate for it).
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ import numpy as np
 from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
 from ..backend.logsys import get_logger
 from ..common.errors import ChannelError
+from ._nidaq_ai import DaqAnalogInput
 from ._nidaq_models import MODELS, X_COUNTER_SOURCE_PFI, X_SERIES, DaqModel, fmt_range, lookup
 from .ni6211 import _parse_list
 
@@ -75,7 +78,7 @@ def _rate_text(m: DaqModel) -> str:
     return "%.4g kS/s for all scanned inputs together" % (m.ai_aggregate / 1e3)
 
 
-class NI63xx(Instrument):
+class NI63xx(DaqAnalogInput, Instrument):
     DESCRIPTION = ("NI USB-63xx X Series DAQ (USB-6341 … 6366, NI-DAQmx): analog / digital "
                    "channels follow the model")
     INTERFACES = ("daq",)
@@ -151,7 +154,7 @@ class NI63xx(Instrument):
         self.model_choice = choice
         self._settings_from_options()
         self._fit_settings()
-        self._check_rate(self.rate)
+        self._check_rate(self.rate, 1)
 
     def disconnect(self):
         self._close_all()
@@ -167,6 +170,7 @@ class NI63xx(Instrument):
             except Exception:
                 pass
         self.tasks = {}
+        self._ai_active = None
 
     def _close(self, key: str) -> None:
         t = self.tasks.pop(key, None)
@@ -225,10 +229,8 @@ class NI63xx(Instrument):
         self.ao_last, self.dout = {}, {}
         self.model, self.model_choice = new, choice
         self._fit_settings()
-        try:
-            self._check_rate(self.rate)
-        except ChannelError:
-            self.rate = self._max_rate()
+        if self.rate > self._ai_limit(1):
+            self.rate = self._ai_limit(1)
             log.info("%s: rate lowered to %.6g S/s for the %s" % (self.name, self.rate, new.product))
 
     # -- channel list -----------------------------------------------------------------------
@@ -277,8 +279,10 @@ class NI63xx(Instrument):
         ch += [
             ChannelSpec("model", "rw", "str", (), "", "device model: sets the channels; auto = "
                         "what the device reports", config=True, allowed=MODEL_CHOICES),
-            ChannelSpec("rate", "rw", "float", (), "S/s", "sample rate per analog input (%s)"
-                        % _rate_text(m), config=True),
+            ChannelSpec("rate", "rw", "float", (), "S/s", "sample rate per analog input: one "
+                        "input (aiK) up to %.4g kS/s; the ai vector (%d inputs) up to %.4g kS/s "
+                        "each (%s)" % (self._ai_limit(1) / 1e3, len(ai), self._ai_limit(len(ai)) / 1e3,
+                                       _rate_text(m)), config=True),
             ChannelSpec("samples", "rw", "float", (), "", "samples averaged per analog reading "
                         "(1 = single conversion)", config=True),
             ChannelSpec("terminal", "rw", "str", (), "", "analog input terminal configuration",
@@ -294,60 +298,18 @@ class NI63xx(Instrument):
         return list(self.ACTIONS)
 
     # -- analog input ---------------------------------------------------------------------
-    def _max_rate(self) -> float:
+    def _ai_limit(self, n: int) -> float:
         m = self.model
-        n = max(1, len(self.ai_list()))
-        if m.simultaneous or n == 1:
+        if m.simultaneous or n <= 1:
             return m.ai_single
         return m.ai_aggregate / n
 
-    def _check_rate(self, rate: float) -> None:
-        n = max(1, len(self.ai_list()))
-        top = self._max_rate()
-        if not rate > 0 or rate > top * 1.0000001:
-            raise ChannelError("rate %.6g S/s × %d inputs is too fast for the %s (%s; max %.6g "
-                               "S/s per input now%s)" % (
-                                   rate, n, self.model.product, _rate_text(self.model), top,
-                                   "" if self.model.simultaneous else
-                                   "; fewer inputs: option ai_channels"))
-
-    def _ai_task(self):
-        t = self.tasks.get("ai")
-        if t is not None:
-            return t
-        C = self.C
-        v = float(self.ai_range.strip("±V "))
-        t = self.daq.Task()
-        try:
-            chans = ",".join("%s/ai%d" % (self.device, k) for k in self.ai_list())
-            t.ai_channels.add_ai_voltage_chan(chans, terminal_config=getattr(
-                C.TerminalConfiguration, self.terminal), min_val=-v, max_val=v)
-            if self.samples > 1:
-                t.timing.cfg_samp_clk_timing(self.rate, sample_mode=C.AcquisitionType.FINITE,
-                                             samps_per_chan=self.samples)
-            t.control(C.TaskMode.TASK_COMMIT)       # fast start/stop for every reading
-        except Exception:
-            t.close()
-            raise
-        self.tasks["ai"] = t
-        return t
+    def _ai_device_text(self) -> str:
+        return "%s: %s" % (self.model.product, _rate_text(self.model))
 
     def scan(self) -> np.ndarray:
         """One acquisition of every scanned input; returns the per-input means."""
-        n_ch = len(self.ai_list())
-        if not n_ch:
-            raise ChannelError("%s: no analog input is scanned" % self.name)
-        t = self._ai_task()
-        if self.samples > 1:
-            t.start()
-            try:
-                data = t.read(number_of_samples_per_channel=self.samples,
-                              timeout=2.0 + self.samples / self.rate)
-            finally:
-                t.stop()
-        else:
-            data = t.read()
-        return np.asarray(data, dtype=float).reshape(n_ch, -1).mean(axis=1)
+        return self.acquire(self.ai_list())
 
     # -- outputs ------------------------------------------------------------------------
     def _task(self, key: str, make):
@@ -373,7 +335,7 @@ class NI63xx(Instrument):
     def _ao_readback(self, k: int) -> float:
         """An output nobody has written since connect: measured on the internal
         ``_aoK_vs_aognd`` channel (the AI task makes way for it)."""
-        self._close("ai")
+        self._ai_release()
         t = self.daq.Task()
         try:
             t.ai_channels.add_ai_voltage_chan("%s/_ao%d_vs_aognd" % (self.device, k),
@@ -477,7 +439,7 @@ class NI63xx(Instrument):
                 if k not in ai:
                     raise ChannelError("ai%d is not scanned (%s, %s)" % (k, self.model.product,
                                                                          self.terminal))
-                return float(self.scan()[ai.index(k)])
+                return float(self.acquire([k])[0])
             if kind == "ao" and k < self.model.ao:
                 if k not in self.ao_last:
                     v = self._ao_readback(k)
@@ -516,7 +478,7 @@ class NI63xx(Instrument):
             self._set_model(str(value))
             return
         if channel == "rate":
-            self._check_rate(float(value))
+            self._check_rate(float(value), 1)
             self.rate = float(value)
         elif channel == "samples":
             if value != int(value) or not 1 <= value <= 1_000_000:
@@ -526,13 +488,7 @@ class NI63xx(Instrument):
             if value not in self.model.terminals():
                 raise ChannelError("the %s supports %s" % (self.model.product,
                                                           " / ".join(self.model.terminals())))
-            old = self.terminal
             self.terminal = value
-            try:
-                self._check_rate(self.rate)
-            except ChannelError:
-                self.terminal = old
-                raise
         elif channel == "ai_range":
             self.ai_range = value
         elif channel == "ao_range":
@@ -547,7 +503,7 @@ class NI63xx(Instrument):
             return
         else:
             raise ChannelError("%s: channel %s is not writable" % (self.name, channel))
-        self._close("ai")                       # rebuilt with the new settings
+        self._close_ai()                        # rebuilt with the new settings
 
 
 NI63xx.CHANNELS = NI63xx("static", "DAQ::Dev1", {"model": SIM_DEFAULT}).get_channels()

@@ -440,10 +440,12 @@ Overload (`9.9E37`) reads as ±inf.
 **NI USB-6211.** Needs NI's NI-DAQmx driver runtime (the `nidaqmx` Python package
 comes with easyMeasure); address `DAQ::Dev1` (the
 NI MAX name). Every analog reading is the mean of `samples` samples at `rate` per
-input; all scanned inputs together are limited to 250 kS/s (option `ai_channels`,
-e.g. `"0-3"`, scans fewer inputs for higher rates). `samples = 1` is a single
-on-demand conversion (sub-millisecond). `ai` returns all inputs of one scan as a
-vector.
+input, and acquires only the inputs it returns: `ai3` alone (up to 250 kS/s), the
+vector `ai` all inputs of one scan, which share the 250 kS/s (option `ai_channels`,
+e.g. `"0-3"`, puts fewer inputs in it; a vector reading too fast for its inputs is
+refused, the single inputs still work). `samples = 1` is a single on-demand
+conversion (sub-millisecond). The same holds for `ni63xx`, with the limits of the
+model.
 
 **NI USB-63xx (X Series).** One driver for the ten USB X Series models (BNC, screw
 terminal, mass termination and OEM variants). The configuration item **`model`**

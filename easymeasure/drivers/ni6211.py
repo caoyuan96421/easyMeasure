@@ -19,11 +19,12 @@ Channels
 ``ctr0``, ``ctr1``        edge counters (rising edges since connect / reset)
 ==================  ====  ==================================================
 
-Settings: ``rate`` (samples/s per channel; all scanned channels together at most
+Settings: ``rate`` (samples/s per input: a single input ``aiK`` is acquired alone,
+up to 250 kS/s; the ``ai`` vector acquires all scanned inputs, together at most
 250 kS/s), ``samples`` (per reading, averaged; 1 = a single on-demand
 conversion, fastest), ``terminal`` (RSE / NRSE / DIFF) and ``ai_range``
 (±10 / ±5 / ±1 / ±0.2 V).  Option ``ai_channels`` (e.g. ``"0-3"``) limits the
-scanned (and exposed) analog inputs, which allows higher rates.
+exposed inputs and those of the ``ai`` vector (a higher rate for it).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from typing import Dict, List
 import numpy as np
 
 from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
+from ._nidaq_ai import DaqAnalogInput
 from ..common.errors import ChannelError
 
 AI_RANGES = ["±10 V", "±5 V", "±1 V", "±0.2 V"]
@@ -60,7 +62,7 @@ def _parse_list(spec: str, hi: int) -> List[int]:
     return sorted(set(out))
 
 
-class NI6211(Instrument):
+class NI6211(DaqAnalogInput, Instrument):
     DESCRIPTION = "NI USB-6211 DAQ: 16 AI, 2 AO, 4 DI, 4 DO, 2 counters (NI-DAQmx)"
     INTERFACES = ("daq",)
 
@@ -115,7 +117,7 @@ class NI6211(Instrument):
         if self.terminal not in TERMINALS or self.ai_range not in AI_RANGES:
             raise ChannelError("options terminal / ai_range must be one of %s / %s"
                                % (TERMINALS, AI_RANGES))
-        self._check_rate(self.rate)
+        self._check_rate(self.rate, 1)
         self._start_counters()
 
     def disconnect(self):
@@ -132,6 +134,7 @@ class NI6211(Instrument):
             except Exception:
                 pass
         self.tasks = {}
+        self._ai_active = None
 
     def _close(self, key: str) -> None:
         t = self.tasks.pop(key, None)
@@ -167,8 +170,9 @@ class NI6211(Instrument):
                            "counter %d source (PFI) since connect / reset_counters" % k)
                for k in (0, 1)]
         ch += [
-            ChannelSpec("rate", "rw", "float", (), "S/s", "sample rate per analog input (all "
-                        "scanned inputs together ≤ 250 kS/s)", config=True),
+            ChannelSpec("rate", "rw", "float", (), "S/s", "sample rate per analog input: one "
+                        "input (aiK) up to 250 kS/s; the ai vector (%d inputs) up to %.4g kS/s "
+                        "each" % (len(ai), self._ai_limit(len(ai)) / 1e3), config=True),
             ChannelSpec("samples", "rw", "float", (), "", "samples averaged per analog reading "
                         "(1 = single conversion)", config=True),
             ChannelSpec("terminal", "rw", "str", (), "", "analog input terminal configuration",
@@ -179,49 +183,15 @@ class NI6211(Instrument):
         return ch
 
     # -- analog input ---------------------------------------------------------------------
-    def _check_rate(self, rate: float) -> None:
-        n = max(1, len(self.ai_list()))
-        if not rate > 0 or rate * n > MAX_AGGREGATE:
-            raise ChannelError("rate %.6g S/s × %d inputs exceeds the 250 kS/s of the USB-6211 "
-                               "(max %.6g S/s per input; fewer inputs: option ai_channels)"
-                               % (rate, n, MAX_AGGREGATE / n))
+    def _ai_limit(self, n: int) -> float:
+        return MAX_AGGREGATE / max(1, n)          # one converter, shared by the scanned inputs
 
-    def _ai_task(self):
-        t = self.tasks.get("ai")
-        if t is not None:
-            return t
-        C = self.C
-        v = float(self.ai_range.strip("±V "))
-        t = self.daq.Task()
-        try:
-            chans = ",".join("%s/ai%d" % (self.device, k) for k in self.ai_list())
-            t.ai_channels.add_ai_voltage_chan(chans, terminal_config=getattr(
-                C.TerminalConfiguration, self.terminal), min_val=-v, max_val=v)
-            if self.samples > 1:
-                t.timing.cfg_samp_clk_timing(self.rate, sample_mode=C.AcquisitionType.FINITE,
-                                             samps_per_chan=self.samples)
-            t.control(C.TaskMode.TASK_COMMIT)       # fast start/stop for every reading
-        except Exception:
-            t.close()
-            raise
-        self.tasks["ai"] = t
-        return t
+    def _ai_device_text(self) -> str:
+        return "USB-6211: 250 kS/s for all inputs of one acquisition together"
 
     def scan(self) -> np.ndarray:
         """One acquisition of every scanned input; returns the per-input means."""
-        t = self._ai_task()
-        n_ch = len(self.ai_list())
-        if self.samples > 1:
-            t.start()
-            try:
-                data = t.read(number_of_samples_per_channel=self.samples,
-                              timeout=2.0 + self.samples / self.rate)
-            finally:
-                t.stop()
-        else:
-            data = t.read()
-        arr = np.asarray(data, dtype=float).reshape(n_ch, -1)
-        return arr.mean(axis=1)
+        return self.acquire(self.ai_list())
 
     # -- outputs ------------------------------------------------------------------------
     def _out_task(self, key: str, make):
@@ -251,7 +221,7 @@ class NI6211(Instrument):
     def _ao_readback(self, k: int) -> float:
         """The value of an output nobody has written since connect: measured on the
         card's internal ``_aoK_vs_aognd`` channel (the AI task must make way)."""
-        self._close("ai")
+        self._ai_release()
         t = self.daq.Task()
         try:
             t.ai_channels.add_ai_voltage_chan("%s/_ao%d_vs_aognd" % (self.device, k),
@@ -280,7 +250,7 @@ class NI6211(Instrument):
                 ai = self.ai_list()
                 if k not in ai:
                     raise ChannelError("ai%d is not scanned" % k)
-                return float(self.scan()[ai.index(k)])
+                return float(self.acquire([k])[0])
             if kind == "ao" and k in (0, 1):
                 if k not in self.ao_last:
                     v = self._ao_readback(k)
@@ -322,25 +292,19 @@ class NI6211(Instrument):
                 self._do_task(k).write(bool(value), auto_start=True)
                 return
         if channel == "rate":
-            self._check_rate(float(value))
+            self._check_rate(float(value), 1)
             self.rate = float(value)
         elif channel == "samples":
             if value != int(value) or not 1 <= value <= 1_000_000:
                 raise ChannelError("samples must be an integer 1 … 1000000")
             self.samples = int(value)
         elif channel == "terminal":
-            old = self.terminal
             self.terminal = value
-            try:
-                self._check_rate(self.rate)
-            except ChannelError:
-                self.terminal = old
-                raise
         elif channel == "ai_range":
             self.ai_range = value
         else:
             raise ChannelError("%s: channel %s is not writable" % (self.name, channel))
-        self._close("ai")                       # rebuilt with the new settings
+        self._close_ai()                        # rebuilt with the new settings
 
     def _action_reset_counters(self):
         self._start_counters()

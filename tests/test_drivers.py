@@ -395,8 +395,18 @@ def test_ni6211_speed_settings(daq):
     be = daq
     h = be.instruments.get("daq")
     with pytest.raises(ChannelError, match="250 kS/s"):
-        be.write_channel("daq.rate", 20000)                 # 16 × 20 kS/s > 250 kS/s
+        be.write_channel("daq.rate", 300e3)                 # more than the converter
+    be.write_channel("daq.rate", 250e3)                     # one input alone: full speed
+    assert be.read_channel("daq.ai3") == pytest.approx(0.3, abs=1e-3)
+    with pytest.raises(ChannelError, match="16 inputs at 250000 S/s each is too fast"):
+        be.read_channel("daq.ai")                           # 16 inputs share 250 kS/s
+    assert be.instruments.get("daq").state == "connected"    # refused, not a fault
     be.write_channel("daq.rate", 15000)
+    assert be.read_channel("daq.ai").shape == (16,)
+    # switching between channel sets hands the converter over each time
+    for _ in range(3):
+        assert be.read_channel("daq.ai5") == pytest.approx(0.5, abs=1e-3)
+        assert be.read_channel("daq.ai")[7] == pytest.approx(0.7, abs=1e-3)
     be.write_channel("daq.samples", 1500)
     assert h.spec("ai3").timeout == pytest.approx(5.1)       # follows samples / rate
     be.read_channel("daq.ai3")
@@ -407,10 +417,14 @@ def test_ni6211_speed_settings(daq):
     assert (time.perf_counter() - t) / 20 < 0.02
     be.write_channel("daq.terminal", "DIFF")
     assert "ai8" not in h.channels and h.spec("ai").shape == (8,)
+    be.write_channel("daq.samples", 100)
     be.write_channel("daq.rate", 30000)                      # 8 inputs: 31.25 kS/s each
-    with pytest.raises(ChannelError):
-        be.write_channel("daq.terminal", "RSE")              # 16 × 30 kS/s: refused
-    assert be.read_channel("daq.terminal") == "DIFF"
+    assert be.read_channel("daq.ai").shape == (8,)
+    be.write_channel("daq.terminal", "RSE")                  # 16 × 30 kS/s: vector too fast
+    with pytest.raises(ChannelError, match="too fast"):
+        be.read_channel("daq.ai")
+    assert be.read_channel("daq.ai9") == pytest.approx(0.9, abs=1e-3)
+    be.write_channel("daq.terminal", "DIFF")
     be.write_channel("daq.ai_range", "±0.2 V")
     assert be.read_channel("daq.ai_range") == "±0.2 V"
     be.update_instrument("daq", options={"ai_channels": "0-1", "rate": 100000, "terminal": "RSE"})

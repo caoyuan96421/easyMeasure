@@ -84,9 +84,10 @@ def test_model_switch_repopulates_channels(x):
         be.write_channel("x.rate", 600e3)
     with pytest.raises(ChannelError):
         be.write_channel("x.terminal", "RSE")
-    be.write_channel("x.model", "USB-6353")       # DIFF stays: 16 inputs; rate comes down
-    assert be.read_channel("x.terminal") == "DIFF"
-    assert be.read_channel("x.rate") == pytest.approx(1e6 / 16)
+    be.write_channel("x.model", "USB-6363")
+    be.write_channel("x.rate", 2e6)                           # one input of a 6363
+    be.write_channel("x.model", "USB-6341")                   # rate comes down to fit
+    assert be.read_channel("x.rate") == pytest.approx(500e3)
     with pytest.raises(ChannelError):
         be.write_channel("x.model", "USB-6211")
     # the option sets it from the start, and the setup keeps it
@@ -105,11 +106,19 @@ def test_analog_loopback_ranges_and_rates(x):
     assert be.read_channel("x.ai3") == pytest.approx(3.5, abs=1e-3)
     assert be.read_channel("x.ai20") == pytest.approx(2.0, abs=1e-3)
     assert be.read_channel("x.ai").shape == (32,)
+    # one input is acquired alone: up to 2 MS/s on a 6363, even with all 32 inputs exposed
+    be.write_channel("x.rate", 2e6)
+    assert be.read_channel("x.ai7") == pytest.approx(0.7, abs=1e-3)
     with pytest.raises(ChannelError, match="too fast"):
-        be.write_channel("x.rate", 40000)                     # 32 × 40 kS/s > 1 MS/s
+        be.write_channel("x.rate", 2.5e6)
+    be.write_channel("x.rate", 40000)
+    with pytest.raises(ChannelError, match="32 inputs at 40000 S/s each is too fast.*31250"):
+        be.read_channel("x.ai")                               # 32 × 40 kS/s > 1 MS/s
+    assert be.read_channel("x.ai7") == pytest.approx(0.7, abs=1e-3)
     be.write_channel("x.terminal", "DIFF")
     assert "ai8" not in h.channels and "ai16" in h.channels and "ai24" not in h.channels
     be.write_channel("x.rate", 60000)                         # 16 inputs × 60 k < 1 MS/s
+    assert be.read_channel("x.ai").shape == (16,)
     assert be.read_channel("x.ai16") == pytest.approx(1.6, abs=1e-3)
     be.update_instrument("x", options={"ai_channels": "5", "rate": 2e6, "samples": 4})
     h = be.instruments.get("x")
