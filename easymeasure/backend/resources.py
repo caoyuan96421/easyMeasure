@@ -30,6 +30,12 @@ Address formats
                                     one owner, so two drivers cannot share a DAQ card
 ``NONE`` or empty                   instrument without a port (DLL/software)
 =================================  ===========================================
+
+Each address belongs to one *interface* (:func:`interface_of`): ``gpib``,
+``usb``, ``tcpip`` (VISA LAN), ``tcp`` (raw socket), ``serial``, ``daq``, ``sim``,
+``none`` or ``other`` (any other VISA type).  Drivers list the interfaces they
+accept (``Instrument.INTERFACES``); :meth:`ResourceManager.discover` finds the
+ports of this computer by interface, optionally with their ``*IDN?``.
 """
 
 from __future__ import annotations
@@ -46,6 +52,40 @@ from .logsys import get_logger
 log = get_logger("resources")
 
 Data = Union[str, bytes]
+
+
+# ---------------------------------------------------------------------------
+# Interfaces
+# ---------------------------------------------------------------------------
+INTERFACES = ("gpib", "usb", "tcpip", "tcp", "serial", "daq", "sim", "none", "other")
+#: everything that carries bytes (SCPI and other command-based instruments)
+BYTE_PORTS = ("gpib", "usb", "tcpip", "tcp", "serial", "other", "sim")
+#: GPIB instruments: GPIB, or a Prologix-style GPIB-USB (serial) / GPIB-Ethernet
+#: (TCP) adapter, or RS-232 where the instrument has it
+GPIB_LIKE = ("gpib", "serial", "tcp", "sim")
+INTERFACE_NAMES = {"gpib": "GPIB", "usb": "USB (USBTMC)", "tcpip": "LAN (VISA)",
+                   "tcp": "TCP socket", "serial": "serial / COM", "daq": "NI-DAQmx",
+                   "sim": "simulated", "none": "no port", "other": "other VISA"}
+
+
+def interface_of(address: Optional[str]) -> str:
+    """The interface an address belongs to (see :data:`INTERFACES`)."""
+    a = (address or "").strip()
+    up = a.upper()
+    if not a or up == "NONE":
+        return "none"
+    if up.startswith("SIM::"):
+        return "sim"
+    if up.startswith("DAQ::"):
+        return "daq"
+    if up.startswith("TCP::"):
+        return "tcp"
+    if up.startswith(("COM", "ASRL")) or a.startswith("/dev/"):
+        return "serial"
+    for prefix, kind in (("GPIB", "gpib"), ("USB", "usb"), ("TCPIP", "tcpip")):
+        if up.startswith(prefix):
+            return kind
+    return "other"
 
 
 # ---------------------------------------------------------------------------
@@ -735,20 +775,97 @@ class ResourceManager:
         for r in items:
             r.close()
 
+    def discover(self, interfaces=None, identify: bool = False, timeout: float = 0.8,
+                 in_use: Optional[Dict[str, list]] = None) -> dict:
+        """Ports on this computer: ``{"found": [{address, interface, description,
+        [idn], [in_use]}], "notes": [why something could not be scanned]}``.
+
+        *interfaces* limits the scan; *identify* asks VISA instruments (GPIB / USB /
+        LAN) ``*IDN?`` - not those open here or listed in *in_use* ({address: [users]},
+        the configured instruments), which are left alone."""
+        want = set(interfaces or INTERFACES)
+        found, notes = [], []
+        with self._lock:
+            busy = {k.upper(): r for k, r in self._resources.items()}
+        serial_names = set()
+        if "serial" in want:
+            try:
+                from serial.tools import list_ports  # type: ignore
+                for p in sorted(list_ports.comports(), key=lambda p: p.device):
+                    desc = p.description if p.description not in (None, "n/a") else ""
+                    if p.manufacturer and p.manufacturer not in desc:
+                        desc = ("%s (%s)" % (desc, p.manufacturer)).strip()
+                    found.append({"address": p.device, "interface": "serial",
+                                  "description": desc or p.device})
+                    serial_names.add(p.device.upper())
+            except ImportError:
+                notes.append("serial ports: pyserial is not installed (pip install pyserial)")
+            except Exception as exc:
+                notes.append("serial ports: %s" % exc)
+        visa_kinds = {"gpib", "usb", "tcpip", "other", "serial"} & want
+        if visa_kinds:
+            try:
+                rm = VisaBackend._resource_manager()
+                info = rm.list_resources_info("?*::INSTR")
+                for addr, ri in sorted(info.items()):
+                    kind = interface_of(addr)
+                    if kind not in visa_kinds:
+                        continue
+                    if kind == "serial":
+                        num = addr.upper()[4:].split("::")[0]
+                        if ("COM" + num) in serial_names or num in serial_names:
+                            continue                    # pyserial listed it already
+                    alias = getattr(ri, "alias", None) or ""
+                    found.append({"address": addr, "interface": kind,
+                                  "description": ("VISA alias %s" % alias) if alias else ""})
+            except ResourceError as exc:
+                if visa_kinds - {"serial"}:
+                    notes.append("GPIB / USB / LAN: %s (pip install pyvisa, and a VISA library "
+                                 "such as NI-VISA or pip install pyvisa-py)" % exc)
+            except Exception as exc:
+                notes.append("VISA: %s" % exc)
+        if "daq" in want:
+            try:
+                import nidaqmx.system  # type: ignore
+                for d in nidaqmx.system.System.local().devices:
+                    found.append({"address": "DAQ::" + d.name, "interface": "daq",
+                                  "description": str(d.product_type), "idn": str(d.product_type)})
+            except ImportError:
+                notes.append("NI-DAQmx: the nidaqmx package is not installed")
+            except Exception as exc:
+                text = str(exc).splitlines()[0]
+                if "could not find an installation" in text.lower():
+                    text = "the NI-DAQmx driver runtime is not installed (ni.com)"
+                notes.append("NI-DAQmx: %s" % text)
+        users = {normalize_address(k).upper(): v for k, v in (in_use or {}).items()}
+        for e in found:
+            key = normalize_address(e["address"]).upper()
+            r = busy.get(e["address"].upper())
+            if key in users:
+                e["in_use"] = sorted(users[key])
+            elif r is not None:
+                e["in_use"] = sorted(r.owners)
+        if identify:
+            for e in found:
+                if e["interface"] in ("gpib", "usb", "tcpip", "other") and not e.get("in_use"):
+                    e["idn"] = self._identify(e["address"], timeout)
+        return {"found": found, "notes": notes}
+
     @staticmethod
-    def discover() -> list:
-        """Best-effort list of ports available on this machine."""
-        found = []
-        try:
-            from serial.tools import list_ports  # type: ignore
-            for p in list_ports.comports():
-                found.append({"address": p.device, "description": p.description, "type": "serial"})
-        except Exception:
-            pass
+    def _identify(address: str, timeout: float) -> str:
+        """``*IDN?`` of a VISA instrument nobody here has open ('' if it does not answer)."""
         try:
             rm = VisaBackend._resource_manager()
-            for a in rm.list_resources():
-                found.append({"address": a, "description": "", "type": "visa"})
+            inst = rm.open_resource(address, open_timeout=int(timeout * 1000))
         except Exception:
-            pass
-        return found
+            return ""
+        try:
+            inst.timeout = int(timeout * 1000)
+            return str(inst.query("*IDN?")).strip()
+        except Exception:
+            return ""
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass

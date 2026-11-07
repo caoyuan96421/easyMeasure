@@ -25,7 +25,7 @@ from .registry import DriverRegistry
 from .instrument import InstrumentManager
 from .logsys import get_logger, ring, setup_logging
 from .monitor import Monitor
-from .resources import ResourceManager
+from .resources import ResourceManager, normalize_address
 from .runqueue import RunQueue
 from .scripting import ScriptRunner
 from .storage import DataSet, DataStore, export_hdf5, read_header
@@ -327,8 +327,20 @@ class Backend:
                 self.drivers.unregister("__wizard_try__")
         return out
 
-    def discover_resources(self) -> list:
-        return ResourceManager.discover()
+    def discover_resources(self, interfaces: Optional[list] = None, identify: bool = False) -> dict:
+        """Ports / devices of this computer by interface (see ResourceManager.discover);
+        in-use entries name the instruments and carry their identification."""
+        by_addr: dict = {}
+        for h in self.instruments.handles():
+            by_addr.setdefault(normalize_address(h.address).upper(), []).append(h)
+        r = self.resources.discover(interfaces, identify,
+                                    in_use={a: [h.name for h in hs] for a, hs in by_addr.items()})
+        for e in r["found"]:
+            for h in by_addr.get(normalize_address(e["address"]).upper(), []):
+                idn = getattr(h.driver, "idn", "") or getattr(h.driver, "product", "")
+                if idn and not e.get("idn"):
+                    e["idn"] = str(idn)              # what the instrument told its driver
+        return r
 
     def list_resources(self) -> list:
         return self.resources.list()
@@ -356,6 +368,7 @@ class Backend:
         addr = old.address if address is None else address
         opts = old.options if options is None else options
         drv = old.driver_name if driver is None else driver
+        self.instruments.check_interface(drv, addr)     # before the old one is gone
         self.instruments.remove(name)
         h = self.instruments.add(name, drv, addr, opts, connect=True)
         self._changed("instruments")

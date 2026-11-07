@@ -7,8 +7,8 @@ device reports) decides the channel list — number of analog inputs and outputs
 digital lines, input / output ranges, terminal configurations and rate limits,
 from NI's specifications (:mod:`._nidaq_models`).
 
-Needs the NI-DAQmx driver runtime and the ``nidaqmx`` Python package
-(``pip install nidaqmx``).  Address: the device name in NI MAX, ``DAQ::Dev1``.
+Needs NI's NI-DAQmx driver runtime (from ni.com); the ``nidaqmx`` Python package
+is installed with easyMeasure.  Address: the device name in NI MAX, ``DAQ::Dev1``.
 ``DAQ::SIM…`` (or option ``simulate``) uses the built-in emulation of the chosen
 model (``auto`` → USB-6363); NI MAX can also create a simulated device that the
 driver drives like a real one.
@@ -78,6 +78,12 @@ def _rate_text(m: DaqModel) -> str:
 class NI63xx(Instrument):
     DESCRIPTION = ("NI USB-63xx X Series DAQ (USB-6341 … 6366, NI-DAQmx): analog / digital "
                    "channels follow the model")
+    INTERFACES = ("daq",)
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str):
+        return [{"address": "DAQ::SIM", "description": "built-in emulation"}]
+    IDN_MATCH = tuple(X_SERIES)
     ACTIONS = [ActionSpec("reset_counters", "restart the running edge counters at 0"),
                ActionSpec("release_digital", "make every digital line an input again "
                           "(outputs off, high impedance)")]
@@ -109,8 +115,8 @@ class NI63xx(Instrument):
         try:
             import nidaqmx                          # noqa: F401
         except ImportError:
-            raise IOError("the nidaqmx package is missing: pip install nidaqmx "
-                          "(and install the NI-DAQmx driver)") from None
+            raise IOError("the nidaqmx package is missing (it comes with easyMeasure: "
+                          "pip install -e . again, or pip install nidaqmx)") from None
         return nidaqmx
 
     @property

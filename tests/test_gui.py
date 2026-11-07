@@ -316,6 +316,75 @@ def be_idle(app, demo, ctl):
     return pump(app, 5, lambda: ctl.state == "idle" and ctl.run is None)
 
 
+def test_instrument_dialog_address_list(app, gui, monkeypatch):
+    """Add instrument: the address list shows the ports the driver accepts, the
+    identified matches first (and picked), the driver's suggestions last; Refresh
+    scans again (with or without *IDN?)."""
+    from easymeasure.frontend.panels.setup_panel import InstrumentDialog
+    w, be, _, _ = gui
+    calls = []
+
+    def fake(interfaces=None, identify=False):
+        calls.append(identify)
+        return {"found": [
+            {"address": "COM3", "interface": "serial", "description": "USB Serial Port (FTDI)"},
+            {"address": "GPIB0::24::INSTR", "interface": "gpib", "description": "",
+             "idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2400,1,C32" if identify else ""},
+            {"address": "GPIB0::5::INSTR", "interface": "gpib", "description": "", "idn": ""},
+            {"address": "USB0::1::2::3::INSTR", "interface": "usb", "description": "",
+             "idn": "Keysight Technologies,B2902A,MY1,3.4" if identify else ""},
+            {"address": "DAQ::Dev3", "interface": "daq", "description": "USB-6343",
+             "idn": "USB-6343"},
+            {"address": "GPIB0::8::INSTR", "interface": "gpib", "description": "",
+             "in_use": ["li"]}], "notes": ["VISA: just a note"]}
+    monkeypatch.setattr(be, "discover_resources", fake)
+    InstrumentDialog.scan_cache = None
+    assert pump(app, 5, lambda: w.setup_panel.drivers)
+    dlg = InstrumentDialog(w.setup_panel.drivers, parent=w, conn=w.conn)
+    dlg.show()
+    assert pump(app, 5, lambda: InstrumentDialog.scan_cache is not None) and calls == [True]
+    pump(app, 0.1)
+
+    def items():
+        return [(dlg.address.itemData(i), dlg.address.itemText(i)) for i in range(dlg.address.count())]
+    dlg.driver.setCurrentText("keithley2400")
+    assert [a for a, _ in items()] == ["GPIB0::24::INSTR", "COM3", "GPIB0::5::INSTR",
+                                       "GPIB0::8::INSTR", "SIM::keithley2400"]
+    labels = dict(items())
+    assert "MODEL 2400" in labels["GPIB0::24::INSTR"] and labels["GPIB0::24::INSTR"].endswith("✓")
+    assert "(in use: li)" in labels["GPIB0::8::INSTR"] and "emulator" in labels["SIM::keithley2400"]
+    assert dlg.address_text() == "GPIB0::24::INSTR"                    # the match, picked
+    st = dlg.scan_status.text()
+    assert "takes: GPIB" in st and "4 port(s) found" in st and "1 identified" in st
+    assert "VISA: just a note" in st
+    dlg.address.activated.emit(1)
+    assert dlg.address.currentText() == "COM3" and dlg.address_text() == "COM3"
+    dlg.driver.setCurrentText("keysight_b2902")
+    assert items()[0][0] == "USB0::1::2::3::INSTR" and dlg.address_text() == "USB0::1::2::3::INSTR"
+    dlg.driver.setCurrentText("ni63xx")
+    assert [a for a, _ in items()] == ["DAQ::Dev3", "DAQ::SIM"] and dlg.address_text() == "DAQ::Dev3"
+    dlg.driver.setCurrentText("sim_magnet")
+    assert [a for a, _ in items()] == ["NONE"] and dlg.address_text() == "NONE"
+    # Refresh without identification: no match marks
+    dlg.identify.setChecked(False)
+    dlg.refresh.click()
+    assert pump(app, 5, lambda: len(calls) == 2 and dlg.refresh.isEnabled()) and calls[1] is False
+    dlg.driver.setCurrentText("keithley2400")
+    assert not any(t.endswith("✓") for _, t in items())
+    # a label in the box still means its address; OK gives the address
+    dlg.name.setText("k")
+    dlg.address.setEditText(dict(items())["COM3"])
+    dlg._ok()
+    assert dlg.result_value["address"] == "COM3" and dlg.result_value["driver"] == "keithley2400"
+    # the next dialog reuses the scan
+    dlg2 = InstrumentDialog(w.setup_panel.drivers, parent=w, conn=w.conn)
+    pump(app, 0.3)
+    assert len(calls) == 2 and dlg2.address.count() > 0
+    dlg2.close()
+    dlg.close()
+    InstrumentDialog.scan_cache = None
+
+
 def test_gui_lock(app, gui):
     """The lock button greys out every control of instruments / sweep / queue /
     manual / monitors and the backend commands; tabs, plots and their settings stay

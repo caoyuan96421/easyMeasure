@@ -56,6 +56,7 @@ import time
 from typing import List
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
 from ..backend.logsys import get_logger
 from ._scpi import SCPIInstrument
@@ -88,6 +89,7 @@ def _max_voltage(i: float) -> float:
 
 class HP4145(SCPIInstrument):
     DESCRIPTION = "HP 4145A/B (or 4155/4156 in 4145 syntax) parameter analyzer, user mode"
+    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     ACTIONS = [ActionSpec("disable_all", "DS: disable every SMU and source (outputs OFF)")]
     DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
                        "smus": [1, 2, 3, 4], "vs_vm": True, "force_4145_syntax": True}

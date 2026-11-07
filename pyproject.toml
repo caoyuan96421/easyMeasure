@@ -19,10 +19,14 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",   # append slides to a .pptx open in PowerPoint
     "aiohttp>=3.10",          # remote access gateway (HTTPS + secure WebSocket) and RemoteClient
     "cryptography>=41",      # self-signed TLS certificate for the gateway
+    "nidaqmx>=0.9",          # NI DAQ drivers (ni6211, ni63xx); needs NI's NI-DAQmx runtime too
+    "pyvisa>=1.12",          # GPIB / USB / LAN instruments; needs a VISA library (NI-VISA, Keysight IO)
+    "pyserial>=3.5",         # serial ports (RS-232, Prologix GPIB-USB adapters)
 ]
 
 [project.optional-dependencies]
-hardware = ["pyserial>=3.5", "pyvisa>=1.12"]
+# pure-Python VISA for computers without NI-VISA (LAN, USB-TMC, serial; GPIB needs linux-gpib)
+hardware = ["pyvisa-py>=0.7"]
 test = ["pytest>=7", "pytest-timeout>=2"]
 # browser end-to-end test of the web frontend (then: python -m playwright install chromium)
 webtest = ["playwright>=1.40"]

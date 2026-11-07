@@ -35,6 +35,7 @@ import time
 from typing import List
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument, fmt
 
@@ -70,6 +71,7 @@ INPUTS = ["A", "A-B", "I (1 MΩ)", "I (100 MΩ)"]
 
 class SR830(SCPIInstrument):
     DESCRIPTION = "Stanford Research SR830 / SR850 lock-in amplifier"
+    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     IDN_MATCH = ("SR830", "SR850", "SR810")
     ACTIONS = [ActionSpec("auto_gain", "choose the sensitivity for the present signal", 60.0),
                ActionSpec("auto_phase", "set the phase so that Y = 0", 30.0),

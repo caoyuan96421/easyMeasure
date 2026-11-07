@@ -31,6 +31,7 @@ driver sends ``SYST:REM``; use 9600 baud, 8N1 / DTR-DSR handshake on the meter).
 from __future__ import annotations
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument
 
@@ -63,6 +64,7 @@ def _is_ac(mode: str) -> bool:
 
 class HP34401A(SCPIInstrument):
     DESCRIPTION = "HP/Agilent 34401A 6.5 digit multimeter (V, I, R; DC and AC)"
+    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     IDN_MATCH = ("34401",)
     ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue"),
                ActionSpec("beep", "beep once")]

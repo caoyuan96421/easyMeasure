@@ -122,6 +122,13 @@ class DriverRegistry:
     def unregister(self, name: str) -> None:
         self._classes.pop(name, None)
 
+    @staticmethod
+    def _suggest(cls, name: str) -> list:
+        try:
+            return list(cls.suggested_addresses(name))
+        except Exception:
+            return []
+
     def describe(self) -> dict:
         if not self._scanned:
             self.scan()
@@ -136,5 +143,8 @@ class DriverRegistry:
                 "options": dict(getattr(cls, "DEFAULT_OPTIONS", {})),
                 "channels": chans,
                 "shared": bool(getattr(cls, "SHARED_RESOURCE", False)),
+                "interfaces": list(getattr(cls, "INTERFACES", ())),
+                "idn_match": list(getattr(cls, "IDN_MATCH", ())),
+                "suggest": self._suggest(cls, name),
             }
         return {"drivers": out, "errors": dict(self._errors)}

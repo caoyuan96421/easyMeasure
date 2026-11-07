@@ -165,7 +165,19 @@ class Device:
         return card(self.name).model.product
 
 
-system = types.SimpleNamespace(Device=Device)
+class System:
+    """``nidaqmx.system.System``: ``System.local().devices`` lists the defined cards."""
+
+    def __init__(self):
+        with _cards_lock:
+            self.devices = [Device(n) for n in sorted(_cards)]
+
+    @classmethod
+    def local(cls) -> "System":
+        return cls()
+
+
+system = types.SimpleNamespace(Device=Device, System=System)
 
 
 # -- tasks -----------------------------------------------------------------------------

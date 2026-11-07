@@ -40,6 +40,12 @@ def reset_devices() -> None:
 class SimBusInstrument(Instrument):
     """Base for simulated instruments that talk SCPI over a ``SIM::`` port."""
 
+    INTERFACES = ("sim",)
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str):
+        return [{"address": "SIM::GPIB0", "description": "simulated GPIB bus (shared)"}]
+
     SHARED_RESOURCE = True
 
     def bus_name(self) -> str:
@@ -84,6 +90,8 @@ class SimDirectInstrument(Instrument):
     Fault injection happens directly in the driver (exceptions, hangs, NaNs,
     latency).  ``garble_rate`` makes reads return values of the wrong type.
     """
+
+    INTERFACES = ("none",)
 
     def __init__(self, name, address, options=None):
         super().__init__(name, address, options)

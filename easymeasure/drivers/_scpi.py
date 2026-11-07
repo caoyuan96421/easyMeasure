@@ -6,6 +6,7 @@ import math
 from typing import Callable, List, Optional, Sequence
 
 from ..backend.instrument import Instrument
+from ..backend.resources import BYTE_PORTS, GPIB_LIKE  # noqa: F401
 from ..common.errors import ChannelError
 
 #: replies of 9.9E37 mean "overload" on most SCPI meters
@@ -41,6 +42,7 @@ class SCPIInstrument(Instrument):
 
     IDN_MATCH: Sequence[str] = ()
     EMULATOR: Optional[Callable] = None
+    INTERFACES = BYTE_PORTS
     DEFAULT_OPTIONS = {"timeout": 5.0, "reset": False, "check_errors": True,
                        "read_termination": "\n", "write_termination": "\n"}
 
@@ -53,6 +55,13 @@ class SCPIInstrument(Instrument):
         a = self.options.get("gpib_addr")
         if a is not None:
             resource.write("++addr %d" % int(a))
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str):
+        out = super().suggested_addresses(driver_name)
+        if cls.EMULATOR is not None:
+            out.append({"address": "SIM::" + driver_name, "description": "built-in emulator"})
+        return out
 
     def attach_emulator(self) -> None:
         if self.address.upper().startswith("SIM::") and self.EMULATOR is not None:

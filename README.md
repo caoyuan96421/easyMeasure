@@ -42,13 +42,17 @@ disturbing a running measurement.
 ## Install
 
 ```bash
-pip install -e .                 # numpy, PySide6, pyqtgraph, h5py, python-pptx, matplotlib
-pip install -e ".[hardware]"     # + pyserial, pyvisa for real instruments
+pip install -e .                 # numpy, PySide6, pyqtgraph, h5py, python-pptx, matplotlib,
+                                 # pyvisa, pyserial, nidaqmx …
+pip install -e ".[hardware]"     # + pyvisa-py (VISA without NI-VISA: LAN, USB-TMC, serial)
 pip install -e ".[test]"         # + pytest
 pip install -e ".[webtest]"      # + playwright (browser test of the web app)
 ```
 
-Python ≥ 3.9.
+Python ≥ 3.9. Real instruments also need the vendor's runtime, which pip cannot
+install: a VISA library (NI-VISA or Keysight IO Libraries) for GPIB / USB / LAN, and
+NI-DAQmx for NI DAQ cards. (`[hardware]` adds `pyvisa-py`, a pure-Python VISA for
+LAN / USB-TMC / serial when there is no vendor VISA.)
 
 ## Quick start (simulated instruments)
 
@@ -110,13 +114,31 @@ hang, disconnect and raise random exceptions, plus a deliberately pathological
 
 ### Resources (`backend/resources.py`)
 Every physical port (`COM3`, `GPIB0::12::INSTR`, `USB0::…`, `TCPIP0::…`,
-`TCP::host::port`, simulated `SIM::bus`, or `NONE`) is represented by exactly
+`TCP::host::port`, `DAQ::Dev1`, simulated `SIM::bus`, or `NONE`) is represented by exactly
 one `Resource`. A second instrument asking for an exclusively owned port is
 refused. Ports declared `shared` (an instrument option, or a driver default) are
 arbitrated: each I/O sequence runs inside a transaction holding a fair,
 re-entrant lock; when ownership changes the new owner's `select()` runs (e.g.
 `++addr 5` on a Prologix GPIB adapter). The measurement thread gets priority
 over monitor/GUI traffic, so monitoring never slows a sweep down.
+
+Every address belongs to one **interface**: `gpib`, `usb` (USB-TMC), `tcpip` (VISA
+LAN), `tcp` (raw socket), `serial`, `daq` (NI-DAQmx), `sim`, `none` or `other`
+(other VISA types). Each driver lists the interfaces it accepts
+(`Instrument.INTERFACES`, shown by `list_drivers`); an address of another interface
+is refused when the instrument is added or changed. The GPIB instruments accept
+`gpib`, `serial` and `tcp` (RS-232 where they have one, or a Prologix GPIB-USB /
+GPIB-Ethernet adapter), the Keysight B2900 also USB and LAN, the NI DAQs `daq`, the
+simulated instruments `sim` or `none`; Driver Wizard drivers take what the wizard's
+*Interfaces* boxes say.
+
+**Finding instruments.** `discover_resources` (admin) lists what the backend
+computer has, by interface: serial ports (pyserial, with their description, e.g.
+an FTDI adapter), VISA instruments (GPIB / USB / LAN, with their VISA alias), and
+NI-DAQmx devices with their product type; with `identify` it asks each GPIB / USB /
+LAN instrument `*IDN?` — never one that an instrument here is configured on. A
+driver's `IDN_MATCH` marks the devices that are its kind. What could not be scanned
+is reported (pyvisa or a VISA library missing, NI-DAQmx runtime not installed).
 
 ### Instruments and drivers (`backend/instrument.py`, `drivers/`)
 An instrument exposes **channels** for read / write / query. A channel is
@@ -306,7 +328,11 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
 | ![setup](docs/screenshots/setup.png) | ![editor](docs/screenshots/sweep_editor.png) |
 
 * **Instruments & channels** – add/edit/reconnect instruments (driver list with
-  default options), inspect raw channels (with their allowed values and the *last
+  default options; the **Address** is a list of the ports and devices found on the
+  backend computer that the driver accepts — identified matches first, marked ✓ and
+  picked automatically, then the others, ones in use, and the driver's suggestions
+  such as its built-in emulator — or type any address; **Refresh** scans again,
+  *ask \*IDN?* identifies GPIB / USB / LAN instruments while scanning), inspect raw channels (with their allowed values and the *last
   value* read or set — nothing is read just to fill the table), define aliases and
   composites, manual get/set, save/load setups, *Driver wizard…* for new
   command-based instruments.
@@ -411,7 +437,8 @@ cannot record a current by mistake after somebody switched the meter to `idc` (i
 reports an error until the mode is back). Reading timeouts follow NPLC / AC filter.
 Overload (`9.9E37`) reads as ±inf.
 
-**NI USB-6211.** Needs NI-DAQmx and `pip install nidaqmx`; address `DAQ::Dev1` (the
+**NI USB-6211.** Needs NI's NI-DAQmx driver runtime (the `nidaqmx` Python package
+comes with easyMeasure); address `DAQ::Dev1` (the
 NI MAX name). Every analog reading is the mean of `samples` samples at `rate` per
 input; all scanned inputs together are limited to 250 kS/s (option `ai_channels`,
 e.g. `"0-3"`, scans fewer inputs for higher rates). `samples = 1` is a single
@@ -475,7 +502,8 @@ programming:
 2. **Basics**: driver name (`[a-z][a-z0-9_]*`), description, `*IDN?` check (reply must
    contain one of `a | b`), error query (read after every setting, so a refused value
    raises an error with the instrument's own message), terminations, timeout, query
-   delay.
+   delay, and the interfaces it can be reached through (GPIB, USB, LAN, TCP socket,
+   serial, simulated: the Add instrument dialog lists ports of those kinds).
 3. **Channels**: any number of *data* channels (measured or swept; aliased in the setup)
    and *config* channels (settings). Per channel: access `r` / `w` / `rw`, type
    `float`, `str` or `vector` (comma-separated numbers), unit, **Get** query (numbers:

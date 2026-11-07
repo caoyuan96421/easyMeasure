@@ -1,7 +1,7 @@
 """National Instruments USB-6211 multifunction DAQ (also USB-6210/6215, through NI-DAQmx).
 
-Needs the NI-DAQmx driver runtime and the ``nidaqmx`` Python package
-(``pip install nidaqmx``).  The address names the device as shown in NI MAX:
+Needs NI's NI-DAQmx driver runtime (from ni.com); the ``nidaqmx`` Python package
+is installed with easyMeasure.  The address names the device as shown in NI MAX:
 ``DAQ::Dev1``.  ``DAQ::SIM`` (or option ``simulate``) uses a built-in emulation
 of the card (no NI software needed); NI MAX can also create a simulated
 USB-6211 that this driver drives like a real one.
@@ -62,6 +62,12 @@ def _parse_list(spec: str, hi: int) -> List[int]:
 
 class NI6211(Instrument):
     DESCRIPTION = "NI USB-6211 DAQ: 16 AI, 2 AO, 4 DI, 4 DO, 2 counters (NI-DAQmx)"
+    INTERFACES = ("daq",)
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str):
+        return [{"address": "DAQ::SIM", "description": "built-in emulation"}]
+    IDN_MATCH = ("USB-621",)
     ACTIONS = [ActionSpec("reset_counters", "restart both edge counters at 0")]
     DEFAULT_OPTIONS = {"ai_channels": "all", "simulate": False, "rate": 10000.0,
                        "samples": 100, "terminal": "RSE", "ai_range": "±10 V"}
@@ -78,8 +84,8 @@ class NI6211(Instrument):
         try:
             import nidaqmx                          # noqa: F401
         except ImportError:
-            raise IOError("the nidaqmx package is missing: pip install nidaqmx "
-                          "(and install the NI-DAQmx driver)") from None
+            raise IOError("the nidaqmx package is missing (it comes with easyMeasure: "
+                          "pip install -e . again, or pip install nidaqmx)") from None
         return nidaqmx
 
     @property

@@ -26,9 +26,11 @@ from typing import List
 
 from ..common.errors import ChannelError
 from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
+from ..backend.resources import BYTE_PORTS
 
 
 class SCPIGeneric(Instrument):
+    INTERFACES = BYTE_PORTS
     DESCRIPTION = "Generic SCPI instrument defined by option 'channels'"
     CHANNELS: List[ChannelSpec] = []
     DEFAULT_OPTIONS = {"channels": [], "actions": [], "init": [], "idn_contains": "", "timeout": 3.0,

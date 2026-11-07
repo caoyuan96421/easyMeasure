@@ -26,6 +26,7 @@ setting so a refused value raises an error, default on).
 from __future__ import annotations
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.resources import GPIB_LIKE
 from ._scpi import fmt
 from ._smu import SMUBase
 
@@ -34,6 +35,7 @@ _Q = {"V": "VOLT", "I": "CURR"}
 
 class Keithley2400(SMUBase):
     DESCRIPTION = "Keithley 2400 SourceMeter (voltage or current source, measure the other)"
+    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     IDN_MATCH = ("KEITHLEY",)
     OUTPUTS = ["1"]
     NPLC_RANGE = (0.01, 10.0)

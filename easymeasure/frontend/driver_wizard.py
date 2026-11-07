@@ -20,9 +20,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
                                QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
                                QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWizard, QWizardPage)
+                               QWidget, QWizard, QWizardPage)
 
-from .widgets import shrinkable_label
+from .widgets import FlowLayout, shrinkable_label
 
 TERMINATIONS = [("\\n  (LF)", "\n"), ("\\r\\n  (CR LF)", "\r\n"), ("\\r  (CR)", "\r"), ("none", "")]
 CH_COLS = ["Name", "Kind", "Access", "Type", "Unit", "Get (query)", "Set ({value})",
@@ -214,6 +214,18 @@ class BasicsPage(_Page):
         form.addRow("Write termination", self.wterm)
         form.addRow("Timeout", self.timeout)
         form.addRow("Query delay", self.query_delay)
+        from ..backend.resources import BYTE_PORTS, INTERFACE_NAMES
+        self.ifaces = {}
+        box = QWidget()
+        lay = FlowLayout(box)
+        for k in BYTE_PORTS:
+            cb = QCheckBox(INTERFACE_NAMES[k])
+            cb.setObjectName("iface_" + k)
+            self.ifaces[k] = cb
+            lay.addWidget(cb)
+        box.setToolTip("the interfaces the instrument can be reached through: the Add instrument "
+                       "dialog lists ports of these kinds and refuses others")
+        form.addRow("Interfaces", box)
 
     def initializePage(self):                               # noqa: N802
         d, o = self.d, self.d.get("options", {})
@@ -230,6 +242,9 @@ class BasicsPage(_Page):
                                    if o.get("write_termination", "\n") in terms else 0)
         self.timeout.setValue(float(o.get("timeout", 5.0)))
         self.query_delay.setValue(float(o.get("query_delay", 0.0)))
+        on = set(d.get("interfaces") or self.ifaces)
+        for k, cb in self.ifaces.items():
+            cb.setChecked(k in on)
 
     def isComplete(self):                                    # noqa: N802
         return bool(self.name.text())
@@ -250,6 +265,10 @@ class BasicsPage(_Page):
         else:
             o.pop("query_delay", None)
         d["options"] = o
+        d["interfaces"] = [k for k, cb in self.ifaces.items() if cb.isChecked()]
+        if not d["interfaces"]:
+            QMessageBox.warning(self, "Interfaces", "Tick at least one interface.")
+            return False
         return True
 
 

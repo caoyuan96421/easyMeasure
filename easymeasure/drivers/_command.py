@@ -60,6 +60,7 @@ import numpy as np
 
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.logsys import get_logger
+from ..backend.resources import BYTE_PORTS
 from ..common.errors import ChannelError, DriverError
 from ._scpi import SCPIInstrument, fmt, to_float
 
@@ -90,6 +91,7 @@ def _filled(d: dict) -> dict:
     out.setdefault("idn_match", "")
     out.setdefault("error_query", "")
     out.setdefault("options", {})
+    out.setdefault("interfaces", list(BYTE_PORTS))
     out.setdefault("init", {})
     out["init"].setdefault("commands", [])
     out["init"].setdefault("script", "")
@@ -137,6 +139,9 @@ def check_definition(d: Any, builtin_names=()) -> tuple:
     opts = d.get("options", {})
     if not isinstance(opts, dict):
         errors.append("options must be a dict")
+    ifs = d.get("interfaces", list(BYTE_PORTS))
+    if not isinstance(ifs, list) or not ifs or any(i not in BYTE_PORTS for i in ifs):
+        errors.append("interfaces must be a non-empty list of %s" % ", ".join(BYTE_PORTS))
     for part in ("init", "shutdown"):
         p = d.get(part, {})
         if not isinstance(p, dict):
@@ -277,6 +282,7 @@ class CommandInstrument(SCPIInstrument):
         cls.DEF = d
         cls.DESCRIPTION = d["description"] or "%s (Driver Wizard)" % d["name"]
         cls.IDN_MATCH = tuple(m.strip() for m in d["idn_match"].split("|") if m.strip())
+        cls.INTERFACES = tuple(d["interfaces"])
         opts = dict(SCPIInstrument.DEFAULT_OPTIONS)
         opts.update(d["options"])
         opts["check_errors"] = bool(d["error_query"]) and opts.get("check_errors", True)

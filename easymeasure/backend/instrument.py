@@ -29,14 +29,15 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..common.errors import (ChannelError, EasyMeasureError, InstrumentError,
                              InstrumentNotConnected, InstrumentTimeout, ResourceError)
 from .logsys import RateLimitedLogger, get_logger
-from .resources import (PRIO_MEASUREMENT, FairLock, Resource, ResourceManager, abort_check,
+from .resources import (INTERFACE_NAMES, INTERFACES, PRIO_MEASUREMENT, FairLock, Resource,
+                        ResourceManager, abort_check, interface_of,
                         set_thread_priority, thread_priority)
 
 log = get_logger("instrument")
@@ -262,6 +263,12 @@ class Instrument:
     CHANNELS: List[ChannelSpec] = []
     ACTIONS: List[ActionSpec] = []
     DEFAULT_OPTIONS: Dict[str, Any] = {}
+    #: interfaces this driver accepts (``resources.INTERFACES``: gpib, usb, tcpip,
+    #: tcp, serial, daq, sim, none, other); an address of another interface is refused
+    INTERFACES: Sequence[str] = INTERFACES
+    #: substrings of the identification (``*IDN?``, NI-DAQmx product type) that mark a
+    #: device as one for this driver (used to suggest addresses; case-insensitive)
+    IDN_MATCH: Sequence[str] = ()
     #: whether this driver's port may be shared with other instruments by default
     SHARED_RESOURCE = False
 
@@ -272,6 +279,12 @@ class Instrument:
         opts.update(options or {})
         self.options = opts
         self.resource: Optional[Resource] = None  # set by the handle
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str) -> List[dict]:
+        """Addresses worth offering without a scan ({address, description}): a
+        built-in emulator, ``NONE`` for drivers without a port."""
+        return [{"address": "NONE", "description": "no port"}] if "none" in cls.INTERFACES else []
 
     # -- override in drivers ----------------------------------------------------
     def connect(self) -> None:
@@ -945,6 +958,7 @@ class InstrumentManager:
         if not name or not name.replace("_", "").isalnum():
             raise ChannelError("instrument name must be alphanumeric/underscore, got %r" % name)
         cls = self.drivers.get(driver)
+        self.check_interface(driver, address, cls)
         with self._lock:
             if name in self._handles:
                 raise ChannelError("instrument %r already exists" % name)
@@ -958,6 +972,16 @@ class InstrumentManager:
                 # keep it registered (state=error) so the user can fix & reconnect
                 pass
         return h
+
+    def check_interface(self, driver: str, address: str, cls=None) -> None:
+        """Refuse an address of an interface the driver does not accept."""
+        cls = cls or self.drivers.get(driver)
+        accepted = tuple(getattr(cls, "INTERFACES", INTERFACES))
+        kind = interface_of(address)
+        if kind not in accepted:
+            raise ChannelError("%s does not take %s addresses (%r); it takes: %s" % (
+                driver, INTERFACE_NAMES.get(kind, kind), address or "NONE",
+                ", ".join(INTERFACE_NAMES.get(k, k) for k in accepted)))
 
     def _specs_changed(self, h: InstrumentHandle) -> None:
         if self._handles.get(h.name) is not h:

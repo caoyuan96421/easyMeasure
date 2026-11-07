@@ -34,11 +34,22 @@ def _fmt_opt(v) -> str:
 
 
 class InstrumentDialog(QDialog):
+    """Add / edit an instrument.  The address is an editable list of the ports found
+    on the backend computer that the chosen driver accepts (its ``interfaces``),
+    devices whose identification matches the driver first (✓), plus the driver's
+    suggestions (built-in emulator, NONE).  *Refresh* scans again; *ask *IDN?*
+    identifies GPIB / USB / LAN instruments that are not in use."""
+
+    #: the last scan result, shared by all dialogs of this GUI
+    scan_cache: Optional[dict] = None
+
     def __init__(self, drivers: dict, inst: Optional[dict] = None, parent=None,
-                 preset: Optional[dict] = None):
+                 preset: Optional[dict] = None, conn=None):
         super().__init__(parent)
         self.setWindowTitle("Instrument")
         self.drivers = drivers
+        self.conn = conn
+        self.editing = inst is not None
         self.name = QLineEdit(inst["name"] if inst else "")
         self.name.setEnabled(inst is None)
         self.driver = QComboBox()
@@ -46,36 +57,182 @@ class InstrumentDialog(QDialog):
         self.desc = QLabel("")
         self.desc.setWordWrap(True)
         self.desc.setStyleSheet("color: gray")
-        self.address = QLineEdit(inst["address"] if inst else "NONE")
-        self.address.setPlaceholderText("GPIB0::12::INSTR, COM3, TCP::host::port, DAQ::Dev1 (NI-DAQmx), SIM::bus, NONE")
+        self.address = QComboBox()
+        self.address.setEditable(True)
+        self.address.setInsertPolicy(QComboBox.NoInsert)
+        self.address.setCompleter(None)
+        self.address.setMinimumContentsLength(28)
+        self.address.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.address.lineEdit().setPlaceholderText(
+            "GPIB0::12::INSTR, COM3, TCP::host::port, DAQ::Dev1, SIM::bus, NONE")
+        self.address.activated.connect(self._picked)
+        self.refresh = QPushButton("Refresh")
+        self.refresh.setToolTip("scan the backend computer for ports and devices again")
+        self.refresh.clicked.connect(self.scan)
+        from PySide6.QtCore import QSettings
+        self._qs = QSettings("easyMeasure", "gui")
+        self.identify = QCheckBox("ask *IDN?")
+        self.identify.setToolTip("identify GPIB / USB / LAN instruments while scanning (sends "
+                                 "*IDN? to each one not in use; slower)")
+        self.identify.setChecked(self._qs.value("scan_identify", True, type=bool))
+        self.identify.toggled.connect(lambda on: self._qs.setValue("scan_identify", on))
+        arow = QHBoxLayout()
+        arow.setContentsMargins(0, 0, 0, 0)
+        arow.addWidget(self.address, 1)
+        arow.addWidget(self.refresh)
+        arow.addWidget(self.identify)
+        self.scan_status = QLabel("")
+        self.scan_status.setWordWrap(True)
+        self.scan_status.setStyleSheet("color: gray")
         self.options = QPlainTextEdit()
         self.options.setMinimumHeight(160)
         form = QFormLayout(self)
         form.addRow("Name", self.name)
         form.addRow("Driver", self.driver)
         form.addRow("", self.desc)
-        form.addRow("Address", self.address)
+        form.addRow("Address", arow)
+        form.addRow("", self.scan_status)
         form.addRow("Options (JSON)", self.options)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
+        self._fixed_address = bool(inst) or bool(preset and preset.get("address"))
         self.driver.currentTextChanged.connect(self._driver_changed)
         if inst:
             self.driver.setCurrentText(inst["driver"])
             self.options.setPlainText(json.dumps(to_jsonable(inst.get("options", {})), indent=2))
+            self._driver_changed(inst["driver"])
+            self.address.setEditText(inst["address"])
         else:
             if preset and preset.get("driver") in drivers:
                 self.driver.setCurrentText(preset["driver"])
             self._driver_changed(self.driver.currentText())
             if preset:
                 self.name.setText(preset.get("name", ""))
-                self.address.setText(preset.get("address") or "NONE")
+                if preset.get("address"):
+                    self.address.setEditText(preset["address"])
         self.result_value = None
+        if InstrumentDialog.scan_cache is None:
+            self.scan()
 
+    # -- address list -----------------------------------------------------------------
+    def scan(self) -> None:
+        if self.conn is None:
+            return
+        self.refresh.setEnabled(False)
+        self.scan_status.setText("scanning ports%s…" % (" and asking *IDN?" if
+                                                        self.identify.isChecked() else ""))
+
+        def ok(r):
+            InstrumentDialog.scan_cache = r
+            self._alive(lambda: (self.refresh.setEnabled(True), self._fill()))
+
+        def err(e):
+            self._alive(lambda: (self.refresh.setEnabled(True),
+                                 self.scan_status.setText("scan failed: %s" % e)))
+        self.conn.request("discover_resources", {"identify": self.identify.isChecked()},
+                          on_ok=ok, on_err=err, timeout=120)
+
+    def _alive(self, fn) -> None:
+        try:                                    # the dialog may be gone by now
+            fn()
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _matches(entry: dict, patterns) -> bool:
+        idn = str(entry.get("idn") or "").casefold()
+        return bool(idn) and any(p.casefold() in idn for p in patterns if p)
+
+    def entries(self) -> list:
+        """(address, label, matches, found) offered for the current driver, best first
+        (found = from the scan, not a suggestion)."""
+        d = self.drivers.get(self.driver.currentText(), {})
+        accepted = set(d.get("interfaces") or [])
+        from ...backend.resources import interface_of
+        out, seen = [], set()
+        found = (InstrumentDialog.scan_cache or {}).get("found", [])
+        for e in found:
+            kind = e.get("interface") or interface_of(e["address"])
+            if accepted and kind not in accepted:
+                continue
+            match = self._matches(e, d.get("idn_match") or [])
+            text = e.get("idn") or e.get("description") or ""
+            label = e["address"] + ("   — " + text if text else "")
+            if match:
+                label += "   ✓"
+            if e.get("in_use"):
+                use = e["in_use"]
+                label += "   (in use%s)" % (": " + ", ".join(use) if isinstance(use, list) else "")
+            out.append((0 if match else 1, 1 if e.get("in_use") else 0, e["address"], label, match,
+                        True))
+            seen.add(e["address"].upper())
+        out.sort(key=lambda t: t[:3])
+        for sg in d.get("suggest") or []:
+            if sg["address"].upper() not in seen:
+                out.append((2, 0, sg["address"], "%s   — %s" % (sg["address"], sg["description"]),
+                            False, False))
+        return [(a, label, m, f) for _, _, a, label, m, f in out]
+
+    def _fill(self) -> None:
+        keep = self.address.currentText()
+        items = self.entries()
+        self.address.blockSignals(True)
+        self.address.clear()
+        for a, label, m, _ in items:
+            self.address.addItem(label, a)
+        self.address.setCurrentIndex(-1)
+        self.address.blockSignals(False)
+        fm = self.address.view().fontMetrics()           # the popup shows whole labels
+        widest = max([fm.horizontalAdvance(label) for _, label, _, _ in items] or [0])
+        self.address.view().setMinimumWidth(min(widest + 40, 1100))
+        self.address.view().setTextElideMode(Qt.ElideRight)
+        self.address.setEditText(self._addr_of(keep))
+        d = self.drivers.get(self.driver.currentText(), {})
+        from ...backend.resources import INTERFACE_NAMES, interface_of
+        accepted = d.get("interfaces") or []
+        if not self._fixed_address:
+            best = next((a for a, label, m, _ in items if m and "(in use" not in label), None)
+            cur = self.address.currentText().strip()
+            if best:
+                self.address.setEditText(best)
+            elif accepted and interface_of(cur) not in accepted:
+                self.address.setEditText("")
+        cache = InstrumentDialog.scan_cache
+        n_found = sum(1 for *_, f in items if f)
+        parts = ["takes: " + ", ".join(INTERFACE_NAMES.get(k, k) for k in accepted)] \
+            if accepted else []
+        if cache is None:
+            parts.append("not scanned yet")
+        else:
+            hits = sum(1 for _, _, m, _ in items if m)
+            parts.append("%d port(s) found for this driver%s" % (
+                n_found, (", %d identified ✓" % hits) if hits else ""))
+            parts += cache.get("notes", [])
+        self.scan_status.setText("\n".join(parts))
+
+    def _picked(self, index: int) -> None:
+        a = self.address.itemData(index)
+        if a:
+            self.address.setEditText(a)
+
+    def _addr_of(self, text: str) -> str:
+        """The address for what the box shows (a list label maps to its address)."""
+        t = (text or "").strip()
+        for i in range(self.address.count()):
+            if self.address.itemText(i) == t:
+                return self.address.itemData(i)
+        return t
+
+    def address_text(self) -> str:
+        return self._addr_of(self.address.currentText()) or "NONE"
+
+    # ---------------------------------------------------------------------------------
     def _driver_changed(self, name):
         d = self.drivers.get(name, {})
         self.desc.setText(d.get("description", ""))
+        self._fill()
         if not self.name.isEnabled():
             return
         self.options.setPlainText(json.dumps(to_jsonable(d.get("options", {})), indent=2))
@@ -91,8 +248,17 @@ class InstrumentDialog(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, "Name", "Name required")
             return
+        from ...backend.resources import INTERFACE_NAMES, interface_of
+        address = self.address_text()
+        accepted = self.drivers.get(self.driver.currentText(), {}).get("interfaces") or []
+        if accepted and interface_of(address) not in accepted:
+            QMessageBox.warning(self, "Address", "%s does not take %s addresses (%s).\nIt takes: %s"
+                                % (self.driver.currentText(),
+                                   INTERFACE_NAMES.get(interface_of(address)), address,
+                                   ", ".join(INTERFACE_NAMES.get(k, k) for k in accepted)))
+            return
         self.result_value = {"name": self.name.text().strip(), "driver": self.driver.currentText(),
-                             "address": self.address.text().strip() or "NONE", "options": opts}
+                             "address": address, "options": opts}
         self.accept()
 
 
@@ -565,7 +731,7 @@ class SetupPanel(QWidget):
             self._load_drivers()
             self.msg.setText("loading driver list, try again in a moment")
             return
-        dlg = InstrumentDialog(self.drivers, parent=self, preset=preset)
+        dlg = InstrumentDialog(self.drivers, parent=self, preset=preset, conn=self.conn)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
             self.msg.setText("connecting %s…" % v["name"])
@@ -577,7 +743,8 @@ class SetupPanel(QWidget):
         inst = next((i for i in self.model.instruments() if i["name"] == name), None)
         if inst is None:
             return
-        dlg = InstrumentDialog(self.drivers or {inst["driver"]: {}}, inst, parent=self)
+        dlg = InstrumentDialog(self.drivers or {inst["driver"]: {}}, inst, parent=self,
+                               conn=self.conn)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
             self.conn.request("update_instrument", {"name": name, "address": v["address"],

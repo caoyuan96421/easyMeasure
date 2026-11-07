@@ -36,6 +36,7 @@ import math
 import re
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument
 
@@ -57,6 +58,7 @@ def _limit(mode: str, full: float) -> float:
 
 class Yokogawa7651(SCPIInstrument):
     DESCRIPTION = "Yokogawa 7651 programmable DC voltage / current source"
+    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     ACTIONS = [ActionSpec("zero", "set the output value to 0 (range and output unchanged)")]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, write_termination="\r\n")
 
