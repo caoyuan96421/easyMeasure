@@ -353,6 +353,7 @@ callback, files load and slides render in worker threads.
 | `sr830` | SRS SR830 / SR850 (and SR810) lock-in | `X`, `Y`, `R`, `theta`, `Xn`, `Yn`, `aux_in1…4`; sources `sine_out`, `frequency`, `phase`, `aux_out1…4`; *`reference`*, *`sensitivity`*, *`time_constant`*, *`rolloff`*, *`coupling`*, *`ground`*, *`line_filter`*, *`input`*, *`reserve`*, *`harmonic`*, *`sync_filter`*; actions auto gain / phase / reserve |
 | `hp34401a` | HP/Agilent 34401A DMM | one reading named after *`mode`*: `Vdc`, `Vac`, `Idc`, `Iac`, `R2w`, `R4w`; *`range`*, *`nplc`*, *`autozero`* (DC/Ω), *`ac_filter`* (AC) |
 | `ni6211` | NI USB-6211 DAQ (NI-DAQmx) | `ai0…ai15` (`ai0…7` in DIFF), vector `ai`, `ao0`, `ao1`, `di0…3`, `do0…3`, `ctr0`, `ctr1`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`* |
+| `ni63xx` | NI USB-63xx X Series DAQ: USB-6341/6343/6346/6349/6351/6353/6356/6361/6363/6366 (NI-DAQmx) | channels follow *`model`* (auto = as reported): `ai0…` (8–32), vector `ai`, `ao0…` (2–4), digital lines `dio0…` (port 0: 8 or 32) and `pfi0…15`, `ctr0…3`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`*, *`ao_range`*; actions `reset_counters`, `release_digital` |
 | `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
 | `hp4145` | HP 4145A/B, HP 4155/4156 in 4145 syntax (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
 
@@ -417,6 +418,32 @@ e.g. `"0-3"`, scans fewer inputs for higher rates). `samples = 1` is a single
 on-demand conversion (sub-millisecond). `ai` returns all inputs of one scan as a
 vector.
 
+**NI USB-63xx (X Series).** One driver for the ten USB X Series models (BNC, screw
+terminal, mass termination and OEM variants). The configuration item **`model`**
+(also an instrument option, so a setup keeps it) picks the exact model and the
+channel list is rebuilt from NI's specifications for it:
+
+| model | analog in | out | port 0 | AI ranges | AO ranges | max rate |
+|---|---|---|---|---|---|---|
+| USB-6341 / 6343 | 16 / 32 SE (8 / 16 DIFF) | 2 / 4 | 8 / 32 | ±0.2…10 V (4) | ±10 V | 500 kS/s total |
+| USB-6351 / 6353 | 16 / 32 SE (8 / 16 DIFF) | 2 / 4 | 8 / 32 | ±0.1…10 V (7) | ±10, ±5 V | 1.25 MS/s one input, 1 MS/s total |
+| USB-6361 / 6363 | 16 / 32 SE (8 / 16 DIFF) | 2 / 4 | 8 / 32 | ±0.1…10 V (7) | ±10, ±5 V | 2 MS/s one input, 1 MS/s total |
+| USB-6346 / 6349 | 8 / 32 DIFF, simultaneous | 2 | 8 | ±1…10 V (4) | ±10 V | 500 kS/s per input |
+| USB-6356 | 8 DIFF, simultaneous | 2 | 8 | ±1…10 V (4) | ±10, ±5 V | 1.25 MS/s per input |
+| USB-6366 | 8 DIFF, simultaneous | 2 | 8 | ±1…10 V (4) | ±10, ±5 V | 2 MS/s per input |
+
+All have 16 PFI lines (`pfi0…15` = P1/P2) and 4 counters. `model = auto` takes
+what the device reports; a model that does not match the device is refused (a
+device type the table does not know is trusted to be the model you set). Settings the
+new model does not support fall back (terminal → RSE or DIFF, ranges → ±10 V, rate
+lowered to fit) with a log message. In DIFF the
+inputs are the pairs aiK/aiK+8, so `ai0…7` (and `ai16…23` on the 32-input models).
+Digital lines are inputs until written; a written line is an output driving that
+level until `release_digital`. A counter (`ctrK`, started by its first reading)
+uses its default source PFI 8 / 3 / 0 / 5, which then refuses to be a digital line.
+`DAQ::SIM` emulates the chosen model (`auto` → USB-6363) with a loop-back: `aiK`
+sees `aoK`, each digital line is wired to the one half a port away.
+
 **Common options.** `reset` (`*RST` on connect), `check_errors` (read the error queue
 after every setting so a refused value raises an error with the instrument's own
 message, default on), `verify_writes` (SMUs: read every source value back — worth it
@@ -424,7 +451,7 @@ on RS-232), `gpib_addr` + `shared` (several instruments behind one Prologix GPIB
 adapter: `++addr N` selects each), `timeout`, `read_termination`.
 
 **Without hardware.** Give a SCPI driver a `SIM::<name>` address and it talks to a
-built-in emulator of the instrument (`ni6211`: `DAQ::SIM`). The emulators implement
+built-in emulator of the instrument (`ni6211`, `ni63xx`: `DAQ::SIM`). The emulators implement
 the instruments' command tables from their programming manuals (short/long SCPI
 forms, optional nodes, error queue, `*ESR?`), physics good enough to see something
 (an SMU into a resistor with compliance clamping, a lock-in with a phase-shifted

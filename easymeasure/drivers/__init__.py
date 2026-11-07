@@ -9,7 +9,8 @@ not drivers) plus ``<home>/drivers`` (drivers made with the Driver Wizard, see
 Hardware drivers
     ``keithley2400``, ``keysight_b2901``, ``keysight_b2902`` (source-measure units),
     ``sr830`` (SR830 / SR850 lock-in amplifiers), ``hp34401a`` (6.5 digit DMM),
-    ``ni6211`` (NI USB-6211 multifunction DAQ), ``yokogawa7651`` (DC voltage /
+    ``ni6211`` (NI USB-6211 multifunction DAQ), ``ni63xx`` (NI USB-63xx X Series
+    DAQs, channels by model), ``yokogawa7651`` (DC voltage /
     current source), ``hp4145`` (HP 4145A/B and 4155/4156 in 4145 syntax, user
     mode), ``scpi_generic`` (any SCPI device, configured by options).
 

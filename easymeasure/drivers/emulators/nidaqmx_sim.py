@@ -1,15 +1,20 @@
-"""A stand-in for the ``nidaqmx`` package emulating one USB-6211 per device name.
+"""A stand-in for the ``nidaqmx`` package emulating one NI USB DAQ per device name.
 
-Only the part of the nidaqmx API the ``ni6211`` driver uses is provided, with
-the same names, argument conventions and return shapes as nidaqmx 1.x
-(``task.read()`` gives a float for one channel, a list per channel for several,
-lists of samples for timed reads).  The emulated card is wired as a loop-back
-test box: ``ai0``/``ai1`` see ``ao0``/``ao1``, ``ai2 … ai15`` carry
-``0.1 V × index`` plus a little noise, ``port0`` (digital inputs) reads back
-``port1`` (digital outputs), and both counters count a 1 kHz clock.
+Only the part of the nidaqmx API the ``ni6211`` / ``ni63xx`` drivers use is
+provided, with the same names, argument conventions and return shapes as
+nidaqmx 1.x (``task.read()`` gives a float for one channel, a list per channel
+for several, lists of samples for timed reads).  Each card is a USB-6211 unless
+:func:`define` makes it another model of :mod:`.._nidaq_models` (channel counts,
+ranges, rates, digital port layout).  The card is wired as a loop-back test box:
+``aiK`` sees ``aoK`` (for every output), the other inputs carry ``0.1 V × index``
+plus a little noise, every counter counts a 1 kHz clock; USB-6211: ``port0``
+(digital inputs) reads ``port1`` (outputs); X Series: every digital line is wired
+to the line half a port away (P0.0 ↔ P0.4 on an 8-line port), an input reads
+what its partner drives, otherwise 0 (pull-down).
 
 Errors follow DAQmx: invalid channels, ranges, rates or a resource that is
-already reserved raise :class:`errors.DaqError` with DAQmx's error codes.
+already reserved (a digital line used by two tasks, an X Series counter's source
+PFI used as a digital line) raise :class:`errors.DaqError` with DAQmx's codes.
 """
 
 from __future__ import annotations
@@ -23,8 +28,8 @@ from typing import Dict, List
 
 import numpy as np
 
-AI_RANGES = (0.2, 1.0, 5.0, 10.0)
-MAX_AGGREGATE_RATE = 250e3
+from .._nidaq_models import MODELS, X_COUNTER_SOURCE_PFI, DaqModel
+
 PRODUCT = "USB-6211"
 
 
@@ -84,10 +89,11 @@ errors = types.SimpleNamespace(DaqError=DaqError, Error=Exception)
 
 # -- the emulated card ---------------------------------------------------------------
 class _Card:
-    def __init__(self, name: str):
+    def __init__(self, name: str, product: str = PRODUCT):
         self.name = name
-        self.ao = [0.0, 0.0]
-        self.do = [False] * 4
+        self.model: DaqModel = MODELS[product]
+        self.ao = [0.0] * self.model.ao
+        self.dout: Dict[str, bool] = {}              # "port1/line2" -> driven level
         self.t0 = time.monotonic()
         self.reserved: Dict[str, object] = {}       # physical resource -> task
         self.lock = threading.Lock()
@@ -98,9 +104,28 @@ class _Card:
         if m:
             return self.ao[int(m.group(1))]
         k = int(ch[2:])
-        if k in (0, 1):
+        if k < len(self.ao):
             return self.ao[k] + float(self.rng.normal(0, 1e-4))
         return 0.1 * k + float(self.rng.normal(0, 1e-4))
+
+    def line_in(self, line: str) -> bool:
+        """Level seen by a digital input."""
+        if line in self.dout:
+            return self.dout[line]
+        port, k = re.fullmatch(r"port(\d+)/line(\d+)", line).groups()
+        port, k = int(port), int(k)
+        if self.model.family == "M":                 # USB-6211: P0 inputs see P1 outputs
+            return self.dout.get("port1/line%d" % k, False)
+        n = self.model.ports[port]
+        return self.dout.get("port%d/line%d" % (port, (k + n // 2) % n), False)
+
+    def line_ok(self, line: str, direction: str) -> bool:
+        m = re.fullmatch(r"port(\d+)/line(\d+)", line)
+        if not m:
+            return False
+        port, k = int(m.group(1)), int(m.group(2))
+        return (port < len(self.model.ports) and k < self.model.ports[port]
+                and direction in self.model.port_dirs[port])
 
 
 _cards: Dict[str, _Card] = {}
@@ -115,6 +140,17 @@ def card(name: str) -> _Card:
         return c
 
 
+def define(name: str, product: str) -> _Card:
+    """Make the emulated device *name* a *product* (a fresh card, unless it already is one)."""
+    if product not in MODELS:
+        raise DaqError("Device type not supported by the emulator: %s" % product, -200220)
+    with _cards_lock:
+        c = _cards.get(name)
+        if c is None or c.model.product != product:
+            c = _cards[name] = _Card(name, product)
+        return c
+
+
 def reset() -> None:
     with _cards_lock:
         _cards.clear()
@@ -126,7 +162,7 @@ class Device:
 
     @property
     def product_type(self) -> str:
-        return PRODUCT
+        return card(self.name).model.product
 
 
 system = types.SimpleNamespace(Device=Device)
@@ -168,6 +204,9 @@ class _Collection:
         if self.task.card is not None and self.task.card is not c:
             raise DaqError("Channels of several devices in one task", -200170)
         self.task.card = c
+        if self.kind == "ai" and self.task.channels and \
+                any(k != "ai" for k, _ in self.task.channels):
+            raise DaqError("Mixed channel types in one task", -200559)
         for n in names:
             check(n)
             self.task.channels.append((self.kind, n))
@@ -182,15 +221,19 @@ class _Collection:
             raise DaqError("Requested range is not supported by the device", -200077)
 
         def check(n):
+            md = self.task.card.model
             m = re.fullmatch(r"ai(\d+)", n)
-            internal = re.fullmatch(r"_ao[01]_vs_aognd", n)
-            if not m and not internal:
+            internal = re.fullmatch(r"_ao(\d)_vs_aognd", n)
+            if internal and int(internal.group(1)) < md.ao:
+                return
+            if not m or int(m.group(1)) >= md.ai:
                 raise DaqError("Physical channel %s does not exist" % n, -200170)
-            if m:
-                k = int(m.group(1))
-                if k > 15 or (terminal_config == TerminalConfiguration.DIFF and k > 7):
-                    raise DaqError("Physical channel %s does not support this terminal "
-                                   "configuration" % n, -200077)
+            k = int(m.group(1))
+            diff = terminal_config == TerminalConfiguration.DIFF
+            if (diff and k not in md.diff_inputs()) or (md.simultaneous and terminal_config not in (
+                    TerminalConfiguration.DIFF, TerminalConfiguration.DEFAULT)):
+                raise DaqError("Physical channel %s does not support this terminal "
+                               "configuration" % n, -200077)
         return self._add(physical_channel, check)
 
     def add_ao_voltage_chan(self, physical_channel, name_to_assign_to_channel="", min_val=-10.0,
@@ -199,28 +242,30 @@ class _Collection:
             raise DaqError("Requested range is not supported by the device", -200077)
 
         def check(n):
-            if not re.fullmatch(r"ao[01]", n):
+            m = re.fullmatch(r"ao(\d+)", n)
+            if not m or int(m.group(1)) >= self.task.card.model.ao:
                 raise DaqError("Physical channel %s does not exist" % n, -200170)
         return self._add(physical_channel, check)
 
     def add_di_chan(self, lines, name_to_assign_to_lines="",
                     line_grouping=LineGrouping.CHAN_FOR_ALL_LINES):
         def check(n):
-            if not re.fullmatch(r"port0/line[0-3]", n):
+            if not self.task.card.line_ok(n, "i"):
                 raise DaqError("Line %s cannot be used for digital input" % n, -200170)
         return self._add(lines, check)
 
     def add_do_chan(self, lines, name_to_assign_to_lines="",
                     line_grouping=LineGrouping.CHAN_FOR_ALL_LINES):
         def check(n):
-            if not re.fullmatch(r"port1/line[0-3]", n):
+            if not self.task.card.line_ok(n, "o"):
                 raise DaqError("Line %s cannot be used for digital output" % n, -200170)
         return self._add(lines, check)
 
     def add_ci_count_edges_chan(self, counter, name_to_assign_to_channel="", edge=Edge.RISING,
                                 initial_count=0, count_direction=CountDirection.COUNT_UP):
         def check(n):
-            if not re.fullmatch(r"ctr[01]", n):
+            m = re.fullmatch(r"ctr(\d+)", n)
+            if not m or int(m.group(1)) >= self.task.card.model.counters:
                 raise DaqError("Physical channel %s does not exist" % n, -200170)
         names = self._add(counter, check)
         self.task.count0 = int(initial_count)
@@ -272,9 +317,13 @@ class Task:
         out = []
         if "ai" in kinds:
             out.append("ai")                    # one AI task at a time (single ADC)
+        md = self.card.model
         for k, n in self.channels:
-            if k in ("ao", "ci"):
+            if k in ("ao", "ci", "di", "do"):
                 out.append(n)
+            if k == "ci" and md.family == "X":       # the counter's source terminal
+                pfi = X_COUNTER_SOURCE_PFI[int(n[3:])]
+                out.append("port%d/line%d" % (1 + pfi // 8, pfi % 8))
         if self.rate is not None and "ao" in kinds:
             out.append("ao_timing")
         return out
@@ -291,6 +340,9 @@ class Task:
                                    "be completed as specified. (%s)" % r, -50103)
             for r in self._resources():
                 c.reserved[r] = self
+            for k, n in self.channels:
+                if k == "di":
+                    c.dout.pop(n, None)          # an input task makes the line an input
 
     def _release(self):
         c = self.card
@@ -319,10 +371,14 @@ class Task:
 
     def _validate_timing(self):
         if self.rate is not None:
+            md = self.card.model
             n = len(self.channels)
-            if self.rate * n > MAX_AGGREGATE_RATE * 1.0000001:
-                raise DaqError("Sample clock rate exceeds the device's maximum (%.0f S/s "
-                               "aggregate)" % MAX_AGGREGATE_RATE, -200077)
+            tol = 1.0000001
+            if self.rate > md.ai_single * tol or (not md.simultaneous and n > 1 and
+                                                  self.rate * n > md.ai_aggregate * tol):
+                raise DaqError("Sample clock rate exceeds the device's maximum (%.0f S/s per "
+                               "channel, %.0f S/s aggregate)" % (md.ai_single, md.ai_aggregate),
+                               -200077)
 
     def start(self):
         self._check()
@@ -339,7 +395,7 @@ class Task:
     def close(self):
         self.running = False
         self._release()
-        self.closed = True
+        self.closed = True                  # a closed DO task's lines keep their level
 
     def is_task_done(self):
         return True
@@ -367,11 +423,12 @@ class Task:
             return data[0] if len(data) == 1 else data
         if kind == "ao":
             raise DaqError("Read is not supported on output tasks of this device", -200473)
-        if kind == "di":
-            vals = [c.do[int(ch[-1])] for _, ch in self.channels]
-            return vals[0] if len(vals) == 1 else vals
-        if kind == "do":
-            vals = [c.do[int(ch[-1])] for _, ch in self.channels]
+        if kind in ("di", "do"):
+            self._reserve()
+            if kind == "di":
+                vals = [c.line_in(ch) for _, ch in self.channels]
+            else:
+                vals = [c.dout.get(ch, False) for _, ch in self.channels]
             return vals[0] if len(vals) == 1 else vals
         if kind == "ci":
             if not self.running:
@@ -389,12 +446,13 @@ class Task:
         for (k, ch), v in zip(self.channels, vals):
             if k == "ao":
                 v = float(v)
-                if not -10.0 - 1e-9 <= v <= 10.0 + 1e-9:
+                lim = max(c.model.ao_ranges)
+                if not -lim - 1e-9 <= v <= lim + 1e-9:
                     raise DaqError("Requested value is not a supported value for this property",
                                    -200077)
-                c.ao[int(ch[-1])] = v
+                c.ao[int(ch[2:])] = v
             elif k == "do":
-                c.do[int(ch[-1])] = bool(v)
+                c.dout[ch] = bool(v)
             else:
                 raise DaqError("Write is not supported for input tasks", -200473)
         return 1
