@@ -434,6 +434,26 @@ def test_instrument_dialog_address_list(app, gui, monkeypatch):
     InstrumentDialog.scan_cache = None
 
 
+def test_monitor_tile_shows_long_names(app, gui):
+    """A long channel name uses the width of its tile and is cut with "…" only when the
+    tile is too narrow (full name in the tooltip)."""
+    w, be, _, _ = gui
+    be.define_alias(name="sample_temperature_long", target="dmm.reading")
+    be.monitor_add("sample_temperature_long", 0.5)
+    assert pump(app, 5, lambda: "sample_temperature_long" in w.monitor.tiles)
+    t = w.monitor.tiles["sample_temperature_long"]
+    w.monitor.resize(520, 400)
+    t.resize(500, 220)
+    pump(app, 0.5, lambda: t.every.text())
+    assert t.every.text() == "every 0.5 s"
+    assert t.title.text() == "sample_temperature_long"          # whole, not cut at ~10
+    assert t.title.toolTip() == "sample_temperature_long"
+    t.title.resize(90, t.title.height())                   # a narrow tile
+    shown = t.title.text()
+    assert shown.endswith("…") and "sample_temperature_long".startswith(shown[:-1])
+    be.monitor_remove("sample_temperature_long")
+
+
 def test_gui_lock(app, gui):
     """The lock button greys out every control of instruments / sweep / queue /
     manual / monitors and the backend commands; tabs, plots and their settings stay

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, Q
 
 from ..plotting import colormaps
 
-from ..widgets import FlowLayout, shrinkable_label
+from ..widgets import ElidedLabel, FlowLayout, shrinkable_label
 
 HISTORY = 3000
 
@@ -29,7 +29,9 @@ class MonitorTile(QFrame):
         self.latest = None
         self.dirty = False
         self.kind = None
-        self.title = shrinkable_label(QLabel("<b>%s</b>" % name), wrap=False)
+        self.title = ElidedLabel(name, bold=True)
+        self.every = QLabel("")
+        self.every.setStyleSheet("color: gray")
         self.value = shrinkable_label(QLabel("—"), wrap=False)
         from ..display import register_font
         register_font(self.value, 1.7, monospace=True)
@@ -45,8 +47,8 @@ class MonitorTile(QFrame):
         self.span.addItems(["1 min", "10 min", "1 h", "all"])
         self.span.setCurrentIndex(1)
         head = QHBoxLayout()
-        head.addWidget(self.title)
-        head.addStretch(1)
+        head.addWidget(self.title, 1)                 # the name takes what the row has
+        head.addWidget(self.every)
         head.addWidget(self.span)
         head.addWidget(rm)
         self.plot = pg.PlotWidget()
@@ -183,7 +185,7 @@ class MonitorPanel(QWidget):
                 self._drop_tile(name)
         for m in st.get("monitor", []):
             tile = self._tile(m["channel"])
-            tile.title.setText("<b>%s</b> <small>every %.3g s</small>" % (m["channel"], m["interval"]))
+            tile.every.setText("every %.3g s" % m["interval"])
 
     def _tile(self, name: str) -> MonitorTile:
         t = self.tiles.get(name)

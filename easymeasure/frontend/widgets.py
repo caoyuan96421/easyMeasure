@@ -107,6 +107,50 @@ def shrinkable_label(label: QLabel, wrap: bool = True) -> QLabel:
     return label
 
 
+class ElidedLabel(QLabel):
+    """One-line plain-text label that uses the width it is given and ends in "…" when
+    it has to (full text in the tooltip); it never forces its row wider."""
+
+    def __init__(self, text: str = "", parent=None, bold: bool = False):
+        super().__init__(parent)
+        self._full = ""
+        if bold:
+            f = self.font()
+            f.setBold(True)
+            self.setFont(f)
+        sp = self.sizePolicy()
+        sp.setHorizontalPolicy(QSizePolicy.Ignored)
+        self.setSizePolicy(sp)
+        self.setMinimumWidth(30)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._fit()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def _fit(self) -> None:
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(0, self.width()))
+        QLabel.setText(self, shown)
+
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._fit()
+
+    def changeEvent(self, ev) -> None:
+        super().changeEvent(ev)
+        if ev.type() == QEvent.FontChange:
+            self._fit()
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        sh.setWidth(self.fontMetrics().horizontalAdvance(self._full) + 4)
+        return sh
+
+
 class _ShrinkFilter(QObject):
     """Application-wide: combo boxes size to a short minimum instead of their
     longest entry (long channel names, axis labels, file names ...)."""
