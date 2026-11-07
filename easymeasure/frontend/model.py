@@ -55,6 +55,36 @@ class BackendModel(QObject):
             self.message.emit("info", "slide added to %s" % data.get("path"))
 
     # ---- convenience accessors -------------------------------------------------
+    def data_dir(self) -> str:
+        """The backend's data directory ('' before the first state arrives)."""
+        return str((self.state.get("settings") or {}).get("data_dir") or "")
+
+    def data_dialog_dir(self) -> str:
+        """Where a dialog for data files opens: the folder last used inside the data
+        directory, else the data directory itself (never the working directory)."""
+        import os
+        from PySide6.QtCore import QSettings
+        root = self.data_dir()
+        last = str(QSettings("easyMeasure", "gui").value("last_data_dir", "") or "")
+        if root and os.path.isdir(root):
+            if last and os.path.isdir(last):
+                try:
+                    if os.path.commonpath([os.path.abspath(last), os.path.abspath(root)]) == \
+                            os.path.abspath(root):
+                        return last
+                except ValueError:                  # other drive (Windows)
+                    pass
+            return root
+        if last and os.path.isdir(last):
+            return last
+        return os.path.expanduser("~")
+
+    @staticmethod
+    def remember_data_dir(path: str) -> None:
+        import os
+        from PySide6.QtCore import QSettings
+        QSettings("easyMeasure", "gui").setValue("last_data_dir", os.path.dirname(path))
+
     def aliases(self) -> List[dict]:
         return list((self.state.get("channels") or {}).get("aliases", []))
 

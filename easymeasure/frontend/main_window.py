@@ -465,12 +465,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ data --
     def open_data(self, path: Optional[str] = None):
         if not path:
-            start = self.qsettings.value("last_data_dir", "")
-            path, _ = QFileDialog.getOpenFileName(self, "Open data file", start,
+            path, _ = QFileDialog.getOpenFileName(self, "Open data file",
+                                                  self.model.data_dialog_dir(),
                                                   "easyMeasure data (*.emj *.h5);;All (*)")
             if not path:
                 return
-        self.qsettings.setValue("last_data_dir", os.path.dirname(path))
+        self.model.remember_data_dir(path)
         view = FileDataView(path)
         view.copyDefinition.connect(self._copy_to_editor)
         view.pptRequested.connect(self._ppt_for_view)

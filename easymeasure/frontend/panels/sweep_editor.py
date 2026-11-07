@@ -914,10 +914,13 @@ class SweepEditor(QWidget):
             QMessageBox.warning(self, "Load sweep", "Cannot load %s:\n%s" % (path, exc))
 
     def load_from_data(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load sweep from data file", "",
+        start = self.model.data_dialog_dir() if self.model is not None else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Load sweep from data file", start,
                                               "easyMeasure data (*.emj *.h5);;All (*)")
         if not path:
             return
+        if self.model is not None:
+            self.model.remember_data_dir(path)
         from ...backend.storage import read_header
         from ..workers import run_in_background
         run_in_background(lambda: read_header(path),

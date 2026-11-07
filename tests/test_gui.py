@@ -434,6 +434,32 @@ def test_instrument_dialog_address_list(app, gui, monkeypatch):
     InstrumentDialog.scan_cache = None
 
 
+def test_data_file_dialogs_start_in_the_data_folder(app, gui, monkeypatch, tmp_path):
+    """Open data file… and Load from data file start in the backend's data folder (or
+    the folder last used inside it), never in the working directory."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QFileDialog
+    w, be, _, _ = gui
+    data = be.get_settings()["data_dir"]
+    os.makedirs(data, exist_ok=True)
+    assert pump(app, 5, lambda: w.model.data_dir() == data)
+    QSettings("easyMeasure", "gui").setValue("last_data_dir", str(tmp_path))   # outside it
+    starts = []
+    answer = [""]
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        lambda parent, title, start, filt: (starts.append(start), (answer[0], ""))[1])
+    w.open_data()
+    w.editor.load_from_data()
+    assert starts == [data, data]
+    # a file picked in a subfolder of the data folder: the next dialogs start there
+    sub = os.path.join(data, "2026-11-07")
+    os.makedirs(sub, exist_ok=True)
+    w.model.remember_data_dir(os.path.join(sub, "run_0001.emj"))
+    w.open_data()
+    w.editor.load_from_data()
+    assert starts[2:] == [sub, sub]
+
+
 def test_ui_scale_not_stuck_on_an_inherited_value(app, monkeypatch):
     """A GUI (or tray) started by another easyMeasure process inherits its QT_SCALE_FACTOR:
     the current setting must still win; only a QT_SCALE_FACTOR the user set is kept."""
