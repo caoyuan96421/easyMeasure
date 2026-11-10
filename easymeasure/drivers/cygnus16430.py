@@ -20,8 +20,10 @@ relay.  Channels (``k`` = 1 … 8)
 ``Imeas<k>``        A      measured output current
 ``Ilimit<k>``       A      current limit, 0 … 40 mA (config)
 ``output<k>``              ON / OFF: the output relay (config)
-``voltages``        V      all 8 setpoints as a vector (written at once, ``VOLTA``)
-``Vmeas`` ``Imeas``        all 8 readings as vectors
+``voltAll``         V      all 8 setpoints as a vector (written at once, ``VOLTA``)
+``IlimitAll``       A      all 8 current limits as a vector (written at once, ``CURRA``)
+``VmeasAll``        V      all 8 measured voltages
+``ImeasAll``        A      all 8 measured currents
 ``Vrate`` ``Irate``        ADC filter word SF 13 … 255 for all voltage / current
                            readings (13: fastest, 255: lowest noise) (config)
 ``Vfilter`` ``Ifilter``    IIR filter α (0 … 1], 1 = off, set on every channel (config)
@@ -103,10 +105,12 @@ class Cygnus16430(SCPIInstrument):
                             config=True, allowed=ONOFF),
             ]
         ch += [
-            ChannelSpec("voltages", "rw", "float", (N,), "V",
+            ChannelSpec("voltAll", "rw", "float", (N,), "V",
                         "all 8 voltage setpoints (written together; all or none)"),
-            ChannelSpec("Vmeas", "r", "float", (N,), "V", "measured voltages of outputs 1 … 8"),
-            ChannelSpec("Imeas", "r", "float", (N,), "A", "measured currents of outputs 1 … 8"),
+            ChannelSpec("IlimitAll", "rw", "float", (N,), "A",
+                        "all 8 current limits (written together; all or none)", config=True),
+            ChannelSpec("VmeasAll", "r", "float", (N,), "V", "measured voltages of outputs 1 … 8"),
+            ChannelSpec("ImeasAll", "r", "float", (N,), "A", "measured currents of outputs 1 … 8"),
             ChannelSpec("Vrate", "rw", "float", (), "", "voltage ADC filter word SF 13 … 255: "
                         "a channel is read every 8·24·SF/32768 s (13: 76 ms, 255: 1.5 s)",
                         config=True),
@@ -193,11 +197,12 @@ class Cygnus16430(SCPIInstrument):
                 return "ON" if self.qb("OUTP? %d" % k) else "OFF"
             self._wait_fresh([k - 1])
             return self.qf("MEAS:%s? %d" % ("VOLT" if kind == "Vmeas" else "CURR", k))
-        if channel == "voltages":
-            return [self.qf("VOLT? %d" % k) for k in range(1, N + 1)]
-        if channel in ("Vmeas", "Imeas"):
+        if channel in ("voltAll", "IlimitAll"):
+            cmd = "VOLT? %d" if channel == "voltAll" else "CURR? %d"
+            return [self.qf(cmd % k) for k in range(1, N + 1)]
+        if channel in ("VmeasAll", "ImeasAll"):
             self._wait_fresh(range(N))
-            cmd = "MEAS:VOLT? %d" if channel == "Vmeas" else "MEAS:CURR? %d"
+            cmd = "MEAS:VOLT? %d" if channel == "VmeasAll" else "MEAS:CURR? %d"
             return [self.qf(cmd % k) for k in range(1, N + 1)]
         if channel in ("Vrate", "Irate"):
             sf = int(to_float(self.q("RATE? %s" % channel[0])))
@@ -225,14 +230,18 @@ class Cygnus16430(SCPIInstrument):
             on = str(value).strip().upper() in ("ON", "1", "TRUE")
             self.checked("OUTP %d,%s" % (k, "ON" if on else "OFF"))
             self._touch(k - 1)
-        elif channel == "voltages":
+        elif channel in ("voltAll", "IlimitAll"):
             vals = [float(v) for v in value]
             if len(vals) != N:
-                raise ChannelError("voltages takes 8 values (outputs 1 … 8)")
-            bad = [i + 1 for i, v in enumerate(vals) if not 0.0 <= v <= VMAX]
+                raise ChannelError("%s takes 8 values (outputs 1 … 8)" % channel)
+            volt = channel == "voltAll"
+            top = VMAX if volt else IMAX
+            bad = [i + 1 for i, v in enumerate(vals) if not 0.0 <= v <= top]
             if bad:
-                raise ChannelError("output %d: outside 0 … 150 V (nothing was set)" % bad[0])
-            self.checked("VOLTA " + ",".join("%.6f" % v for v in vals))
+                raise ChannelError("output %d: outside 0 … %s (nothing was set)"
+                                   % (bad[0], "150 V" if volt else "40 mA"))
+            self.checked(("VOLTA " if volt else "CURRA ") +
+                         ",".join(("%.6f" if volt else "%.8f") % v for v in vals))
             self._touch(*range(N))
         elif channel in ("Vrate", "Irate"):
             sf = float(value)

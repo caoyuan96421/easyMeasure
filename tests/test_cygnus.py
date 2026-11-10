@@ -30,7 +30,9 @@ def test_channels_and_interfaces(cyg):
     for k in range(1, 9):
         assert {"voltage%d" % k, "Vmeas%d" % k, "Imeas%d" % k, "Ilimit%d" % k,
                 "output%d" % k} <= names
-    assert h.spec("voltages").shape == (8,) and h.spec("Imeas").shape == (8,)
+    assert {"voltAll", "IlimitAll", "VmeasAll", "ImeasAll"} <= names
+    assert h.spec("voltAll").shape == (8,) and h.spec("ImeasAll").shape == (8,)
+    assert not ({"voltages", "Vmeas", "Imeas"} & names)
     assert h.spec("output3").allowed == ["ON", "OFF"] and h.spec("output3").config
     assert Cygnus16430.INTERFACES == ("serial", "sim")
     with pytest.raises(ChannelError, match="does not take GPIB"):
@@ -59,11 +61,11 @@ def test_outputs_limits_and_readback(cyg):
     assert be.read_channel("cyg.Imeas8") == pytest.approx(0.015)
     assert be.read_channel("cyg.Imeas1") == pytest.approx(0.005)
     # all at once
-    raw("cyg.voltages", [1, 2, 3, 4, 5, 6, 7, 8])
-    assert list(be.read_channel("cyg.voltages")) == [1, 2, 3, 4, 5, 6, 7, 8]
-    vm = be.read_channel("cyg.Vmeas")
+    raw("cyg.voltAll", [1, 2, 3, 4, 5, 6, 7, 8])
+    assert list(be.read_channel("cyg.voltAll")) == [1, 2, 3, 4, 5, 6, 7, 8]
+    vm = be.read_channel("cyg.VmeasAll")
     assert np.allclose(vm, [1, 2, 3, 4, 5, 6, 7, 8])
-    im = be.read_channel("cyg.Imeas")
+    im = be.read_channel("cyg.ImeasAll")
     assert im[0] == pytest.approx(1e-4) and im[7] == pytest.approx(8e-4) and im[3] == 0.0
     e = emu()
     assert "VOLTA 1.000000,2.000000,3.000000,4.000000,5.000000,6.000000,7.000000,8.000000" in e.log
@@ -72,8 +74,14 @@ def test_outputs_limits_and_readback(cyg):
         with pytest.raises(ChannelError, match="outside"):
             raw("cyg." + ch, val)
     with pytest.raises(ChannelError, match="nothing was set"):
-        raw("cyg.voltages", [1, 2, 3, 4, 5, 6, 7, 200])
-    assert list(be.read_channel("cyg.voltages")) == [1, 2, 3, 4, 5, 6, 7, 8]
+        raw("cyg.voltAll", [1, 2, 3, 4, 5, 6, 7, 200])
+    assert list(be.read_channel("cyg.voltAll")) == [1, 2, 3, 4, 5, 6, 7, 8]
+    raw("cyg.IlimitAll", [0.001] * 7 + [0.04])
+    assert list(be.read_channel("cyg.IlimitAll")) == [0.001] * 7 + [0.04]
+    assert "CURRA " + ",".join(["0.00100000"] * 7 + ["0.04000000"]) in e.log
+    assert be.read_channel("cyg.ImeasAll")[0] == pytest.approx(1e-4)   # 1 V: under 1 mA
+    with pytest.raises(ChannelError, match="outside 0 … 40 mA"):
+        raw("cyg.IlimitAll", [0.05] * 8)
     assert e.unknown == [] and e.err == ""            # only commands the firmware knows
 
 
