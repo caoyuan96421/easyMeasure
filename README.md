@@ -358,6 +358,11 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   of the present value `x`, e.g. `x + 0.01`). Writes are protected and ramped; while a
   ramp runs, further changes to that channel are coalesced. The mouse wheel only acts
   on a focused control, so scrolling the panel never moves an instrument.
+* **First start**: the first time the GUI meets a backend, it asks for the **data
+  folder** (every run is saved there) and the **PowerPoint file** slides are appended
+  to (empty = none), prefilled with the current values; *Ask me later* asks again at
+  the next GUI start. Both stay editable in *File → Settings*; a data folder that
+  cannot be created is refused.
 * **File → Settings → Display**: font size (applied immediately, also to plot axes)
   and an overall UI scale (50–300 %, applied on the next GUI start) to suit any
   screen resolution. The window can be made small: toolbars wrap, panels scroll.

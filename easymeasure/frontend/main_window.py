@@ -133,6 +133,78 @@ class SettingsDialog(QDialog):
                 "ppt_colormap": self.cmap.text().strip() or "viridis"}
 
 
+class FirstStartDialog(QDialog):
+    """Asked once per backend (until confirmed): where the data and the PowerPoint
+    slides go.  Both can be changed later in File → Settings…"""
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("easyMeasure – where to keep the results")
+        lay = QVBoxLayout(self)
+        intro = shrinkable_label(QLabel(
+            "<b>Please set or confirm where easyMeasure keeps its results.</b><br>"
+            "Every run is saved in the data folder; a slide with its plots can be appended to "
+            "a PowerPoint file when a sweep ends. Both can be changed later in "
+            "<i>File → Settings…</i>"))
+        lay.addWidget(intro)
+        form = QFormLayout()
+        data = settings.get("data_dir") or ""
+        self.data_dir = QLineEdit(data)
+        b1 = QPushButton("Browse…")
+        b1.clicked.connect(self._browse_data)
+        r1 = QHBoxLayout()
+        r1.addWidget(self.data_dir, 1)
+        r1.addWidget(b1)
+        form.addRow("Data folder", r1)
+        self.ppt = QLineEdit(settings.get("ppt_path") or
+                             (os.path.join(data, "results.pptx") if data else ""))
+        self.ppt.setPlaceholderText("empty: no slides")
+        b2 = QPushButton("Browse…")
+        b2.clicked.connect(self._browse_ppt)
+        r2 = QHBoxLayout()
+        r2.addWidget(self.ppt, 1)
+        r2.addWidget(b2)
+        form.addRow("PowerPoint file", r2)
+        self.auto_ppt = QCheckBox("append a slide automatically when a sweep ends")
+        self.auto_ppt.setChecked(bool(settings.get("auto_ppt", True)))
+        form.addRow("", self.auto_ppt)
+        lay.addLayout(form)
+        bb = QDialogButtonBox()
+        self.ok = bb.addButton("Use these", QDialogButtonBox.AcceptRole)
+        self.later = bb.addButton("Ask me later", QDialogButtonBox.RejectRole)
+        bb.accepted.connect(self._accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.resize(640, 0)
+
+    def _browse_data(self):
+        d = QFileDialog.getExistingDirectory(self, "Data folder", self.data_dir.text() or
+                                             os.path.expanduser("~"))
+        if d:
+            self.data_dir.setText(d)
+
+    def _browse_ppt(self):
+        p, _ = QFileDialog.getSaveFileName(self, "PowerPoint file", self.ppt.text() or
+                                           os.path.join(self.data_dir.text(), "results.pptx"),
+                                           "PowerPoint (*.pptx)",
+                                           options=QFileDialog.DontConfirmOverwrite)
+        if p:
+            self.ppt.setText(p if p.lower().endswith(".pptx") else p + ".pptx")
+
+    def _accept(self):
+        if not self.data_dir.text().strip():
+            QMessageBox.warning(self, "Data folder", "Choose a data folder.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        ppt = self.ppt.text().strip()
+        if ppt and not ppt.lower().endswith(".pptx"):
+            ppt += ".pptx"
+        return {"data_dir": self.data_dir.text().strip(), "ppt_path": ppt,
+                "auto_ppt": self.auto_ppt.isChecked(), "folders_confirmed": True}
+
+
 class MainWindow(QMainWindow):
     def __init__(self, conn: Optional[BackendConnection] = None, autostart_backend: bool = False):
         super().__init__()
@@ -144,6 +216,8 @@ class MainWindow(QMainWindow):
         self.qsettings = QSettings("easyMeasure", "gui")
         self.conn = conn or BackendConnection(parent=self)
         self.model = BackendModel(self.conn, self)
+        self._first_start_asked = False
+        self.model.stateChanged.connect(self._maybe_ask_folders)
         self._autostart = autostart_backend
         self._started_backend = False
 
@@ -408,6 +482,31 @@ class MainWindow(QMainWindow):
         from .panels.queue_panel import apply_queue_controls
         apply_queue_controls(self.queue_actions, {})          # nothing to control now
         apply_queue_controls(self.queue_panel.controls, {})
+
+    def _maybe_ask_folders(self, st: dict) -> None:
+        """First start of a backend: ask for the data folder and PowerPoint file (once per
+        GUI session until confirmed)."""
+        settings = st.get("settings") or {}
+        if self._first_start_asked or settings.get("folders_confirmed", True):
+            return
+        self._first_start_asked = True
+        dlg = FirstStartDialog(settings, self)
+        self.first_start_dialog = dlg
+
+        def done(result):
+            if result != QDialog.Accepted:
+                self._message("info", "data folder: %s (you will be asked again next time)"
+                              % settings.get("data_dir"))
+                return
+            self.conn.request("set_settings", dlg.values(),
+                              on_ok=lambda r: self._message(
+                                  "info", "data folder %s, slides %s" % (
+                                      r.get("data_dir"), r.get("ppt_path") or "off")),
+                              on_err=lambda e: (self._message("error", "settings: %s" % e),
+                                                setattr(self, "_first_start_asked", False),
+                                                self.model.refresh()))
+        dlg.finished.connect(done)
+        QTimer.singleShot(0, dlg.open)
 
     def _message(self, level, text):
         self.statusBar().showMessage(("⚠ " if level in ("error", "warning") else "") + str(text), 8000)

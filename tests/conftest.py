@@ -28,7 +28,8 @@ def _isolated_home(tmp_path, monkeypatch):
 def backend(tmp_path):
     from easymeasure.backend.service import Backend
     be = Backend(home=tmp_path / "emhome", log_to_console=False,
-                 settings={"export_hdf5": True, "fsync_interval": 0.05, "autosave_setup": True})
+                 settings={"export_hdf5": True, "fsync_interval": 0.05, "autosave_setup": True,
+                           "folders_confirmed": True})
     yield be
     be.close()
 

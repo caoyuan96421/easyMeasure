@@ -43,6 +43,7 @@ DEFAULT_SETTINGS = {
     "autosave_setup": True,
     "ppt_colormap": "viridis",
     "remote_access": False,      # start the internet gateway with the backend
+    "folders_confirmed": False,  # the GUI asked for the data folder / PowerPoint file once
 }
 
 
@@ -168,9 +169,17 @@ class Backend:
         unknown = [k for k in kwargs if k not in DEFAULT_SETTINGS]
         if unknown:
             raise ChannelError("unknown setting(s): %s" % ", ".join(unknown))
+        if kwargs.get("data_dir"):
+            try:                                  # usable? (created if missing) - else refuse
+                store = DataStore(Path(os.path.expanduser(str(kwargs["data_dir"]))))
+            except OSError as exc:
+                raise ChannelError("data folder %s cannot be used: %s"
+                                   % (kwargs["data_dir"], exc.strerror or exc)) from None
+            kwargs["data_dir"] = str(store.root)
+            self.store = store
+        elif "data_dir" in kwargs:
+            kwargs.pop("data_dir")                 # empty: keep the current one
         self.settings.update(kwargs)
-        if "data_dir" in kwargs and kwargs["data_dir"]:
-            self.store = DataStore(Path(kwargs["data_dir"]))
         try:
             setup_io.atomic_write_json(self._settings_file, self.settings)
         except Exception as exc:

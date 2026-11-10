@@ -182,3 +182,15 @@ def test_live_journal_readable_while_writing(tmp_path):
     ds = DataSet.load(p)          # another process may read it any time
     assert ds.points == 1 and ds.status == "incomplete"
     w.close()
+
+
+def test_unusable_data_folder_is_refused(backend, tmp_path):
+    from easymeasure.common.errors import ChannelError
+    blocker = tmp_path / "a_file"
+    blocker.write_text("x")
+    before = backend.get_settings()["data_dir"]
+    with pytest.raises(ChannelError, match="cannot be used"):
+        backend.set_settings(data_dir=str(blocker / "data"))
+    assert backend.get_settings()["data_dir"] == before
+    backend.set_settings(data_dir="")                        # empty: kept
+    assert backend.get_settings()["data_dir"] == before

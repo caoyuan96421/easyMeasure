@@ -434,6 +434,41 @@ def test_instrument_dialog_address_list(app, gui, monkeypatch):
     InstrumentDialog.scan_cache = None
 
 
+def test_first_start_asks_for_data_folder_and_ppt(app, gui, tmp_path):
+    """A backend whose folders were never confirmed: the GUI asks once (prefilled with
+    the current data folder and a PowerPoint file in it); 'Use these' stores them,
+    'Ask me later' leaves everything as it was."""
+    w, be, _, _ = gui
+    be.settings["folders_confirmed"] = False
+    w._first_start_asked = False
+    w.model.refresh()
+    assert pump(app, 5, lambda: getattr(w, "first_start_dialog", None) is not None
+                and w.first_start_dialog.isVisible())
+    dlg = w.first_start_dialog
+    assert dlg.data_dir.text() == be.settings["data_dir"]
+    assert dlg.ppt.text() == os.path.join(be.settings["data_dir"], "results.pptx")
+    dlg.later.click()                                       # ask me later: nothing changes
+    pump(app, 0.3)
+    assert be.settings["folders_confirmed"] is False
+    w.model.refresh()
+    pump(app, 0.3)
+    assert not w.first_start_dialog.isVisible()             # not again in this session
+    # next GUI session: asked again, and confirmed this time
+    w._first_start_asked = False
+    w.model.refresh()
+    assert pump(app, 5, lambda: w.first_start_dialog is not dlg and w.first_start_dialog.isVisible())
+    dlg = w.first_start_dialog
+    new = tmp_path / "measurements"
+    dlg.data_dir.setText(str(new))
+    dlg.ppt.setText(str(tmp_path / "slides"))
+    dlg.auto_ppt.setChecked(False)
+    dlg.ok.click()
+    assert pump(app, 5, lambda: be.settings["folders_confirmed"] is True)
+    assert be.settings["data_dir"] == str(new) and new.is_dir() and be.store.root == new
+    assert be.settings["ppt_path"] == str(tmp_path / "slides.pptx")
+    assert be.settings["auto_ppt"] is False
+
+
 def test_data_file_dialogs_start_in_the_data_folder(app, gui, monkeypatch, tmp_path):
     """Open data file… and Load from data file start in the backend's data folder (or
     the folder last used inside it), never in the working directory."""
