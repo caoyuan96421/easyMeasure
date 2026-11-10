@@ -10,7 +10,7 @@ from easymeasure.common.errors import ChannelError, LimitError
 from easymeasure.drivers.emulators import SCPIEmulator, compile_pattern, split_args
 from easymeasure.drivers.simbus import get_bus
 
-HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211", "ni63xx",
+HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211", "ni63xx", "cygnus16430",
       "yokogawa7651", "hp4145"]
 
 

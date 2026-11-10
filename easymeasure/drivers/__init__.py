@@ -12,7 +12,8 @@ Hardware drivers
     ``ni6211`` (NI USB-6211 multifunction DAQ), ``ni63xx`` (NI USB-63xx X Series
     DAQs, channels by model), ``yokogawa7651`` (DC voltage /
     current source), ``hp4145`` (HP 4145A/B and 4155/4156 in 4145 syntax, user
-    mode), ``scpi_generic`` (any SCPI device, configured by options).
+    mode), ``cygnus16430`` (Cygnus 16430 8-channel 150 V / 40 mA supply),
+    ``scpi_generic`` (any SCPI device, configured by options).
 
 Simulated instruments (``sim_*``)
     Demo / test devices with fault injection, see :mod:`.simbus`.

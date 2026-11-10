@@ -388,6 +388,7 @@ callback, files load and slides render in worker threads.
 | `sr830` | SRS SR830 / SR850 (and SR810) lock-in | `X`, `Y`, `R`, `theta`, `Xn`, `Yn`, `aux_in1…4`; sources `sine_out`, `frequency`, `phase`, `aux_out1…4`; *`reference`*, *`sensitivity`*, *`time_constant`*, *`rolloff`*, *`coupling`*, *`ground`*, *`line_filter`*, *`input`*, *`reserve`*, *`harmonic`*, *`sync_filter`*; actions auto gain / phase / reserve |
 | `hp34401a` | HP/Agilent 34401A DMM | one reading named after *`mode`*: `Vdc`, `Vac`, `Idc`, `Iac`, `R2w`, `R4w`; *`range`*, *`nplc`*, *`autozero`* (DC/Ω), *`ac_filter`* (AC) |
 | `ni6211` | NI USB-6211 DAQ (NI-DAQmx) | `ai0…ai15` (`ai0…7` in DIFF), vector `ai`, `ao0`, `ao1`, `di0…3`, `do0…3`, `ctr0`, `ctr1`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`* |
+| `cygnus16430` | Cygnus 16430 8-channel supply, 0–150 V / 0–40 mA per output (USB serial) | per output k = 1…8: `voltage<k>` (setpoint), `Vmeas<k>`, `Imeas<k>`, *`Ilimit<k>`*, *`output<k>`* (relay ON/OFF); vectors `voltages` (all 8 written at once), `Vmeas`, `Imeas`; *`Vrate`*, *`Irate`* (ADC SF 13–255), *`Vfilter`*, *`Ifilter`* (IIR α); actions `all_off`, `reset`, `auto_calibrate` |
 | `ni63xx` | NI USB-63xx X Series DAQ: USB-6341/6343/6346/6349/6351/6353/6356/6361/6363/6366 (NI-DAQmx) | channels follow *`model`* (auto = as reported): `ai0…` (8–32), vector `ai`, `ao0…` (2–4), digital lines `dio0…` (port 0: 8 or 32) and `pfi0…15`, `ctr0…3`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`*, *`ao_range`*; actions `reset_counters`, `release_digital` |
 | `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
 | `hp4145` | HP 4145A/B, HP 4155/4156 in 4145 syntax (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
@@ -455,6 +456,19 @@ e.g. `"0-3"`, puts fewer inputs in it; a vector reading too fast for its inputs 
 refused, the single inputs still work). `samples = 1` is a single on-demand
 conversion (sub-millisecond). The same holds for `ni63xx`, with the limits of the
 model.
+
+**Cygnus 16430.** The lab's 8-channel supply (firmware `cygnus-16430-firmware`):
+address = its USB serial port (`COM5`, `/dev/ttyACM0`; any baud rate). Each output
+is a voltage setpoint with a current limit (constant voltage until the limit, then
+constant current) and its own relay; nothing changes on connect. The driver speaks
+the firmware's exact commands (`VOLT n,v`, `OUTP n,ON`, `MEAS:CURR? n` …) and reads
+its one-slot error register (`SYST:ERR?`) after every setting, so a refused value
+raises the firmware's message. Readings are round-robin over the 8 channels (every
+`8·24·SF/32768` s: 76 ms at SF 13): after a change of a channel's setpoint, limit or
+relay, its next reading waits for fresh conversions (and for ~99 % of a step with an
+IIR filter; option `settle` = false turns that off). The filters cannot be read
+back, so the driver sets them from its options on connect. `SIM::cygnus` emulates
+the firmware's parser with resistive loads (option `load_ohm`, default 10 kΩ).
 
 **NI USB-63xx (X Series).** One driver for the ten USB X Series models (BNC, screw
 terminal, mass termination and OEM variants). The configuration item **`model`**
