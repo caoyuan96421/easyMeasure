@@ -27,7 +27,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: System libraries for Qt (the command-line help of the GUI imports it)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libxkbcommon0 libgl1
+        # retried: the runners' package mirrors are sometimes briefly unreachable
+        run: |
+          for i in 1 2 3 4 5 6; do
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+              libegl1 libxkbcommon0 libgl1 && exit 0
+            echo "apt failed (attempt $i), retrying in 30 s"; sleep 30
+          done
+          exit 1
       - name: Install easyMeasure and the documentation tools
         run: |
           pip install -e ".[docs]"
