@@ -10,7 +10,8 @@ from typing import Any, Dict, List
 
 from ..common.codec import to_jsonable
 from ..common.errors import EasyMeasureError
-from .channels import Alias, Composite
+from .channels import Alias
+from .composites import composite_from_dict
 from .logsys import get_logger
 
 log = get_logger("setup")
@@ -84,11 +85,24 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
             channels.add_alias(Alias.from_dict(a), replace=True)
         except Exception as exc:
             problems.append("alias %s: %s" % (a.get("name"), exc))
-    for c in setup.get("composites", []):
-        try:
-            channels.add_composite(Composite.from_dict(c), replace=True)
-        except Exception as exc:
-            problems.append("composite %s: %s" % (c.get("name"), exc))
+    # composites may use each other: define in passes until nothing more can be added
+    todo = list(setup.get("composites", []))
+    last_err = {}
+    while todo:
+        left = []
+        for c in todo:
+            try:
+                comp, notes = composite_from_dict(c)
+                channels.add_composite(comp, replace=True)
+                problems.extend(notes)
+            except Exception as exc:
+                last_err[c.get("name")] = exc
+                left.append(c)
+        if len(left) == len(todo):
+            for c in left:
+                problems.append("composite %s: %s" % (c.get("name"), last_err[c.get("name")]))
+            break
+        todo = left
     for m in setup.get("monitor", []):
         try:
             monitor.add(m["channel"], float(m.get("interval", 1.0)))

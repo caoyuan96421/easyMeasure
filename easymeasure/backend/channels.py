@@ -16,15 +16,14 @@ instrument layer:
 
 Composite channels
 ------------------
-A composite is a virtual channel driving several aliases together::
-
-    {"name": "detuning", "targets": {"VL": "x", "VR": "-x + 0.1"},
-     "read": "VL - VR", "min": -1, "max": 1, "ramp_rate": 0.5}
-
-Setting the composite evaluates each target expression with ``x`` (the
-composite value) and all targets are moved simultaneously.  The ramp duration is
-chosen so that *no* target exceeds its own ramp rate.  Every intermediate value
-is limit-checked before anything is written.
+Virtual channels defined by formulas (:mod:`.composites`): multivariate writes
+(variables driving several targets), composite reads (a formula of channels) and
+one-to-one mappings (forward / backward, checked to be inverse).  They nest; a
+dependency loop is refused when it would be defined.  Setting a composite channel
+computes everything it drives (through nested composites, in dependency order),
+checks every value against its limits before anything is written, and moves all
+hardware targets together so that no alias, variable or mapping exceeds its ramp
+rate, also along non-linear relations.
 
 Special read-only channels ``@time`` (unix time) are always available.
 """
@@ -34,13 +33,13 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..common.errors import AbortRequested, ChannelError, LimitError
-from ..common.exprs import Expression
+from ..common.errors import ChannelError, ExpressionError, LimitError
+from .composites import CompositeBase, as_value, find_cycle
 from .instrument import ChannelSpec, InstrumentManager
 from .logsys import get_logger
 
@@ -107,48 +106,6 @@ class Alias:
         return cls(**{k: v for k, v in d.items() if k in keys})
 
 
-@dataclass
-class Composite:
-    name: str
-    targets: Dict[str, str]          # alias -> expression of x
-    read: Optional[str] = None       # expression of target alias names
-    min: Optional[float] = None
-    max: Optional[float] = None
-    ramp_rate: Optional[float] = None
-    unit: str = ""
-    description: str = ""
-    _exprs: Dict[str, Expression] = field(default_factory=dict, repr=False)
-    _read_expr: Optional[Expression] = field(default=None, repr=False)
-
-    def __post_init__(self):
-        if not _ok_name(self.name):
-            raise ChannelError("invalid composite name %r" % self.name)
-        if not self.targets:
-            raise ChannelError("composite %s has no targets" % self.name)
-        self._exprs = {a: Expression(str(e), allowed_names=["x"]) for a, e in self.targets.items()}
-        self._read_expr = Expression(self.read, allowed_names=list(self.targets)) \
-            if self.read else None
-        for k in ("min", "max", "ramp_rate"):
-            v = getattr(self, k)
-            if v is not None:
-                setattr(self, k, float(v))
-        if self.ramp_rate is not None and self.ramp_rate <= 0:
-            raise ChannelError("composite %s: ramp_rate must be positive" % self.name)
-
-    def target_values(self, x) -> Dict[str, Any]:
-        return {a: e.evaluate({"x": x}) for a, e in self._exprs.items()}
-
-    def to_dict(self) -> dict:
-        return {"name": self.name, "targets": dict(self.targets), "read": self.read,
-                "min": self.min, "max": self.max, "ramp_rate": self.ramp_rate,
-                "unit": self.unit, "description": self.description}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Composite":
-        keys = {"name", "targets", "read", "min", "max", "ramp_rate", "unit", "description"}
-        return cls(**{k: v for k, v in d.items() if k in keys})
-
-
 def _max_abs_diff(a, b) -> float:
     try:
         d = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float))
@@ -157,17 +114,31 @@ def _max_abs_diff(a, b) -> float:
         return float("inf")
 
 
+def _close(a, b) -> bool:
+    try:
+        aa = np.asarray(a, dtype=float)
+        return _max_abs_diff(a, b) <= 1e-9 * (1.0 + float(np.max(np.abs(aa))) if aa.size else 1.0)
+    except (TypeError, ValueError):
+        return False
+
+
+GROUP = "§"             # prefix of the pseudo node of a multivariate composite in plans
+MAX_DEPTH = 64          # nesting deeper than this is refused (and means a loop at run time)
+
+
 class ChannelManager:
     """Resolves names to aliases/composites and performs protected get/set."""
 
     def __init__(self, instruments: InstrumentManager):
         self.instruments = instruments
         self._aliases: Dict[str, Alias] = {}
-        self._composites: Dict[str, Composite] = {}
-        self._last: Dict[str, Any] = {}        # last value written per alias/composite
+        self._composites: Dict[str, CompositeBase] = {}
+        self._owner: Dict[str, CompositeBase] = {}   # composite channel -> its composite
+        self._last: Dict[str, Any] = {}        # last value written per alias / composite channel
         self._last_time: Dict[str, float] = {}
         self._lock = threading.RLock()
         self._set_locks: Dict[str, threading.RLock] = {}
+        self._reading = threading.local()       # per thread: composite reads in progress
         self.listeners: List[Callable[[str, Any], None]] = []
 
     # -- definition --------------------------------------------------------------
@@ -180,47 +151,162 @@ class ChannelManager:
             raise ChannelError("%s is a configuration channel; configuration channels are set "
                                "directly and cannot be aliased" % alias.target)
         with self._lock:
-            if alias.name in self._composites or (alias.name in self._aliases and not replace):
+            if alias.name in self._owner or alias.name in self._composites or \
+                    (alias.name in self._aliases and not replace):
                 raise ChannelError("channel name %r already in use" % alias.name)
+            old = self._aliases.get(alias.name)
             self._aliases[alias.name] = alias
+            if old is not None:
+                try:
+                    self._validate(self._composites)   # composites using it still work?
+                except ChannelError:
+                    self._aliases[alias.name] = old
+                    raise
             self._last.pop(alias.name, None)
         log.info("alias %s -> %s defined", alias.name, alias.target)
 
     def remove_alias(self, name: str) -> None:
         with self._lock:
-            users = [c.name for c in self._composites.values() if name in c.targets]
+            users = [c.name for c in self._composites.values() if name in c.references()]
             if users:
                 raise ChannelError("alias %s is used by composite(s) %s" % (name, ", ".join(users)))
             if self._aliases.pop(name, None) is None:
                 raise ChannelError("no alias %r" % name)
 
-    def add_composite(self, comp: Composite, replace: bool = False) -> None:
+    def add_composite(self, comp: CompositeBase, replace: bool = False) -> List[str]:
+        """Add (or with *replace* redefine) a composite; returns warnings.  Refused if a
+        channel it uses does not exist or is of the wrong kind, if a name is taken, or
+        if it would close a dependency loop."""
         with self._lock:
-            if comp.name in self._aliases or (comp.name in self._composites and not replace):
-                raise ChannelError("channel name %r already in use" % comp.name)
-            for a in comp.targets:
-                if a not in self._aliases:
-                    raise ChannelError("composite %s: target %r is not an alias" % (comp.name, a))
-            self._composites[comp.name] = comp
-            self._last.pop(comp.name, None)
-        log.info("composite %s defined (targets: %s)", comp.name, ", ".join(comp.targets))
+            if comp.name in self._composites and not replace:
+                raise ChannelError("composite %r already exists" % comp.name)
+            cand = dict(self._composites)
+            old = cand.pop(comp.name, None)
+            if old is not None:
+                gone = set(old.channels()) - set(comp.channels())
+                users = [c.name for c in cand.values() if gone & set(c.references())]
+                if users:
+                    raise ChannelError("composite %s: %s still used by %s" % (
+                        comp.name, ", ".join(sorted(gone)), ", ".join(users)))
+            cand[comp.name] = comp
+            warnings = self._validate(cand, comp)
+            self._composites = cand
+            self._reindex()
+            for ch in (old.channels() if old is not None else []):
+                if ch not in comp.channels() or comp.type != "multi":
+                    self._last.pop(ch, None)
+            for ch in comp.channels():
+                if comp.type != "multi":
+                    self._last.pop(ch, None)
+        log.info("composite %s (%s) defined: %s", comp.name, comp.type, ", ".join(comp.channels()))
+        return warnings
 
     def remove_composite(self, name: str) -> None:
         with self._lock:
-            if self._composites.pop(name, None) is None:
+            c = self._composites.get(name)
+            if c is None:
                 raise ChannelError("no composite %r" % name)
+            users = [o.name for o in self._composites.values()
+                     if o is not c and set(c.channels()) & set(o.references())]
+            if users:
+                raise ChannelError("composite %s is used by %s" % (name, ", ".join(users)))
+            del self._composites[name]
+            self._reindex()
+            for ch in c.channels():
+                self._last.pop(ch, None)
+
+    def _reindex(self) -> None:
+        self._owner = {ch: c for c in self._composites.values() for ch in c.channels()}
+
+    def _validate(self, comps: Dict[str, CompositeBase], new: Optional[CompositeBase] = None
+                  ) -> List[str]:
+        """Check a whole set of composites against the aliases; raise on problems."""
+        owner: Dict[str, CompositeBase] = {}
+        for c in comps.values():
+            for ch in c.channels():
+                if ch in self._aliases:
+                    raise ChannelError("composite %s: channel name %r is an alias" % (c.name, ch))
+                if ch in owner:
+                    raise ChannelError("channel %s is defined by both %s and %s"
+                                       % (ch, owner[ch].name, c.name))
+                owner[ch] = c
+        for c in comps.values():
+            if c.name in self._aliases:
+                raise ChannelError("composite name %r is an alias" % c.name)
+            if c.name in owner and owner[c.name] is not c:
+                raise ChannelError("composite name %r is a channel of %s"
+                                   % (c.name, owner[c.name].name))
+
+        def kind(n):
+            if n in self._aliases:
+                return "alias"
+            o = owner.get(n)
+            if o is None:
+                return None
+            return "variable" if o.type == "multi" else o.type
+
+        def writable_target(c, t, scalar):
+            k = kind(t)
+            if k is None:
+                raise ChannelError("composite %s: %s does not exist (define it first: an alias, "
+                                   "mapping or variable)" % (c.name, t))
+            if k == "read":
+                raise ChannelError("composite %s: %s is a composite read channel, it cannot be "
+                                   "set" % (c.name, t))
+            if k == "alias":
+                a = self._aliases[t]
+                if a.read_only:
+                    raise ChannelError("composite %s: alias %s is read-only" % (c.name, t))
+                try:
+                    _, spec = self.instruments.resolve(a.target)
+                except ChannelError:
+                    return                       # instrument offline: checked on use
+                if not spec.writable or spec.dtype == "str":
+                    raise ChannelError("composite %s: alias %s (%s) cannot be set to numbers"
+                                       % (c.name, t, a.target))
+                if scalar and spec.shape not in ((), None):
+                    raise ChannelError("composite %s: alias %s is not a scalar channel"
+                                       % (c.name, t))
+
+        warnings: List[str] = []
+        for c in comps.values():
+            if c.type == "multi":
+                for t in c.targets:
+                    writable_target(c, t, scalar=False)
+                for v in c.unused():
+                    warnings.append("composite %s: variable %s drives no target" % (c.name, v))
+            elif c.type == "map":
+                writable_target(c, c.target, scalar=True)
+                a = self._aliases.get(c.target)
+                lo, hi = c.image
+                if a is not None and ((a.min is not None and lo < a.min) or
+                                      (a.max is not None and hi > a.max)):
+                    warnings.append("mapping %s: forward gives %s in [%g, %g], beyond the limits "
+                                    "of %s [%s, %s]: those x will be refused" % (
+                                        c.name, c.target, lo, hi, c.target, a.min, a.max))
+            elif c.type == "read":
+                c.resolve_inputs(lambda n: kind(n) is not None)
+        edges: Dict[str, List[str]] = {}
+        for c in comps.values():
+            for a, b in c.edges():
+                edges.setdefault(a, []).append(b)
+        cyc = find_cycle(edges, new.channels() if new is not None else ())
+        if cyc:
+            raise ChannelError("circular dependency: %s" % " → ".join(cyc))
+        return warnings
 
     def clear(self) -> None:
         with self._lock:
             self._aliases.clear()
             self._composites.clear()
+            self._owner.clear()
             self._last.clear()
 
     def aliases(self) -> List[Alias]:
         with self._lock:
             return list(self._aliases.values())
 
-    def composites(self) -> List[Composite]:
+    def composites(self) -> List[CompositeBase]:
         with self._lock:
             return list(self._composites.values())
 
@@ -231,19 +317,54 @@ class ChannelManager:
             raise ChannelError("no alias %r" % name)
         return a
 
+    def kind(self, name: str) -> Optional[str]:
+        """``alias``, ``variable``, ``map``, ``read`` or None (raw / unknown)."""
+        if name in self._aliases:
+            return "alias"
+        o = self._owner.get(name)
+        if o is None:
+            return None
+        return "variable" if o.type == "multi" else o.type
+
     def is_composite(self, name: str) -> bool:
-        return name in self._composites
+        return name in self._owner
+
+    def group_of(self, name: str) -> Optional[str]:
+        """The multivariate composite a variable belongs to (None otherwise)."""
+        o = self._owner.get(name)
+        return o.name if o is not None and o.type == "multi" else None
 
     def exists(self, name: str) -> bool:
         if name.startswith("@"):
             return name in ("@time",)
-        if name in self._aliases or name in self._composites:
+        if name in self._aliases or name in self._owner:
             return True
         try:
             self.instruments.resolve(name)
             return True
         except Exception:
             return False
+
+    def aliases_behind(self, name: str) -> set:
+        """The aliases a channel ultimately writes or reads (through composites)."""
+        out, seen, todo = set(), set(), [name]
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if n in self._aliases:
+                out.add(n)
+                continue
+            o = self._owner.get(n)
+            if o is not None:
+                todo += [b for a, b in o.edges() if a == n]
+        return out
+
+    def instruments_behind(self, name: str) -> set:
+        if "." in name:
+            return {name.split(".", 1)[0]}
+        return {self._aliases[a].target.split(".", 1)[0] for a in self.aliases_behind(name)}
 
     # -- introspection -------------------------------------------------------------
     def info(self, name: str) -> dict:
@@ -253,11 +374,9 @@ class ChannelManager:
                     "readable": True, "writable": False, "unit": "s"}
         with self._lock:
             a = self._aliases.get(name)
-            c = self._composites.get(name)
-        if c is not None:
-            return {"name": name, "kind": "composite", "dtype": "float", "shape": [],
-                    "readable": True, "writable": True, "unit": c.unit,
-                    "min": c.min, "max": c.max, "ramp_rate": c.ramp_rate}
+            o = self._owner.get(name)
+        if o is not None:
+            return self._virtual_info(o, name)
         if a is not None:
             spec = self._alias_spec(a)
             return {"name": name, "kind": "alias", "target": a.target, "dtype": spec.dtype,
@@ -271,6 +390,22 @@ class ChannelManager:
                 "readable": spec.readable, "writable": spec.writable and spec.config,
                 "unit": spec.unit, "config": spec.config,
                 "choices": None if spec.allowed is None else list(spec.allowed)}
+
+    def _virtual_info(self, o: CompositeBase, name: str) -> dict:
+        base = {"name": name, "composite": o.name, "dtype": "float", "readable": True,
+                "choices": None, "description": o.description}
+        if o.type == "multi":
+            v = o.var[name]
+            base.update(kind="variable", shape=[], writable=True, unit=v.unit, min=v.min,
+                        max=v.max, ramp_rate=v.ramp_rate, description=v.description or
+                        o.description)
+        elif o.type == "map":
+            base.update(kind="map", shape=[], writable=True, unit=o.unit, min=o.min, max=o.max,
+                        ramp_rate=o.ramp_rate, target=o.target)
+        else:
+            base.update(kind="read", shape=None, writable=False, unit=o.unit, min=None,
+                        max=None, ramp_rate=None)
+        return base
 
     @staticmethod
     def _choices(a: Alias, spec: ChannelSpec):
@@ -294,6 +429,9 @@ class ChannelManager:
         for a in self.aliases():
             if a.target.startswith(prefix):
                 self._last.pop(a.name, None)
+        for c in self.composites():
+            if c.type == "map":
+                self._last.pop(c.name, None)
 
     def describe(self) -> dict:
         out_a = []
@@ -308,28 +446,37 @@ class ChannelManager:
                 d.update(error=str(exc))
             d["last"] = self._last.get(a.name)
             out_a.append(d)
-        out_c = []
+        out_c, virtual = [], []
         for c in self.composites():
             d = c.to_dict()
-            d["last"] = self._last.get(c.name)
+            if c.type == "multi":
+                d["last"] = {v: self._last.get(v) for v in c.channels()}
+            elif c.type == "map":
+                d["last"] = self._last.get(c.name)
             out_c.append(d)
-        return {"aliases": out_a, "composites": out_c}
+            for ch in c.channels():
+                inf = self._virtual_info(c, ch)
+                inf["last"] = self._last.get(ch)
+                virtual.append(inf)
+        return {"aliases": out_a, "composites": out_c, "virtual": virtual}
 
     def last_value(self, name: str):
         return self._last.get(name)
 
     # -- validation --------------------------------------------------------------
-    def check_value(self, name: str, value: Any) -> Any:
-        """Validate a value against protection; returns the canonical value."""
+    def check_value(self, name: str, value: Any, partial: bool = False) -> Any:
+        """Validate a value against protection; returns the canonical value.  For a
+        composite channel everything it would write is checked; with *partial*
+        targets that need a variable that was never set are skipped (sweep
+        validation: the sweep sets it first)."""
         with self._lock:
             a = self._aliases.get(name)
-            c = self._composites.get(name)
-        if c is not None:
-            x = self._to_float(name, value)
-            self._check_limits(name, x, c.min, c.max)
-            for alias_name, tv in c.target_values(x).items():
-                self.check_value(alias_name, tv)
-            return x
+            k = self.kind(name)
+        if k in ("variable", "map"):
+            self.check_many({name: value}, partial=partial)
+            return self._to_float(name, value)
+        if k == "read":
+            raise ChannelError("%s is a composite read channel (read-only)" % name)
         if a is not None:
             if a.read_only:
                 raise ChannelError("alias %s is read-only" % name)
@@ -363,6 +510,14 @@ class ChannelManager:
                                "and ramps apply); only configuration channels are set directly"
                                % name)
         raise ChannelError("unknown channel %r" % name)
+
+    def check_many(self, values: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
+        """Check setting several channels at once (variables of one composite together);
+        returns every value that would be written."""
+        plan = self._plan(self._start_values(values), partial=partial)
+        for n, v in plan.items():
+            self._check_node(n, v)
+        return plan
 
     def _raw_config_spec(self, name: str):
         """The spec of ``instrument.channel`` if it is a configuration channel."""
@@ -407,25 +562,198 @@ class ChannelManager:
         if hi is not None and np.any(a > hi + 1e-12 * max(1.0, abs(hi))):
             raise LimitError("%s: value %s above maximum %g" % (name, _fmt(a), hi))
 
+    # -- composite plans ---------------------------------------------------------------
+    def _start_values(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        out = {}
+        for n, v in values.items():
+            k = self.kind(n)
+            if k in ("variable", "map"):
+                out[n] = self._to_float(n, v)
+            elif k == "alias":
+                out[n] = self.check_value(n, v)
+            elif k == "read":
+                raise ChannelError("%s is a composite read channel (read-only)" % n)
+            else:
+                raise ChannelError("%s is not an alias or composite channel" % n)
+        return out
+
+    def _write_succ(self, n: str) -> List[str]:
+        if n.startswith(GROUP):
+            return list(self._composites[n[1:]].targets)
+        o = self._owner.get(n)
+        if o is None:
+            return []
+        if o.type == "multi":
+            return [GROUP + o.name]
+        if o.type == "map":
+            return [o.target]
+        return []
+
+    def _plan(self, start: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
+        """Every channel a write of *start* sets, with its value: variables of
+        multivariate composites drive their targets (the other variables at their
+        last values), mappings their target; processed in dependency order so that a
+        composite fed by several changed variables is evaluated once with all of them."""
+        order: List[str] = []
+        state: Dict[str, int] = {}
+        for root in start:                         # depth-first post-order, iterative
+            if state.get(root):
+                continue
+            stack = [(root, iter(self._write_succ(root)))]
+            state[root] = 1
+            while stack:
+                n, it = stack[-1]
+                nxt = next(it, None)
+                if nxt is None:
+                    stack.pop()
+                    state[n] = 2
+                    order.append(n)
+                    continue
+                st = state.get(nxt, 0)
+                if st == 1:
+                    path = [x for x, _ in stack] + [nxt]
+                    raise ChannelError("circular dependency: %s" % " → ".join(
+                        p.lstrip(GROUP) for p in path[path.index(nxt):]))
+                if st == 0:
+                    if len(stack) > MAX_DEPTH:
+                        raise ChannelError("composites nested deeper than %d" % MAX_DEPTH)
+                    state[nxt] = 1
+                    stack.append((nxt, iter(self._write_succ(nxt))))
+        vals: Dict[str, Any] = {}
+        origin: Dict[str, str] = {}
+
+        def assign(n, v, src):
+            if n in vals and not _close(vals[n], v):
+                raise ChannelError("%s would be set to two values at once (%s from %s, %s from "
+                                   "%s)" % (n, _fmt(vals[n]), origin[n], _fmt(v), src))
+            vals[n] = v
+            origin.setdefault(n, src)
+        for n, v in start.items():
+            assign(n, v, "the request")
+        for n in reversed(order):
+            if n.startswith(GROUP):
+                c = self._composites[n[1:]]
+                changed = {v for v in c.channels() if v in vals}
+                if not changed:
+                    continue
+                env = {}
+                for v in c.channels():
+                    x = vals.get(v, self._last.get(v))
+                    env[v] = float("nan") if x is None else float(x)
+                for t, deps in c.deps.items():
+                    if not changed & set(deps):
+                        continue
+                    missing = [d for d in deps if not math.isfinite(env[d])]
+                    if missing:
+                        if partial:
+                            continue
+                        one = len(missing) == 1
+                        raise ChannelError(
+                            "%s: %s %s never been set and %s needs %s: set %s first, or set "
+                            "the variables together (set_many; in a sweep: in the same "
+                            "dimension; manual panel: Set all)" % (
+                                c.name, ", ".join(missing), "has" if one else "have", t,
+                                "it" if one else "them", "it" if one else "them"))
+                    try:
+                        tv = as_value(c.exprs[t].evaluate({d: env[d] for d in deps}))
+                    except (ExpressionError, ChannelError) as exc:
+                        raise ChannelError("composite %s, target %s: %s" % (c.name, t, exc)) \
+                            from None
+                    if not np.isfinite(tv).all():
+                        raise LimitError("composite %s: target %s would be %s at %s" % (
+                            c.name, t, _fmt(tv), ", ".join("%s=%g" % (d, env[d]) for d in deps)))
+                    assign(t, tv, c.name)
+            elif n in vals:
+                o = self._owner.get(n)
+                if o is not None and o.type == "map":
+                    self._check_node(n, vals[n])     # forward only inside its range
+                    try:
+                        y = o.fwd(vals[n])
+                    except (ExpressionError, ChannelError) as exc:
+                        raise ChannelError(str(exc)) from None
+                    assign(o.target, y, o.name)
+        return vals
+
+    def _check_node(self, n: str, v) -> None:
+        """Limits of one channel of a plan (an alias also: writable, scalar …)."""
+        k = self.kind(n)
+        if k == "alias":
+            self.check_value(n, v)
+        elif k == "variable":
+            var = self._owner[n].var[n]
+            self._check_limits(n, v, var.min, var.max)
+        elif k == "map":
+            m = self._owner[n]
+            x = float(v)
+            tol = 1e-9 * (m.max - m.min)
+            if not m.min - tol <= x <= m.max + tol:
+                raise LimitError("%s: %g is outside the range of the mapping [%g, %g]"
+                                 % (n, x, m.min, m.max))
+        else:
+            raise ChannelError("%s cannot be set" % n)
+
+    def _check_node_fast(self, n: str, v) -> None:
+        """Limits only (ramp paths: the kinds were checked with the plan)."""
+        if n in self._aliases:
+            a = self._aliases[n]
+            if not np.isfinite(np.asarray(v, dtype=float)).all():
+                raise LimitError("%s: ramp path contains NaN/inf" % n)
+            self._check_limits(n, v, a.min, a.max)
+        else:
+            self._check_node(n, v)
+
+    def _rate_of(self, n: str):
+        """(ramp_rate, ramp_step) of a plan channel."""
+        if n in self._aliases:
+            a = self._aliases[n]
+            return a.ramp_rate, a.ramp_step
+        o = self._owner.get(n)
+        if o is None:
+            return None, None
+        if o.type == "multi":
+            return o.var[n].ramp_rate, None
+        return getattr(o, "ramp_rate", None), None
+
     # -- read ----------------------------------------------------------------------
     def get(self, name: str) -> Any:
         if name == "@time":
             return time.time()
         with self._lock:
             a = self._aliases.get(name)
-            c = self._composites.get(name)
-        if c is not None:
-            if c._read_expr is not None:
-                vals = {t: self.get(t) for t in c.targets}
-                return float(np.asarray(c._read_expr.evaluate(vals), dtype=float))
-            last = self._last.get(name)
-            return float("nan") if last is None else last
+            o = self._owner.get(name)
+        if o is not None:
+            return self._get_virtual(o, name)
         if a is not None:
             h, spec = self.instruments.resolve(a.target)
             raw = h.read(spec.name)
             return self._from_raw(a, spec, raw)
         h, spec = self.instruments.resolve(name)
         return h.read(spec.name)
+
+    def _get_virtual(self, o: CompositeBase, name: str):
+        stack = getattr(self._reading, "stack", None)
+        if stack is None:
+            stack = self._reading.stack = []
+        if name in stack:
+            raise ChannelError("circular dependency: %s" % " → ".join(stack[stack.index(name):]
+                                                                       + [name]))
+        if len(stack) > MAX_DEPTH:
+            raise ChannelError("composites nested deeper than %d" % MAX_DEPTH)
+        stack.append(name)
+        try:
+            if o.type == "multi":
+                v = self._last.get(name)
+                return float("nan") if v is None else float(v)
+            if o.type == "map":
+                y = self.get(o.target)
+                return o.bwd(_scalar_reading(o.target, y))
+            vals = {i: self.get(i) for i in o.inputs}
+            try:
+                return as_value(o.expr.evaluate(vals))
+            except (ExpressionError, ChannelError) as exc:
+                raise ChannelError("composite %s: %s" % (o.name, exc)) from None
+        finally:
+            stack.pop()
 
     @staticmethod
     def _from_raw(a: Alias, spec: ChannelSpec, raw):
@@ -519,21 +847,110 @@ class ChannelManager:
                 self._last.pop(a.name, None)
 
     def set(self, name: str, value: Any, ramp: bool = True, abort_check: AbortCheck = None) -> Any:
-        """Protected write to an alias or composite.  Returns the value set."""
+        """Protected write to an alias or composite channel.  Returns the value set."""
+        k = self.kind(name)
+        if k in ("variable", "map", "read"):
+            plan = self.set_many({name: value}, ramp=ramp, abort_check=abort_check)
+            return plan[name]
         value = self.check_value(name, value)
-        if name not in self._composites and name not in self._aliases:
+        if k is None:
             # configuration channel: written directly, no protection / ramping
             h, spec = self.instruments.resolve(name)
             h.write(spec.name, value)
             self._notify(name, value)
             return value
         with self._set_lock(name):
-            if name in self._composites:
-                self._set_composite(self._composites[name], value, ramp, abort_check)
-            else:
-                self._set_alias(self.get_alias(name), value, ramp, abort_check)
+            self._set_alias(self.get_alias(name), value, ramp, abort_check)
         self._notify(name, value)
         return value
+
+    def set_many(self, values: Dict[str, Any], ramp: bool = True,
+                 abort_check: AbortCheck = None) -> Dict[str, Any]:
+        """Set several channels together (e.g. two variables of one composite at the
+        same point of a sweep): everything they drive is computed and checked first,
+        then all hardware targets move together.  Returns every value written."""
+        start = self._start_values(values)
+        plan = self._plan(start)
+        for n, v in plan.items():
+            self._check_node(n, v)
+        leaves = sorted(n for n in plan if n in self._aliases)
+        locks = [self._set_lock(n) for n in leaves]
+        for lk in locks:
+            lk.acquire()
+        try:
+            self._write_plan(start, plan, leaves, ramp, abort_check)
+        finally:
+            for lk in reversed(locks):
+                lk.release()
+        for n, v in plan.items():
+            self._notify(n, v)
+        return plan
+
+    def _write_plan(self, start, plan, leaves, ramp, abort_check) -> None:
+        items = []
+        for n in leaves:
+            a = self._aliases[n]
+            items.append((a, self._alias_spec(a)))
+        rated = {n: r for n in plan for r in [self._rate_of(n)] if r[0] or r[1]}
+        if not (ramp and rated):
+            for a, spec in items:
+                v = np.asarray(plan[a.name], dtype=float)
+                self._write_alias_now(a, spec, float(v) if v.ndim == 0 else v)
+            self._remember(plan, skip=leaves)
+            return
+        starts = {}
+        for a, spec in items:
+            tv = np.asarray(plan[a.name], dtype=float)
+            st = self._current_alias_value(a, spec, tv.shape)
+            if st is None:
+                raise LimitError("%s: cannot determine the present value of %s to ramp from; "
+                                 "set it once with ramp=False to force"
+                                 % (", ".join(start), a.name))
+            starts[a.name] = st
+        # the relation is followed from where the composites were last set, if the
+        # hardware is still there; otherwise every target moves on a straight line
+        origin = {}
+        for n in start:
+            x0 = self._last.get(n) if n not in self._aliases else starts.get(n)
+            if x0 is None and self.kind(n) == "map":
+                try:
+                    x0 = self.get(n)
+                except Exception:
+                    x0 = None
+            origin[n] = x0
+        on_path = False
+        if all(x is not None and np.isfinite(np.asarray(x, dtype=float)).all()
+               for x in origin.values()):
+            try:
+                expected = self._plan(origin)
+                on_path = all(
+                    _max_abs_diff(expected[n], starts[n]) <=
+                    1e-6 * (1.0 + float(np.max(np.abs(starts[n])))) for n in leaves)
+            except Exception:
+                on_path = False
+        if on_path:
+            x0 = {n: np.asarray(origin[n], dtype=float) for n in start}
+            x1 = {n: np.asarray(start[n], dtype=float) for n in start}
+
+            def path(u):
+                if u >= 1.0:
+                    return plan
+                return self._plan({n: as_value(x0[n] + (x1[n] - x0[n]) * u) for n in start})
+            self._ramp(items, path, 257, abort_check, rated)
+        else:
+            tv = {n: np.asarray(plan[n], dtype=float) for n in leaves}
+            self._ramp(items, lambda u: {n: starts[n] + (tv[n] - starts[n]) * u for n in leaves},
+                       2, abort_check, {n: r for n, r in rated.items() if n in starts})
+        self._remember(plan, skip=leaves)
+
+    def _remember(self, values: Dict[str, Any], skip=()) -> None:
+        now = time.monotonic()
+        for n, v in values.items():
+            if n in skip:
+                continue
+            v = np.asarray(v, dtype=float)
+            self._last[n] = float(v) if v.ndim == 0 else v
+            self._last_time[n] = now
 
     def _notify(self, name, value):
         for cb in list(self.listeners):
@@ -569,39 +986,40 @@ class ChannelManager:
             raise LimitError("%s: cannot determine the present value to ramp from "
                              "(read-back failed or unavailable); set it once with ramp=False "
                              "to force" % a.name)
-        self._ramp([(a, spec)], lambda u: [start + (target - start) * u], 2, abort_check)
+        self._ramp([(a, spec)], lambda u: {a.name: start + (target - start) * u}, 2, abort_check,
+                   {a.name: (a.ramp_rate, a.ramp_step)})
 
-    def _ramp(self, items, value_at, nsamples: int, abort_check: AbortCheck,
-              x_span: float = 0.0, x_rate: Optional[float] = None) -> None:
-        """Move aliases along a path ``value_at(u)``, ``u`` from 0 to 1.
+    def _ramp(self, items, path, nsamples: int, abort_check: AbortCheck,
+              rated: Dict[str, tuple]) -> None:
+        """Move aliases along ``path(u)`` (``{channel: value}`` for ``u`` 0 … 1; the
+        channels include the composite channels the aliases are driven through).
 
-        The path is sampled first: every sample is limit-checked *before* anything is
-        written, and the cumulative "time cost" (max over aliases of distance / ramp
-        rate) and "step cost" (distance / ramp_step) are tabulated.  Progress is then
-        limited so that neither the ramp rate nor the step size of any alias is
-        exceeded, even for non-linear (composite) paths.
+        The path is sampled first: every sample of every channel is limit-checked
+        *before* anything is written, and the cumulative "time cost" (max over the
+        channels with a ramp rate of distance / rate) and "step cost" (distance /
+        ramp_step) are tabulated.  Progress is then limited so that no ramp rate (of
+        an alias, a variable or a mapping) and no step size is exceeded, also for
+        non-linear (composite) paths.
         """
         us = np.linspace(0.0, 1.0, max(2, int(nsamples)))
-        path = []
+        samples = []
         for u in us:
-            vals = [np.asarray(v, dtype=float) for v in value_at(float(u))]
-            for (a, _), v in zip(items, vals):
-                if not np.isfinite(v).all():
-                    raise LimitError("%s: ramp path contains NaN/inf" % a.name)
-                self._check_limits(a.name, v, a.min, a.max)
-            path.append(vals)
+            vals = path(float(u))
+            for n, v in vals.items():
+                self._check_node_fast(n, v)
+            samples.append(vals)
         ct = [0.0]
         cs = [0.0]
         for i in range(1, len(us)):
             dt = ds = 0.0
-            for (a, _), v0, v1 in zip(items, path[i - 1], path[i]):
-                d = _max_abs_diff(v0, v1)
-                if a.ramp_rate:
-                    dt = max(dt, d / a.ramp_rate)
-                if a.ramp_step:
-                    ds = max(ds, d / a.ramp_step)
-            if x_rate:
-                dt = max(dt, x_span * (us[i] - us[i - 1]) / x_rate)
+            for n, (rate, step) in rated.items():
+                if n not in samples[i] or n not in samples[i - 1]:
+                    continue
+                d = _max_abs_diff(samples[i - 1][n], samples[i][n])
+                if rate:
+                    dt = max(dt, d / rate)
+                if step:
+                    ds = max(ds, d / step)
             ct.append(ct[-1] + dt)
             cs.append(cs[-1] + ds)
         ct_a = np.asarray(ct)
@@ -616,6 +1034,7 @@ class ChannelManager:
             f = 0.0 if c1 <= c0 else (c - c0) / (c1 - c0)
             return float(us[j - 1] + (us[j] - us[j - 1]) * min(max(f, 0.0), 1.0))
 
+        leaf_names = {a.name for a, _ in items}
         t0 = time.monotonic()
         k = 0
         last_u = 0.0
@@ -627,60 +1046,24 @@ class ChannelManager:
             allowed_t = min(k * RAMP_INTERVAL, elapsed + RAMP_INTERVAL)
             u = min(invert(ct_a, allowed_t), invert(cs_a, float(k)))
             u = max(u, last_u)
-            vals = value_at(u) if u < 1.0 else path[-1]
-            vals = [np.asarray(v, dtype=float) for v in vals]
-            for (a, _), v in zip(items, vals):
-                self._check_limits(a.name, v, a.min, a.max)
-            for (a, spec), v in zip(items, vals):
+            vals = path(u) if u < 1.0 else samples[-1]
+            for n, v in vals.items():
+                self._check_node_fast(n, v)
+            for a, spec in items:
+                v = np.asarray(vals[a.name], dtype=float)
                 self._write_alias_now(a, spec, float(v) if v.ndim == 0 else v)
+            self._remember(vals, skip=leaf_names)        # composite channels follow along
             if u >= 1.0:
                 return
             last_u = u
             time.sleep(RAMP_INTERVAL)
 
-    def _set_composite(self, c: Composite, x: float, ramp: bool, abort_check: AbortCheck) -> None:
-        targets = c.target_values(x)
-        items = []
-        for alias_name in targets:
-            a = self.get_alias(alias_name)
-            items.append((a, self._alias_spec(a)))
-        tvals = [np.asarray(targets[a.name], dtype=float) for a, _ in items]
-        needs_ramp = ramp and (c.ramp_rate is not None or any(self._has_ramp(a) for a, _ in items))
-        if not needs_ramp:
-            for (a, spec), v in zip(items, tvals):
-                self._check_limits(a.name, v, a.min, a.max)
-            for (a, spec), v in zip(items, tvals):
-                self._write_alias_now(a, spec, float(v) if v.ndim == 0 else v)
-            self._last[c.name] = x
-            return
-        starts = []
-        for (a, spec), tv in zip(items, tvals):
-            st = self._current_alias_value(a, spec, tv.shape)
-            if st is None:
-                raise LimitError("composite %s: cannot determine the present value of %s to ramp "
-                                 "from; set it once with ramp=False to force" % (c.name, a.name))
-            starts.append(st)
-        x0 = self._last.get(c.name)
-        on_path = False
-        if x0 is not None:
-            try:
-                expected = c.target_values(x0)
-                on_path = all(
-                    _max_abs_diff(expected[a.name], s0) <= 1e-6 * (1.0 + float(np.max(np.abs(s0))))
-                    for (a, _), s0 in zip(items, starts))
-            except Exception:
-                on_path = False
-        if on_path:
-            # follow the composite relation (may be non-linear in every target)
-            x0f, x1f = float(x0), float(x)
-            self._ramp(items, lambda u: [c.target_values(x0f + (x1f - x0f) * u)[a.name]
-                                         for a, _ in items],
-                       257, abort_check, abs(x1f - x0f), c.ramp_rate)
-        else:
-            # unknown/inconsistent origin: straight line from the actual values
-            self._ramp(items, lambda u: [s0 + (t - s0) * u for s0, t in zip(starts, tvals)],
-                       2, abort_check)
-        self._last[c.name] = x
+
+def _scalar_reading(name: str, v) -> float:
+    a = np.asarray(v, dtype=float)
+    if a.size != 1:
+        raise ChannelError("%s gives an array; a mapping needs a scalar" % name)
+    return float(a.reshape(()))
 
 
 def _in_allowed(v: str, allowed) -> bool:

@@ -199,11 +199,63 @@ An alias names one instrument channel and carries the protection: `min`, `max`,
 are time-based and abortable. Raw `instrument.channel` references can be read
 anywhere but only *set* through `set_raw()` in scripts.
 
-### Composite channels
-Virtual channels that drive several aliases together, e.g.
-`{"name": "detuning", "targets": {"VL": "x", "VR": "-x + 0.1"}, "read": "(VL-VR)/2"}`.
-Every target value is limit-checked before anything is written, and the ramp
-duration is chosen so that no target exceeds its own ramp rate.
+### Composite channels (`backend/composites.py`)
+Software channels built on aliases (and on each other). Three types:
+
+**Multivariate write** (`"type": "multi"`) – hardware channels as functions of
+several variables, whose names you choose:
+```json
+{"type": "multi", "name": "gates",
+ "variables": [{"name": "eps", "min": -0.4, "max": 0.4, "unit": "V", "ramp_rate": 0.5},
+               {"name": "U",   "min": 0,    "max": 0.5, "unit": "V"}],
+ "targets": {"VL": "U + eps", "VR": "U - eps", "Vg": "piecewise(U < 0.1, 0, 2*U)"}}
+```
+Each variable (`eps`, `U`) is a channel of its own, with its own minimum,
+maximum, unit and ramp rate. Reading one returns the value it was last set to
+(NaN while it has never been set). Setting one recomputes the targets that
+depend on it, using the other variables' last values. Before every target has
+all of its variables, set them together: `set_many({...})` in scripts and the
+API, the same sweep dimension, or *hold* + *Set all* in the Manual panel.
+
+**Composite read** (`"type": "read"`) – a read-only channel, a formula of other
+channels (aliases, variables, mappings, other reads), e.g.
+`{"type": "read", "name": "R", "expression": "Vg / I", "unit": "Ω"}`.
+
+**Simple mapping** (`"type": "map"`) – a one-to-one software view of one channel:
+```json
+{"type": "map", "name": "T_C", "target": "Tset", "forward": "x + 273.15",
+ "backward": "y - 273.15", "min": -273.15, "max": 26.85, "unit": "°C"}
+```
+`forward` gives the target `y` from `x`, and `backward` gives `x` back from `y`.
+Reading the mapping reads the hardware and applies `backward`. When it is
+defined, the two formulas are checked to be each other's inverse over the whole
+`[min, max]` range, sampled densely, within `tolerance` (default 1e-6 × range).
+The error names the worst `x`.
+
+**Formulas** may be piecewise:
+* `piecewise(c1, v1, c2, v2, …, default)`
+* `a if c else b`
+* `where(c, a, b)`
+* `interp(x, xs, ys)`
+
+They may also use the usual math functions.
+
+**Nesting**: composites can drive each other. A mapping can target a variable;
+a multivariate write can target another composite's variables or a mapping. On
+each write:
+* every hardware channel is computed once;
+* everything is limit-checked before anything is written;
+* ramps keep every alias, variable and mapping within its own rate, following
+  the (possibly nonlinear) path.
+
+Circular dependencies, such as `m1 → m2 → m1` or a read of itself, are refused
+when defined. A runtime guard also stops the backend from hanging. A channel
+cannot be removed or redefined away while another composite uses it.
+
+The editors (desktop and web) have a type selector, a variables table and a
+*Check* button. *Check* runs all of these checks without defining anything.
+Earlier one-variable composites (`targets` as formulas of `x`) still load, as a
+multivariate write whose variable has the composite's name.
 
 ### Sweeps (`backend/sweep.py`)
 ```json
@@ -353,11 +405,13 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.
   Redraws are coalesced, so fast sweeps don't load the GUI.
 * **Monitor** dock, **Manual** dock below it and **Log** dock. The Manual panel lists
-  every writable scalar alias and composite with a spin box, a slider (when the alias
+  every writable scalar alias, composite variable and mapping with a spin box, a slider (when the alias
   has a minimum and a maximum) and, on right click, *Set from expression…* (a function
   of the present value `x`, e.g. `x + 0.01`). Writes are protected and ramped; while a
   ramp runs, further changes to that channel are coalesced. The mouse wheel only acts
-  on a focused control, so scrolling the panel never moves an instrument.
+  on a focused control, so scrolling the panel never moves an instrument. Variables
+  of a multivariate composite are grouped. *Hold* collects edits, and *Set all*
+  sends them together.
 * **First start**: the first time the GUI meets a backend, it asks for the **data
   folder** (every run is saved there) and the **PowerPoint file** slides are appended
   to (empty = none), prefilled with the current values; *Ask me later* asks again at

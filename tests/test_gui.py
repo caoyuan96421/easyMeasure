@@ -1,5 +1,6 @@
 """Offscreen GUI tests: the frontend against an in-process backend server."""
 
+import math
 import os
 import time
 
@@ -1044,3 +1045,78 @@ def test_driver_wizard_end_to_end(app, gui):
     assert wiz2.pages[2].table.rowCount() == 7
     wiz2.close()
     wiz.close()
+
+
+def test_composite_editor_and_manual_groups(app, gui):
+    """The composite dialog (three types, Check), the composites table and the
+    manual panel's variable groups (hold + Set all → set_many)."""
+    w, be, _, _ = gui
+    from easymeasure.frontend.panels.setup_panel import CompositeDialog
+    sp, m = w.setup_panel, w.model
+    # the demo's three kinds in the table
+    assert pump(app, 5, lambda: sp.comp.rowCount() == 3)
+    types = {sp.comp.item(r, 0).text(): sp.comp.item(r, 1).text() for r in range(3)}
+    assert types == {"detuning": "Multivariate write", "Vdiff": "Composite read",
+                     "Tset_C": "Simple mapping"}
+    # a multivariate write, built in the dialog
+    dlg = CompositeDialog(m, w.conn, None, parent=w)
+    dlg.name.setText("gates")
+    dlg.vars.item(0, 0).setText("eps")
+    for col, txt in ((1, "-0.4"), (2, "0.4"), (3, "V")):
+        dlg.vars.item(0, col).setText(txt)
+    dlg._add_var({"name": "U", "min": 0, "max": 0.5, "ramp_rate": 1})
+    dlg.targets.setPlainText("Vx = U + eps\nVy = U - eps")
+    v = dlg.value()
+    assert v["type"] == "multi" and [x["name"] for x in v["variables"]] == ["eps", "U"]
+    assert v["variables"][1]["ramp_rate"] == 1 and v["targets"]["Vy"] == "U - eps"
+    dlg.check()
+    assert pump(app, 5, lambda: "✔ defines eps, U" in dlg.info.text())
+    assert "gates" not in [c["name"] for c in be.list_channels()["composites"]]
+    be.define_composite(**v)
+    # a mapping whose formulas are not inverse: Check reports where
+    dlg = CompositeDialog(m, w.conn, None, parent=w)
+    dlg.name.setText("bad")
+    dlg.type.setCurrentIndex(2)
+    assert dlg.pages.currentIndex() == 2
+    dlg.m_target.setEditText("Vb")
+    dlg.forward.setText("x**2")
+    dlg.backward.setText("sqrt(y)")
+    dlg.m_min.setText("-1")
+    dlg.m_max.setText("1")
+    dlg.check()
+    assert pump(app, 5, lambda: "not the inverse" in dlg.info.text())
+    # a composite read, and editing keeps the type
+    dlg = CompositeDialog(m, w.conn, next(c for c in m.composites() if c["name"] == "Vdiff"),
+                          parent=w)
+    assert dlg.type.currentData() == "read" and dlg.expression.text() == "(Vx - Vy)/2"
+    dlg.expression.setText("Vx - Vy")
+    assert dlg.value() == {"type": "read", "name": "Vdiff", "expression": "Vx - Vy",
+                           "unit": dlg.r_unit.text(), "description": dlg.description.text()}
+    # the manual panel: the variables, grouped under their composite
+    mp = w.manual
+    m.schedule_refresh()
+    assert pump(app, 5, lambda: "eps" in mp.rows and "gates" in mp.groups)
+    assert mp.rows["eps"].kind == "variable" and "Tset_C" in mp.rows and "Vdiff" not in mp.rows
+    assert "detuning" not in mp.groups                    # one variable: no group needed
+    g = mp.groups["gates"]
+    g["hold"].setChecked(True)
+    mp.rows["eps"].editor.setValue(0.1)
+    mp.rows["U"].editor.setValue(0.2)
+    assert mp._held["gates"] == {"eps": 0.1, "U": 0.2}
+    assert math.isnan(be.channels.get("eps"))             # nothing sent yet
+    mp.set_group("gates")
+    assert pump(app, 10, lambda: not mp._pending.get("eps") and
+                be.channels.last_value("U") == pytest.approx(0.2))
+    assert be.channels.get("Vx") == pytest.approx(0.3) and be.channels.get("Vy") == \
+        pytest.approx(0.1)
+    g["hold"].setChecked(False)
+    mp.rows["eps"].editor.setValue(0.0)                   # now one alone is fine
+    assert pump(app, 10, lambda: abs(be.channels.get("Vx") - 0.2) < 1e-9)
+    mp.filter.setText("gates")
+    assert g["label"].isVisibleTo(mp) and mp.rows["U"].label.isVisibleTo(mp)
+    assert not mp.rows["Vg"].label.isVisibleTo(mp)
+    mp.filter.clear()
+    # the sweep editor offers the variables and the mapping, records the read
+    wr, rd = w.editor._channel_lists()
+    assert {"eps", "U", "Tset_C", "detuning"} <= set(wr) and "Vdiff" not in wr
+    assert "Vdiff" in rd

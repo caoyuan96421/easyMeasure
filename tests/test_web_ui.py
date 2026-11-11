@@ -259,3 +259,68 @@ def test_web_queue_controls_copy_and_point_actions(browser, gw, demo):
     page.wait_for_selector("tr:has(td:text-is('sensitivity')) td:text-is('1e-3')", timeout=10000)
     assert not errors, errors
     page.context.close()
+
+
+def test_web_composite_editor_and_manual_groups(browser, gw, demo):
+    """The web composite editor (types, variables table, Check), the composites
+    table and the manual panel's hold + Set all for multivariate composites."""
+    import math
+    errors = []
+    page = open_page(browser, gw, "ada", errors)
+    page.click(".tab:has-text('Instruments')")
+    page.wait_for_selector("td:text-is('Simple mapping')", timeout=10000)
+    assert page.locator("td:text-is('Multivariate write')").count() == 1
+    assert page.locator("td:text-is('Composite read')").count() == 1
+    comp_group = page.locator(".group", has_text="Composites").last
+    # a mapping that is not one-to-one: Check says where
+    comp_group.locator("button:text-is('Add…')").click()
+    dlg = page.locator("dialog.modal")
+    dlg.locator(".comp-name").fill("bad")
+    dlg.locator(".comp-type").select_option("map")
+    assert dlg.locator(".comp-forward").is_visible() and not dlg.locator(".comp-targets").is_visible()
+    dlg.locator(".comp-target").fill("Vb")
+    dlg.locator(".comp-forward").fill("x**2")
+    dlg.locator(".comp-backward").fill("sqrt(y)")
+    dlg.locator(".comp-min").fill("-1")
+    dlg.locator(".comp-max").fill("1")
+    dlg.locator(".comp-check").click()
+    page.wait_for_function("document.querySelector('.comp-info').textContent.includes('not the inverse')",
+                           timeout=10000)
+    # OK with it: the backend refuses, the dialog stays open with the message
+    dlg.locator("button.primary").click()
+    page.wait_for_timeout(500)
+    # a two-variable write instead
+    dlg.locator(".comp-type").select_option("multi")
+    dlg.locator(".comp-name").fill("gates")
+    rows = dlg.locator("tr.comp-var")
+    for i, v in enumerate(("eps", "-0.4", "0.4", "V")):
+        rows.nth(0).locator("input").nth(i).fill(v)
+    dlg.locator(".comp-add-var").click()
+    for i, v in enumerate(("U", "0", "0.5")):
+        rows.nth(1).locator("input").nth(i).fill(v)
+    dlg.locator(".comp-targets").fill("Vx = U + eps\nVy = U - eps")
+    dlg.locator(".comp-check").click()
+    page.wait_for_function("document.querySelector('.comp-info').textContent.includes('defines eps, U')",
+                           timeout=10000)
+    dlg.locator("button.primary").click()
+    page.wait_for_selector("td:text-is('gates')", timeout=10000)
+    c = next(c for c in demo.list_channels()["composites"] if c["name"] == "gates")
+    assert [v["name"] for v in c["variables"]] == ["eps", "U"] and c["variables"][0]["min"] == -0.4
+    assert "bad" not in [c["name"] for c in demo.list_channels()["composites"]]
+    # manual panel: the group header, hold, Set all
+    grp = page.locator(".man-group[data-composite='gates']")
+    grp.wait_for(timeout=10000)
+    grp.locator("input[type=checkbox]").check()
+    for n, v in (("eps", "0.1"), ("U", "0.2")):
+        e = page.locator(".man-row:has(.man-label:text-is('%s')) input.man-num" % n).first
+        e.fill(v)
+        e.press("Enter")
+    page.wait_for_timeout(300)
+    assert math.isnan(demo.channels.get("eps"))           # held, not sent
+    grp.locator("button:text-is('Set all')").click()
+    t0 = time.time()
+    while demo.channels.last_value("U") != 0.2 and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.channels.get("Vx") == pytest.approx(0.3) and demo.channels.get("Vy") == pytest.approx(0.1)
+    assert not errors, errors
+    page.context.close()

@@ -8,6 +8,12 @@ Each channel row has a spin box, a slider (when the alias has both a minimum and
 a maximum) and a context menu on the spin box (right click) to enter a math
 expression of the present value ``x`` (e.g. ``x + 0.01``, ``x/2``, ``0.1*pi``).
 
+Variables of a multivariate composite channel are grouped under the composite's
+name.  A group with several variables has "hold" and "Set all": while hold is
+ticked, edits only mark the variables and "Set all" sends them in one go (the
+hardware channels are computed once from all of them) - needed for the first
+setting, when the other variables have never been set yet.
+
 Writes go through the backend's protected path (limits, ramp rates).  While a
 channel is still ramping, newer requests for it are coalesced: only the latest
 value is sent once the previous write has finished.  Mouse-wheel changes are
@@ -211,7 +217,7 @@ class ChannelRow:
         return -1
 
     def set_state(self, state: str, tip: str = "") -> None:
-        color = {"busy": "#e39a1b", "error": "#d33c3c", "ok": ""}.get(state, "")
+        color = {"busy": "#e39a1b", "error": "#d33c3c", "held": "#2f7fd0", "ok": ""}.get(state, "")
         self.label.setStyleSheet("; ".join(x for x in (self._base_style,
                                                        "color: %s" % color if color else "") if x))
         base = self.label.toolTip().split("\n⚠")[0]
@@ -277,6 +283,8 @@ class ManualPanel(QWidget):
         self.model = model
         self.rows: Dict[str, ChannelRow] = {}
         self._signature = None
+        self.groups: Dict[str, dict] = {}       # multivariate composite -> header widgets
+        self._held: Dict[str, Dict[str, float]] = {}
         self._pending: Dict[str, bool] = {}
         self._queued: Dict[str, object] = {}
         # read-backs wait in line per instrument: a rebuild asks for every value at
@@ -326,8 +334,9 @@ class ManualPanel(QWidget):
             # cannot be set from a spin box
             if a.get("writable") and (a.get("dtype") == "str" or not a.get("shape")):
                 out.append((a, "alias"))
-        for c in self.model.composites():
-            out.append((dict(c, dtype="float"), "composite"))
+        for v in self.model.virtual_channels():
+            if v.get("writable"):
+                out.append((v, v.get("kind", "variable")))
         if self.settings.isChecked():
             for i in self.model.instruments():
                 for c in i.get("channels", []):
@@ -339,7 +348,7 @@ class ManualPanel(QWidget):
 
     def _state(self, st: dict) -> None:
         chans = self._channels()
-        sig = tuple((m["name"], m.get("dtype"), m.get("min"), m.get("max"),
+        sig = tuple((m["name"], m.get("composite"), m.get("dtype"), m.get("min"), m.get("max"),
                      m.get("display_unit") or m.get("unit"),
                      tuple(m.get("choices") or m.get("allowed") or ()), kind) for m, kind in chans)
         if sig != self._signature:
@@ -358,7 +367,14 @@ class ManualPanel(QWidget):
                 w.setParent(None)
                 w.deleteLater()
         self.rows.clear()
-        for r, (meta, kind) in enumerate(chans):
+        self.groups.clear()
+        multi = {g["name"]: g["variables"] for g in self.model.composite_groups()}
+        r = 0
+        for meta, kind in chans:
+            comp = meta.get("composite") if kind == "variable" else None
+            if comp in multi and comp not in self.groups:
+                self._group_header(comp, multi[comp], r)
+                r += 1
             row = ChannelRow(self, meta, kind)
             self.rows[meta["name"]] = row
             self.grid.addWidget(row.label, r, 0)
@@ -366,7 +382,9 @@ class ManualPanel(QWidget):
             if row.slider is not None:
                 self.grid.addWidget(row.slider, r, 2)
             self.grid.addWidget(row.read_btn, r, 3)
-        self.grid.setRowStretch(len(chans), 1)
+            r += 1
+        self._held = {g: v for g, v in self._held.items() if g in self.groups}
+        self.grid.setRowStretch(r, 1)
         self._apply_filter(self.filter.text())
         for meta, _ in chans:
             if meta.get("last") is None:
@@ -376,13 +394,73 @@ class ManualPanel(QWidget):
         else:
             self.message("")
 
+    def _group_header(self, comp: str, variables, r: int) -> None:
+        lab = QLabel("<b>%s</b>  (%s)" % (comp, ", ".join(variables)))
+        lab.setToolTip("variables of the multivariate composite %s" % comp)
+        hold = QCheckBox("hold")
+        hold.setToolTip("collect edits of these variables and send them with Set all")
+        btn = QToolButton()
+        btn.setText("Set all")
+        btn.setToolTip("set every variable of %s together to the values shown" % comp)
+        btn.clicked.connect(lambda: self.set_group(comp))
+        hold.toggled.connect(lambda on: None if on else self._held.pop(comp, None))
+        box = QWidget()
+        hl = QHBoxLayout(box)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(hold)
+        hl.addWidget(btn)
+        hl.addStretch(1)
+        self.grid.addWidget(lab, r, 0)
+        self.grid.addWidget(box, r, 1, 1, 3)
+        self.groups[comp] = {"label": lab, "box": box, "hold": hold, "variables": list(variables)}
+
+    def _group_of(self, name: str) -> Optional[str]:
+        row = self.rows.get(name)
+        comp = row.meta.get("composite") if row is not None and row.kind == "variable" else None
+        return comp if comp in self.groups else None
+
+    def set_group(self, comp: str) -> None:
+        """Set all variables of a multivariate composite together (``set_many``)."""
+        g = self.groups.get(comp)
+        if g is None:
+            return
+        values = {}
+        for n in g["variables"]:
+            row = self.rows.get(n)
+            if row is None or not isinstance(row.editor, QDoubleSpinBox):
+                continue
+            values[n] = self._held.get(comp, {}).get(n, row.editor.value())
+        for n in values:
+            self._pending[n] = True
+            self.rows[n].set_state("busy")
+        self.message("setting %s together …" % ", ".join(values))
+
+        def done(ok=True, err=""):
+            self._held.pop(comp, None)
+            for n, v in values.items():
+                self._pending[n] = False
+                r = self.rows.get(n)
+                if r is not None:
+                    r.set_state("ok" if ok else "error", err)
+                    if ok:
+                        r.show_value(v, force=True)
+            self.message(("%s set" % ", ".join("%s = %g" % kv for kv in values.items()))
+                         if ok else "✘ %s: %s" % (comp, err))
+            self.model.schedule_refresh()
+        self.conn.request("set_many", {"values": values, "ramp": self.ramp.isChecked()},
+                          on_ok=lambda _: done(), on_err=lambda e: done(False, e), timeout=3600)
+
     def _apply_filter(self, text: str) -> None:
         t = text.strip().lower()
         for name, row in self.rows.items():
-            vis = not t or t in name.lower()
+            vis = not t or t in name.lower() or t in (row.meta.get("composite") or "").lower()
             for w in (row.label, row.editor, row.slider, row.read_btn):
                 if w is not None:
                     w.setVisible(vis)
+        for comp, g in self.groups.items():
+            vis = not t or t in comp.lower() or any(t in v.lower() for v in g["variables"])
+            g["label"].setVisible(vis)
+            g["box"].setVisible(vis)
 
     def message(self, text: str) -> None:
         self.status.setText(text)
@@ -390,6 +468,13 @@ class ManualPanel(QWidget):
     # ---- backend ------------------------------------------------------------------------
     def request_set(self, name: str, value) -> None:
         """Send a write; while one is in flight for this channel keep only the latest."""
+        comp = self._group_of(name)
+        if comp is not None and self.groups[comp]["hold"].isChecked():
+            self._held.setdefault(comp, {})[name] = value
+            self.rows[name].set_state("held", "held: sent with Set all")
+            self.message("%s = %s held; Set all sends %s" % (
+                name, value, ", ".join(self._held[comp])))
+            return
         if self._pending.get(name):
             self._queued[name] = value
             return

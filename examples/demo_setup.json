@@ -154,16 +154,42 @@
   ],
   "composites": [
     {
+      "type": "multi",
       "name": "detuning",
+      "variables": [
+        {
+          "name": "detuning",
+          "min": -0.9,
+          "max": 0.9,
+          "unit": "V",
+          "ramp_rate": null,
+          "description": "moves Vx and Vy in opposite directions"
+        }
+      ],
       "targets": {
-        "Vx": "x",
-        "Vy": "-x"
+        "Vx": "detuning",
+        "Vy": "-detuning"
       },
-      "read": "(Vx-Vy)/2",
-      "min": -0.9,
-      "max": 0.9,
-      "unit": "V",
       "description": "moves Vx and Vy in opposite directions"
+    },
+    {
+      "type": "read",
+      "name": "Vdiff",
+      "expression": "(Vx - Vy)/2",
+      "unit": "V",
+      "description": "half the difference of Vx and Vy, read back from the instruments"
+    },
+    {
+      "type": "map",
+      "name": "Tset_C",
+      "target": "Tset",
+      "forward": "x + 273.15",
+      "backward": "y - 273.15",
+      "min": -273.15,
+      "max": 26.85,
+      "unit": "°C",
+      "ramp_rate": null,
+      "description": "temperature setpoint in °C (Tset is in K)"
     }
   ],
   "monitor": [

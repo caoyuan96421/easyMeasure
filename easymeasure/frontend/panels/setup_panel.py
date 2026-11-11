@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
+                               QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...common.codec import to_jsonable
@@ -317,54 +317,236 @@ class AliasDialog(QDialog):
         self.accept()
 
 
+COMP_TYPES = (("multi", "Multivariate write"), ("read", "Composite read"),
+              ("map", "Simple mapping"))
+VAR_COLS = ("Name", "Min", "Max", "Unit", "Ramp /s", "Description")
+FORMULA_HELP = ("Formulas: + - * / **, abs, sqrt, exp, log, sin …, min/max, "
+                "a if cond else b,  piecewise(cond1, v1, cond2, v2, …, default),  "
+                "interp(x, xs, ys)")
+
+
+def _var_cell(v) -> str:
+    return "" if v is None else ("%g" % v if isinstance(v, (int, float)) else str(v))
+
+
+def composite_summary(c: dict) -> str:
+    """One line describing a composite definition (for tables)."""
+    t = c.get("type", "multi")
+    if t == "multi":
+        return "; ".join("%s = %s" % kv for kv in (c.get("targets") or {}).items())
+    if t == "read":
+        return c.get("expression", "")
+    return "%s = %s  (x = %s)" % (c.get("target"), c.get("forward"), c.get("backward"))
+
+
+def composite_channels(c: dict):
+    t = c.get("type", "multi")
+    if t == "multi":
+        return [v["name"] for v in c.get("variables") or []]
+    return [c["name"]]
+
+
 class CompositeDialog(QDialog):
-    def __init__(self, aliases, comp: Optional[dict] = None, parent=None):
+    """Define a composite channel: a multivariate write (variables → hardware
+    channels), a composite read (a formula of channels) or a one-to-one mapping
+    (forward / backward formulas, checked to be each other's inverse)."""
+
+    def __init__(self, model, conn=None, comp: Optional[dict] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Composite channel")
+        self.model = model
+        self.conn = conn
         c = comp or {}
+        kind = c.get("type", "multi")
         self.name = QLineEdit(c.get("name", ""))
-        self.targets = QPlainTextEdit("\n".join("%s = %s" % kv for kv in (c.get("targets") or {}).items()))
-        self.targets.setPlaceholderText("one per line:  alias = expression of x\n"
-                                        "e.g.\nVL = x\nVR = -0.8*x + 0.1\n\navailable aliases: "
-                                        + ", ".join(aliases))
-        self.read = QLineEdit(c.get("read") or "")
-        self.read.setPlaceholderText("optional read-back from targets, e.g. (VL - VR)/2")
-        self.min = QLineEdit(_fmt_opt(c.get("min")))
-        self.max = QLineEdit(_fmt_opt(c.get("max")))
-        self.rate = QLineEdit(_fmt_opt(c.get("ramp_rate")))
-        self.unit = QLineEdit(c.get("unit", ""))
+        self.type = QComboBox()
+        for k, label in COMP_TYPES:
+            self.type.addItem(label, k)
+        self.type.setCurrentIndex([k for k, _ in COMP_TYPES].index(kind))
         self.description = QLineEdit(c.get("description", ""))
+        writable = model.writable_channels(numeric_only=True)
+        readable = model.readable_channels()
+        own = set(composite_channels(c)) if c else set()
+
+        # -- multivariate write
+        self.vars = QTableWidget(0, len(VAR_COLS))
+        self.vars.setHorizontalHeaderLabels(VAR_COLS)
+        self.vars.verticalHeader().setVisible(False)
+        self.vars.horizontalHeader().setStretchLastSection(True)
+        self.vars.setMinimumHeight(110)
+        for v in (c.get("variables") or []) if kind == "multi" else []:
+            self._add_var(v)
+        if kind != "multi" or not c:
+            self._add_var({"name": "x"})
+        vb = QHBoxLayout()
+        for text, fn in (("Add variable", lambda: self._add_var({})),
+                         ("Remove variable", self._remove_var)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            vb.addWidget(b)
+        vb.addStretch(1)
+        self.targets = QPlainTextEdit("\n".join("%s = %s" % kv for kv in
+                                                (c.get("targets") or {}).items()))
+        self.targets.setPlaceholderText(
+            "one per line:  channel = formula of the variables\ne.g.\n"
+            "VL = U + eps\nVR = U - eps\nVg = piecewise(U < 0, 0, 2*U)\n\n"
+            "channels that can be driven: " + ", ".join(n for n in writable if n not in own))
+        mw = QWidget()
+        ml = QFormLayout(mw)
+        ml.setContentsMargins(0, 0, 0, 0)
+        vbox = QVBoxLayout()
+        vbox.addWidget(self.vars)
+        vbox.addLayout(vb)
+        ml.addRow("Variables", vbox)
+        ml.addRow("Targets", self.targets)
+
+        # -- composite read
+        self.expression = QLineEdit(c.get("expression", "") if kind == "read" else "")
+        self.expression.setPlaceholderText("e.g. (VL - VR)/2   or   Vg / I")
+        self.r_unit = QLineEdit(c.get("unit", "") if kind == "read" else "")
+        rw = QWidget()
+        rl = QFormLayout(rw)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addRow("Formula", self.expression)
+        rl.addRow("Unit", self.r_unit)
+        uses = QLabel("may use: " + ", ".join(n for n in readable if n not in own))
+        uses.setWordWrap(True)
+        rl.addRow(uses)
+
+        # -- mapping
+        m = c if kind == "map" else {}
+        self.m_target = QComboBox()
+        self.m_target.setEditable(True)
+        self.m_target.addItems([n for n in writable if n not in own])
+        self.m_target.setEditText(m.get("target", ""))
+        self.forward = QLineEdit(m.get("forward", ""))
+        self.forward.setPlaceholderText("target y from x, e.g.  x + 273.15")
+        self.backward = QLineEdit(m.get("backward", ""))
+        self.backward.setPlaceholderText("x from the target y, e.g.  y - 273.15")
+        self.m_min = QLineEdit(_fmt_opt(m.get("min")))
+        self.m_max = QLineEdit(_fmt_opt(m.get("max")))
+        self.m_unit = QLineEdit(m.get("unit", ""))
+        self.m_rate = QLineEdit(_fmt_opt(m.get("ramp_rate")))
+        self.m_rate.setPlaceholderText("units of x per s, optional")
+        self.m_tol = QLineEdit(_fmt_opt(m.get("tolerance")))
+        self.m_tol.setPlaceholderText("|backward(forward(x)) - x| allowed; default 1e-6 × range")
+        pw = QWidget()
+        pl = QFormLayout(pw)
+        pl.setContentsMargins(0, 0, 0, 0)
+        for label, w in (("Target channel", self.m_target), ("Forward  y = f(x)", self.forward),
+                         ("Backward  x = g(y)", self.backward), ("Minimum of x", self.m_min),
+                         ("Maximum of x", self.m_max), ("Unit", self.m_unit),
+                         ("Ramp rate", self.m_rate), ("Inverse tolerance", self.m_tol)):
+            pl.addRow(label, w)
+
+        self.pages = QStackedWidget()
+        for w in (mw, rw, pw):
+            self.pages.addWidget(w)
+        self.type.currentIndexChanged.connect(self.pages.setCurrentIndex)
+        self.pages.setCurrentIndex(self.type.currentIndex())
+        self.info = QLabel(FORMULA_HELP)
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("color: gray")
+        self.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
         form = QFormLayout(self)
-        for label, w in (("Name", self.name), ("Targets", self.targets), ("Read formula", self.read),
-                         ("Minimum", self.min), ("Maximum", self.max), ("Ramp rate", self.rate),
-                         ("Unit", self.unit), ("Description", self.description)):
-            form.addRow(label, w)
+        form.addRow("Name", self.name)
+        form.addRow("Type", self.type)
+        form.addRow(self.pages)
+        form.addRow("Description", self.description)
+        form.addRow(self.info)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.check_btn = bb.addButton("Check", QDialogButtonBox.ActionRole)
+        self.check_btn.setToolTip("check the definition with the backend (references, "
+                                  "dependency loops, the inverse of a mapping) without saving")
+        self.check_btn.clicked.connect(self.check)
+        self.check_btn.setEnabled(conn is not None)
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
+        self.resize(640, 520)
         self.result_value = None
+        self.original_name = c.get("name")
+
+    # -- variables table
+    def _add_var(self, v: dict) -> None:
+        r = self.vars.rowCount()
+        self.vars.insertRow(r)
+        for col, key in enumerate(("name", "min", "max", "unit", "ramp_rate", "description")):
+            self.vars.setItem(r, col, QTableWidgetItem(_var_cell(v.get(key))))
+
+    def _remove_var(self) -> None:
+        rows = sorted({i.row() for i in self.vars.selectedIndexes()}, reverse=True) or \
+            ([self.vars.rowCount() - 1] if self.vars.rowCount() else [])
+        for r in rows:
+            self.vars.removeRow(r)
+
+    def _cell(self, r, c) -> str:
+        it = self.vars.item(r, c)
+        return it.text().strip() if it is not None else ""
+
+    # -- the definition
+    def value(self) -> dict:
+        """The definition as the backend takes it; raises ValueError on bad input."""
+        kind = self.type.currentData()
+        d = {"type": kind, "name": self.name.text().strip(),
+             "description": self.description.text()}
+        if kind == "multi":
+            vs = []
+            for r in range(self.vars.rowCount()):
+                name = self._cell(r, 0)
+                if not name:
+                    continue
+                vs.append({"name": name, "min": _opt_float(self._cell(r, 1)),
+                           "max": _opt_float(self._cell(r, 2)), "unit": self._cell(r, 3),
+                           "ramp_rate": _opt_float(self._cell(r, 4)),
+                           "description": self._cell(r, 5)})
+            targets = {}
+            for line in self.targets.toPlainText().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    raise ValueError("line %r needs 'channel = formula'" % line)
+                k, v = line.split("=", 1)
+                targets[k.strip()] = v.strip()
+            d.update(variables=vs, targets=targets)
+        elif kind == "read":
+            d.update(expression=self.expression.text().strip(), unit=self.r_unit.text().strip())
+        else:
+            d.update(target=self.m_target.currentText().strip(),
+                     forward=self.forward.text().strip(), backward=self.backward.text().strip(),
+                     min=_opt_float(self.m_min.text()), max=_opt_float(self.m_max.text()),
+                     unit=self.m_unit.text().strip(), ramp_rate=_opt_float(self.m_rate.text()),
+                     tolerance=_opt_float(self.m_tol.text()))
+        return d
+
+    def _show(self, text: str, color: str) -> None:
+        self.info.setStyleSheet("color: %s" % color)
+        self.info.setText(text)
+
+    def check(self) -> None:
+        try:
+            d = self.value()
+        except ValueError as exc:
+            self._show("✘ %s" % exc, "#d44")
+            return
+        replace = bool(self.original_name) and self.original_name == d["name"]
+
+        def ok(r):
+            txt = "✔ defines %s" % ", ".join(r.get("channels") or [])
+            for w in r.get("warnings") or []:
+                txt += "\n⚠ " + w
+            self._show(txt, "#a60" if r.get("warnings") else "#2a2")
+        self._show("checking …", "gray")
+        self.conn.request("check_composite", dict(d, replace=replace), on_ok=ok,
+                          on_err=lambda e: self._show("✘ %s" % e, "#d44"))
 
     def _ok(self):
-        targets = {}
-        for line in self.targets.toPlainText().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                QMessageBox.warning(self, "Composite", "Line %r needs 'alias = expression'" % line)
-                return
-            k, v = line.split("=", 1)
-            targets[k.strip()] = v.strip()
         try:
-            self.result_value = {"name": self.name.text().strip(), "targets": targets,
-                                 "read": self.read.text().strip() or None,
-                                 "min": _opt_float(self.min.text()), "max": _opt_float(self.max.text()),
-                                 "ramp_rate": _opt_float(self.rate.text()),
-                                 "unit": self.unit.text().strip(),
-                                 "description": self.description.text()}
+            self.result_value = self.value()
         except ValueError as exc:
-            QMessageBox.warning(self, "Composite", "Invalid number: %s" % exc)
+            QMessageBox.warning(self, "Composite", str(exc))
             return
         self.accept()
 
@@ -481,7 +663,7 @@ class SetupPanel(QWidget):
         al.addWidget(self.alias)
         al.addLayout(ab)
         # composites
-        self.comp = _table(["Composite", "Targets", "Read", "Min", "Max", "Ramp /s", "Last set"])
+        self.comp = _table(["Composite", "Type", "Definition", "Channels", "Last set"])
         cb = FlowLayout()
         for text, fn in (("Add…", lambda: self._edit_comp(None)), ("Edit…", self._edit_comp_sel),
                          ("Remove", self._remove_comp)):
@@ -602,11 +784,18 @@ class SetupPanel(QWidget):
         cs = self.model.composites()
         self.comp.setRowCount(len(cs))
         for r, c_ in enumerate(cs):
-            vals = (c_["name"], "; ".join("%s=%s" % kv for kv in c_["targets"].items()),
-                    c_.get("read") or "", _fmt_opt(c_.get("min")), _fmt_opt(c_.get("max")),
-                    _fmt_opt(c_.get("ramp_rate")), _short(c_.get("last")))
+            last = c_.get("last")
+            if isinstance(last, dict):
+                last = ", ".join("%s = %s" % (k, "—" if v is None else _short(v))
+                                 for k, v in last.items())
+            vals = (c_["name"], dict(COMP_TYPES).get(c_.get("type"), c_.get("type")),
+                    composite_summary(c_), ", ".join(composite_channels(c_)),
+                    "" if last is None else _short(last))
             for c, v in enumerate(vals):
-                self.comp.setItem(r, c, QTableWidgetItem(str(v)))
+                it = QTableWidgetItem(str(v))
+                if c_.get("description"):
+                    it.setToolTip(c_["description"])
+                self.comp.setItem(r, c, it)
         names = self.model.readable_channels() + self.model.raw_channels()
         cur = self.m_chan.currentText()
         self.m_chan.blockSignals(True)
@@ -803,14 +992,27 @@ class SetupPanel(QWidget):
             self._edit_comp(c)
 
     def _edit_comp(self, c):
-        dlg = CompositeDialog([a["name"] for a in self.model.aliases()], c, parent=self)
+        dlg = CompositeDialog(self.model, self.conn, c, parent=self)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
-            if c and c["name"] != v["name"]:
-                self.conn.request("remove_composite", {"name": c["name"]})
-            self.conn.request("define_composite", dict(v, replace=bool(c and c["name"] == v["name"])),
-                              on_ok=self._done("composite %s saved" % v["name"]),
-                              on_err=self._err("composite"))
+            replace = bool(c and c["name"] == v["name"])
+
+            def saved(r, name=v["name"]):
+                warn = r.get("warnings") if isinstance(r, dict) else None
+                self._done("composite %s saved%s" % (name, ("  ⚠ " + "; ".join(warn))
+                                                     if warn else ""))()
+
+            def define(_=None):
+                self.conn.request("define_composite", dict(v, replace=replace),
+                                  on_ok=saved, on_err=self._err("composite"))
+            if c and not replace:
+                # renamed: only drop the old name once the new definition is known good
+                self.conn.request("check_composite", dict(v, replace=False), on_err=self._err(
+                    "composite"), on_ok=lambda _: self.conn.request(
+                        "remove_composite", {"name": c["name"]}, on_ok=define,
+                        on_err=self._err("composite")))
+            else:
+                define()
 
     def _remove_comp(self):
         name = self._sel_name(self.comp)

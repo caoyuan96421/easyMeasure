@@ -91,6 +91,11 @@ class BackendModel(QObject):
     def composites(self) -> List[dict]:
         return list((self.state.get("channels") or {}).get("composites", []))
 
+    def virtual_channels(self) -> List[dict]:
+        """Channels the composites define: variables of multivariate composites
+        (``kind`` "variable"), mappings ("map") and composite reads ("read")."""
+        return list((self.state.get("channels") or {}).get("virtual", []))
+
     def instruments(self) -> List[dict]:
         return list(self.state.get("instruments", []))
 
@@ -99,12 +104,12 @@ class BackendModel(QObject):
         for a in self.aliases():
             if a.get("writable") and not (numeric_only and a.get("dtype") == "str"):
                 out.append(a["name"])
-        out += [c["name"] for c in self.composites()]
+        out += [v["name"] for v in self.virtual_channels() if v.get("writable")]
         return out
 
     def readable_channels(self) -> List[str]:
         out = [a["name"] for a in self.aliases() if a.get("readable", True)]
-        out += [c["name"] for c in self.composites()]
+        out += [v["name"] for v in self.virtual_channels()]
         return out
 
     def raw_channels(self) -> List[str]:
@@ -147,7 +152,14 @@ class BackendModel(QObject):
         for a in self.aliases():
             if a["name"] == name:
                 return a
-        for c in self.composites():
-            if c["name"] == name:
-                return dict(c, dtype="float", shape=[])
+        for v in self.virtual_channels():
+            if v["name"] == name:
+                return v
         return None
+
+    def composite_groups(self) -> List[dict]:
+        """Multivariate composites with more than one variable: ``{name, variables}``
+        (front ends offer setting them together)."""
+        return [{"name": c["name"], "variables": [v["name"] for v in c["variables"]]}
+                for c in self.composites() if c.get("type") == "multi"
+                and len(c.get("variables") or []) > 1]

@@ -17,10 +17,13 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
+
 from ..common import paths
 from ..common.errors import ChannelError, DriverError, EasyMeasureError, SweepDefinitionError
 from . import setup_io
-from .channels import Alias, ChannelManager, Composite
+from .channels import Alias, ChannelManager
+from .composites import composite_from_dict
 from .registry import DriverRegistry
 from .instrument import InstrumentManager
 from .logsys import get_logger, ring, setup_logging
@@ -57,7 +60,8 @@ class Backend:
         "reconnect_instrument", "update_instrument", "list_instruments",
         "read_channel", "write_channel", "query_channel", "raw_query", "raw_write",
         "channel_info",
-        "define_alias", "remove_alias", "define_composite", "remove_composite", "list_channels",
+        "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
+        "set_many", "list_channels",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
         "validate_sweep", "queue_add", "queue_remove", "queue_move", "queue_clear",
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
@@ -454,15 +458,43 @@ class Backend:
         self._changed("channels")
 
     def define_composite(self, replace: bool = False, **comp) -> dict:
-        c = Composite.from_dict(comp)
-        self.channels.add_composite(c, replace=replace)
+        """Define a composite channel (``type`` multi / read / map, see
+        backend/composites.py).  Returns its definition, the channels it provides and
+        warnings (e.g. a variable that drives nothing)."""
+        c, notes = composite_from_dict(comp)
+        old = next((o for o in self.channels.composites() if o.name == c.name), None)
+        warnings = notes + self.channels.add_composite(c, replace=replace)
+        if old is not None:
+            for ch in set(old.channels()) - set(c.channels()):
+                self.monitor.remove(ch)
+        for w in warnings:
+            log.warning(w)
         self._changed("channels")
-        return c.to_dict()
+        return dict(c.to_dict(), channels=c.channels(), warnings=warnings)
+
+    def check_composite(self, replace: bool = True, **comp) -> dict:
+        """Check a composite definition without defining it (the editors' Check
+        button): the mapping inverse check, references, dependency loops."""
+        c, notes = composite_from_dict(comp)
+        cand = {o.name: o for o in self.channels.composites()}
+        if c.name in cand and not replace:
+            raise ChannelError("composite %r already exists" % c.name)
+        cand[c.name] = c
+        warnings = notes + self.channels._validate(cand, c)
+        return dict(c.to_dict(), channels=c.channels(), warnings=warnings)
 
     def remove_composite(self, name: str) -> None:
-        self.monitor.remove(name)
+        c = next((o for o in self.channels.composites() if o.name == name), None)
         self.channels.remove_composite(name)
+        for ch in (c.channels() if c is not None else [name]):
+            self.monitor.remove(ch)
         self._changed("channels")
+
+    def set_many(self, values: dict, ramp: bool = True) -> dict:
+        """Set several channels together (e.g. all variables of a composite)."""
+        plan = self.channels.set_many(values, ramp=bool(ramp))
+        self._changed("channels")
+        return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in plan.items()}
 
     def list_channels(self) -> dict:
         return self.channels.describe()

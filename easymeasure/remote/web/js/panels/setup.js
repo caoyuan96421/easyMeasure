@@ -1,7 +1,7 @@
 // Instruments & channels: instruments, raw channels and actions, aliases,
 // composites, manual get/set, setup save/load (port of panels/setup_panel.py).
 
-import { h, Table, btn, bar, group, fmt, formDialog, confirmDialog, download, pickFile, message } from "../ui.js";
+import { h, Table, btn, bar, group, fmt, formDialog, confirmDialog, download, pickFile, message, modal } from "../ui.js";
 import { toJSONable } from "../codec.js";
 
 const STATE_CLS = { connected: "ok", error: "err", hung: "hung", disconnected: "muted" };
@@ -14,6 +14,141 @@ function parseValue(text) {
   if (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) return Number(t);
   if (t.startsWith("[")) return JSON.parse(t);
   return t;
+}
+
+const COMP_TYPES = { multi: "Multivariate write", read: "Composite read", map: "Simple mapping" };
+const FORMULA_HELP = "Formulas: + - * / **, abs, sqrt, exp, log, sin …, min/max, a if cond else b, " +
+  "piecewise(cond1, v1, cond2, v2, …, default), interp(x, xs, ys)";
+
+function compSummary(c) {
+  if ((c.type || "multi") === "multi") return Object.entries(c.targets || {}).map(([k, v]) => `${k} = ${v}`).join("; ");
+  if (c.type === "read") return c.expression || "";
+  return `${c.target} = ${c.forward}  (x = ${c.backward})`;
+}
+function compChannels(c) {
+  return (c.type || "multi") === "multi" ? (c.variables || []).map((v) => v.name) : [c.name];
+}
+function compLast(v) {
+  if (v && typeof v === "object" && !Array.isArray(v) && !v.shape) {
+    return Object.entries(v).map(([k, x]) => `${k} = ${x === null || x === undefined ? "—" : lastText(x)}`).join(", ");
+  }
+  return lastText(v);
+}
+
+/** The composite channel editor: type, then the fields of that type; "Check" asks
+ *  the backend (check_composite) without defining anything. Resolves with the
+ *  definition or null. */
+export function compositeDialog(model, conn, c, onSave = null) {
+  const own = new Set(c.name ? compChannels(c) : []);
+  const writable = model.writableChannels(true).filter((n) => !own.has(n));
+  const readable = model.readableChannels().filter((n) => !own.has(n));
+  const kind = c.type || "multi";
+  const inp = (value, placeholder = "", cls = "") => {
+    const e = h("input", { type: "text", placeholder, autocomplete: "off", spellcheck: false, class: cls });
+    e.value = value ?? "";
+    return e;
+  };
+  const num = (s) => { const t = String(s).trim(); if (!t) return null; const v = Number(t); if (!Number.isFinite(v)) throw new Error(`invalid number: ${t}`); return v; };
+  const name = inp(c.name, "", "comp-name");
+  const desc = inp(c.description);
+  const type = h("select", { class: "comp-type" }, Object.entries(COMP_TYPES).map(([k, l]) => h("option", { value: k, text: l, selected: k === kind })));
+
+  // multivariate write
+  const vbody = h("tbody");
+  const addVar = (v = {}) => {
+    const cells = ["name", "min", "max", "unit", "ramp_rate", "description"].map((k) =>
+      inp(typeof v[k] === "number" ? String(v[k]) : v[k] || "", k === "ramp_rate" ? "/s" : ""));
+    const del = h("button", { text: "✕", title: "remove this variable", on: { click: () => tr.remove() } });
+    const tr = h("tr", { class: "comp-var" }, cells.map((e) => h("td", {}, e)), h("td", {}, del));
+    tr._cells = cells;
+    vbody.append(tr);
+  };
+  for (const v of kind === "multi" ? c.variables || [] : []) addVar(v);
+  if (!vbody.children.length) addVar({ name: "x" });
+  const targets = h("textarea", { rows: 5, spellcheck: false, class: "comp-targets",
+    placeholder: "one per line:  channel = formula of the variables\ne.g.\nVL = U + eps\nVR = U - eps" });
+  targets.value = Object.entries(kind === "multi" ? c.targets || {} : {}).map(([k, e]) => `${k} = ${e}`).join("\n");
+  const multi = h("div", { class: "form" },
+    h("label", { text: "Variables" }), h("div", {},
+      h("table", { class: "comp-vars" }, h("thead", {}, h("tr", {}, ["Name", "Min", "Max", "Unit", "Ramp", "Description", ""].map((t) => h("th", { text: t })))), vbody),
+      h("button", { text: "Add variable", class: "comp-add-var", on: { click: () => addVar({}) } })),
+    h("label", { text: "Targets" }), targets,
+    h("span"), h("div", { class: "help", text: "channels that can be driven: " + writable.join(", ") }));
+
+  // composite read
+  const expr = inp(kind === "read" ? c.expression : "", "e.g. (VL - VR)/2", "comp-expr");
+  const rUnit = inp(kind === "read" ? c.unit : "");
+  const read = h("div", { class: "form" }, h("label", { text: "Formula" }), expr, h("label", { text: "Unit" }), rUnit,
+    h("span"), h("div", { class: "help", text: "may use: " + readable.join(", ") }));
+
+  // mapping
+  const m = kind === "map" ? c : {};
+  const listId = "dl-" + Math.random().toString(36).slice(2);
+  const mTarget = inp(m.target, "", "comp-target");
+  mTarget.setAttribute("list", listId);
+  const f = {
+    forward: inp(m.forward, "target y from x, e.g.  x + 273.15", "comp-forward"),
+    backward: inp(m.backward, "x from the target y, e.g.  y - 273.15", "comp-backward"),
+    min: inp(m.min ?? "", "", "comp-min"), max: inp(m.max ?? "", "", "comp-max"), unit: inp(m.unit),
+    ramp_rate: inp(m.ramp_rate ?? "", "units of x per s, optional"),
+    tolerance: inp(m.tolerance ?? "", "default 1e-6 × range"),
+  };
+  const map = h("div", { class: "form" }, h("datalist", { id: listId }, writable.map((n) => h("option", { value: n }))),
+    h("label", { text: "Target channel" }), mTarget, h("label", { text: "Forward  y = f(x)" }), f.forward,
+    h("label", { text: "Backward  x = g(y)" }), f.backward, h("label", { text: "Minimum of x" }), f.min,
+    h("label", { text: "Maximum of x" }), f.max, h("label", { text: "Unit" }), f.unit,
+    h("label", { text: "Ramp rate" }), f.ramp_rate, h("label", { text: "Inverse tolerance" }), f.tolerance);
+
+  const pages = { multi, read, map };
+  const show = () => { for (const [k, p] of Object.entries(pages)) p.hidden = k !== type.value; };
+  type.addEventListener("change", show);
+  show();
+  const info = h("div", { class: "help comp-info", text: FORMULA_HELP });
+
+  const value = () => {
+    const d = { type: type.value, name: name.value.trim(), description: desc.value };
+    if (d.type === "multi") {
+      d.variables = [...vbody.children].map((tr) => tr._cells.map((e) => e.value.trim()))
+        .filter((x) => x[0]).map(([n, lo, hi, unit, rate, dsc]) => ({ name: n, min: num(lo), max: num(hi), unit, ramp_rate: num(rate), description: dsc }));
+      d.targets = {};
+      for (let line of targets.value.split("\n")) {
+        line = line.trim();
+        if (!line || line.startsWith("#")) continue;
+        const i = line.indexOf("=");
+        if (i < 0) throw new Error(`line '${line}' needs 'channel = formula'`);
+        d.targets[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+      }
+    } else if (d.type === "read") {
+      Object.assign(d, { expression: expr.value.trim(), unit: rUnit.value.trim() });
+    } else {
+      Object.assign(d, { target: mTarget.value.trim(), forward: f.forward.value.trim(), backward: f.backward.value.trim(),
+        min: num(f.min.value), max: num(f.max.value), unit: f.unit.value.trim(), ramp_rate: num(f.ramp_rate.value),
+        tolerance: num(f.tolerance.value) });
+    }
+    return d;
+  };
+  const check = async () => {
+    let d;
+    try { d = value(); } catch (e) { info.className = "help comp-info err"; info.textContent = "✘ " + e.message; return; }
+    info.className = "help comp-info";
+    info.textContent = "checking …";
+    try {
+      const r = await conn.request("check_composite", { ...d, replace: !!c.name && c.name === d.name });
+      const w = r.warnings || [];
+      info.className = "help comp-info " + (w.length ? "warn" : "ok");
+      info.textContent = `✔ defines ${(r.channels || []).join(", ")}` + w.map((x) => "\n⚠ " + x).join("");
+    } catch (e) { info.className = "help comp-info err"; info.textContent = "✘ " + e.message; }
+  };
+  const checkBtn = h("button", { text: "Check", class: "comp-check", title: "check with the backend (references, dependency loops, the inverse of a mapping) without saving",
+    on: { click: check } });
+  if (!conn.can("check_composite")) checkBtn.disabled = true;
+  const body = h("div", { class: "comp-dialog" },
+    h("div", { class: "form" }, h("label", { text: "Name" }), name, h("label", { text: "Type" }), type),
+    multi, read, map,
+    h("div", { class: "form" }, h("label", { text: "Description" }), desc),
+    h("div", { class: "bar" }, checkBtn), info);
+  return modal(c.name ? `Composite ${c.name}` : "Add composite channel", body, [["Cancel", null], ["OK", true]],
+    { wide: true, onOk: async () => { const d = value(); if (onSave) await onSave(d); return d; } });
 }
 
 export class SetupPanel {
@@ -54,10 +189,9 @@ export class SetupPanel {
       { key: "unit", label: "Unit" }, { key: "last", label: "Last set" },
     ], { onActivate: () => this._editAlias(this.alias.current()), empty: "no aliases" });
     this.comp = new Table([
-      { key: "name", label: "Composite" },
-      { key: "targets", label: "Targets", fmt: (t) => Object.entries(t || {}).map(([k, v]) => `${k}=${v}`).join("; ") },
-      { key: "read", label: "Read" }, { key: "min", label: "Min" }, { key: "max", label: "Max" },
-      { key: "ramp_rate", label: "Ramp /s" }, { key: "last", label: "Last set" },
+      { key: "name", label: "Composite" }, { key: "typeLabel", label: "Type" },
+      { key: "summary", label: "Definition" }, { key: "chans", label: "Channels" },
+      { key: "lastText", label: "Last set" },
     ], { onActivate: () => this._editComp(this.comp.current()), empty: "no composites" });
 
     // manual control
@@ -109,7 +243,9 @@ export class SetupPanel {
     this._showRaw();
     this.alias.set(this.model.aliases().map((a) => ({ ...a, last: a.last && a.last.shape ? `array(${a.last.shape.join("×")})` : a.last })),
       { rowClass: (r) => (r.error ? "err" : ""), rowTitle: (r) => r.error || r.description || null });
-    this.comp.set(this.model.composites(), { rowTitle: (r) => r.description || null });
+    this.comp.set(this.model.composites().map((c) => ({ ...c, typeLabel: COMP_TYPES[c.type] || c.type,
+      summary: compSummary(c), chans: compChannels(c).join(", "), lastText: compLast(c.last) })),
+    { rowTitle: (r) => r.description || null });
     const names = this.model.readableChannels().concat(this.model.rawChannels());
     this.mList.replaceChildren(...names.map((n) => h("option", { value: n })));
   }
@@ -268,31 +404,18 @@ export class SetupPanel {
     if (!this.conn.can("define_composite")) return;
     const existing = !!c;
     c = c || {};
-    const aliases = this.model.aliases().map((a) => a.name);
-    const v = await formDialog(existing ? `Composite ${c.name}` : "Add composite channel", [
-      { key: "name", label: "Name", value: c.name || "" },
-      { key: "targets", label: "Targets", type: "textarea", rows: 5,
-        value: Object.entries(c.targets || {}).map(([k, e]) => `${k} = ${e}`).join("\n"),
-        placeholder: "one per line:  alias = expression of x\ne.g.\nVL = x\nVR = -0.8*x + 0.1",
-        help: "available aliases: " + aliases.join(", ") },
-      { key: "read", label: "Read formula", value: c.read || "", placeholder: "optional read-back from targets, e.g. (VL - VR)/2" },
-      { key: "min", label: "Minimum", value: optStr(c.min) }, { key: "max", label: "Maximum", value: optStr(c.max) },
-      { key: "ramp_rate", label: "Ramp rate", value: optStr(c.ramp_rate) },
-      { key: "unit", label: "Unit", value: c.unit || "" },
-      { key: "description", label: "Description", value: c.description || "" },
-    ], { wide: true, validate: (v) => {
-      const targets = {};
-      for (let line of v.targets.split("\n")) {
-        line = line.trim();
-        if (!line || line.startsWith("#")) continue;
-        const i = line.indexOf("=");
-        if (i < 0) throw new Error(`line '${line}' needs 'alias = expression'`);
-        targets[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    // saved from inside the dialog: a refused definition keeps it open with the reason
+    await compositeDialog(this.model, this.conn, c, async (v) => {
+      const replace = existing && c.name === v.name;
+      if (!replace) {
+        await this.conn.request("check_composite", { ...v, replace: false });
+        if (existing) await this.conn.request("remove_composite", { name: c.name });
       }
-      return { name: v.name.trim(), targets, read: v.read.trim() || null, min: optNum(v.min), max: optNum(v.max),
-               ramp_rate: optNum(v.ramp_rate), unit: v.unit.trim(), description: v.description };
-    } });
-    if (v) await this._do("define_composite", { ...v, replace: existing }, `composite ${v.name} saved`).catch(() => {});
+      const r = await this.conn.request("define_composite", { ...v, replace }, { timeout: 600000 });
+      const w = (r && r.warnings) || [];
+      this.say(`composite ${v.name} saved` + (w.length ? `  ⚠ ${w.join("; ")}` : ""));
+      this.model.scheduleRefresh();
+    });
   }
 
   async _remove(cmd, row) {

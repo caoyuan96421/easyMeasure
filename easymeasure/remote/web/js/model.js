@@ -40,16 +40,23 @@ export class Model {
 
   aliases() { return ((this.state.channels || {}).aliases) || []; }
   composites() { return ((this.state.channels || {}).composites) || []; }
+  /** channels the composites define: kind "variable" (of a multivariate write), "map", "read" */
+  virtualChannels() { return ((this.state.channels || {}).virtual) || []; }
+  /** multivariate composites with several variables (set together with set_many) */
+  compositeGroups() {
+    return this.composites().filter((c) => c.type === "multi" && (c.variables || []).length > 1)
+      .map((c) => ({ name: c.name, variables: c.variables.map((v) => v.name) }));
+  }
   instruments() { return this.state.instruments || []; }
   settings() { return this.state.settings || {}; }
 
   writableChannels(numericOnly = false) {
     const out = this.aliases().filter((a) => a.writable && !(numericOnly && a.dtype === "str")).map((a) => a.name);
-    return out.concat(this.composites().map((c) => c.name));
+    return out.concat(this.virtualChannels().filter((v) => v.writable).map((v) => v.name));
   }
   readableChannels() {
     return this.aliases().filter((a) => a.readable !== false).map((a) => a.name)
-      .concat(this.composites().map((c) => c.name));
+      .concat(this.virtualChannels().map((v) => v.name));
   }
   rawChannels() {
     return this.instruments().flatMap((i) => (i.channels || []).map((c) => `${i.name}.${c.name}`));
@@ -74,7 +81,6 @@ export class Model {
   channelMeta(name) {
     const a = this.aliases().find((x) => x.name === name);
     if (a) return a;
-    const c = this.composites().find((x) => x.name === name);
-    return c ? { ...c, dtype: "float", shape: [] } : null;
+    return this.virtualChannels().find((x) => x.name === name) || null;
   }
 }

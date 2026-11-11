@@ -211,3 +211,13 @@ dialog.modal h3 { margin: 0 0 10px; font-size: 1.15rem; }
   .dims-host { flex-direction: column; }
   .dimside { width: 100%; }
 }
+
+/* composite channel editor */
+.comp-dialog > .form { margin-bottom: 6px; }
+.comp-vars { border-collapse: collapse; width: 100%; }
+.comp-vars th { text-align: left; font-weight: normal; color: var(--muted); font-size: .85rem; }
+.comp-vars td { padding: 1px 2px; }
+.comp-vars input { width: 100%; min-width: 3.5em; box-sizing: border-box; }
+.comp-info { white-space: pre-line; margin-top: 4px; }
+.man-group { display: flex; gap: 8px; align-items: center; margin-top: 6px; padding-top: 3px; border-top: 1px solid var(--border, #444); }
+.man-label.held { color: #2f7fd0; }

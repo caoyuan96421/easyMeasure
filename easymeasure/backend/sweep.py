@@ -277,14 +277,7 @@ def compute_setpoints(d: dict) -> Dict[int, Dict[str, Any]]:
 def _instruments_of(channels, name: str) -> set:
     """Instruments behind an alias / composite / raw reference (best effort)."""
     try:
-        if channels.is_composite(name):
-            out = set()
-            for a in channels._composites[name].targets:
-                out |= _instruments_of(channels, a)
-            return out
-        if "." in name:
-            return {name.split(".", 1)[0]}
-        return {channels.get_alias(name).target.split(".", 1)[0]}
+        return channels.instruments_behind(name)
     except Exception:
         return set()
 
@@ -348,13 +341,35 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
             if shape == [] and sp.ndim > 1:
                 errors.append("%s is a scalar channel but its mapping returns arrays" % ch)
                 continue
+            if info["kind"] == "variable" and \
+                    sum(channels.group_of(o["channel"]) == info["composite"]
+                        for o in dim["sweep"]) > 1:
+                continue          # checked together with the other variables below
             try:
                 for v in sp:
-                    channels.check_value(ch, v if np.ndim(v) else float(v))
+                    # partial: a variable of the same composite set by an outer
+                    # dimension is not known yet
+                    channels.check_value(ch, v if np.ndim(v) else float(v), partial=True)
             except LimitError as exc:
                 errors.append(str(exc))
             except ChannelError as exc:
                 problem(ch, str(exc))
+        groups: Dict[str, List[str]] = {}
+        for s in dim["sweep"]:
+            g = channels.group_of(s["channel"]) if hasattr(channels, "group_of") else None
+            if g is not None:
+                groups.setdefault(g, []).append(s["channel"])
+        for g, names in groups.items():
+            if len(names) < 2:
+                continue
+            try:
+                for i in range(dim["points"]):
+                    channels.check_many({n: float(setpoints[k][n][i]) for n in names},
+                                        partial=True)
+            except LimitError as exc:
+                errors.append(str(exc))
+            except ChannelError as exc:
+                problem(names[0], str(exc))
         for name, code in active_hooks(dim).items():
             try:
                 compile(code, "<%s-hook>" % name, "exec")
@@ -512,6 +527,22 @@ class SweepRunner:
         self.fsync_interval = fsync_interval
         self.extra_header = extra_header or {}
         self.setpoints = compute_setpoints(self.d)
+        # swept channels in order; variables of one multivariate composite are set
+        # together at the place of the first of them
+        self._set_groups: List[List[List[str]]] = []
+        for dim in self.d["dimensions"]:
+            groups: List[List[str]] = []
+            where: Dict[str, List[str]] = {}
+            for s in dim["sweep"]:
+                ch = s["channel"]
+                g = channels.group_of(ch) if hasattr(channels, "group_of") else None
+                if g is not None and g in where:
+                    where[g].append(ch)
+                    continue
+                groups.append([ch])
+                if g is not None:
+                    where[g] = groups[-1]
+            self._set_groups.append(groups)
         self.shape = [dim["points"] for dim in self.d["dimensions"]]
         self.dataset: Optional[DataSet] = None
         self.journal: Optional[JournalWriter] = None
@@ -611,6 +642,18 @@ class SweepRunner:
                 if self.d["on_read_error"] == "abort":
                     raise
         return values, errors
+
+    def _set_many(self, values: dict) -> None:
+        try:
+            self.channels.set_many(values, ramp=True, abort_check=self.control.check)
+        except AbortRequested:
+            raise
+        except Exception as exc:
+            if self.d["on_set_error"] == "skip":
+                log.warning("run %d: setting %s failed (skipped): %s", self.run_number,
+                            ", ".join(values), exc)
+                return
+            raise
 
     def _set(self, name: str, value) -> None:
         try:
@@ -791,8 +834,11 @@ class SweepRunner:
             try:
                 if hooks:
                     self._point_hook(k, "pre_sweep", ctx)
-                for name in sweep_names:
-                    self._set(name, ctx["setpoints"][name])
+                for group in self._set_groups[k]:
+                    if len(group) == 1:
+                        self._set(group[0], ctx["setpoints"][group[0]])
+                    else:                 # variables of one composite: set together
+                        self._set_many({n: ctx["setpoints"][n] for n in group})
                 if hooks:
                     self._point_hook(k, "post_sweep", ctx)
                 if dim["pre_delay"]:

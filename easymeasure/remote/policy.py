@@ -35,7 +35,7 @@ VIEW = {
     "read_run_header", "get_setup", "save_setup", "recent_logs", "list_clients",
 }
 OPERATE = {
-    "write_channel", "query_channel", "run_action", "monitor_add", "monitor_remove",
+    "write_channel", "set_many", "query_channel", "run_action", "monitor_add", "monitor_remove",
     "queue_add", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
     "queue_options", "pause", "resume", "abort", "abort_all", "make_ppt",
     "connect_instrument", "disconnect_instrument", "reconnect_instrument",
@@ -43,7 +43,7 @@ OPERATE = {
 ADMIN = {
     "set_settings", "rescan_drivers", "discover_resources", "add_instrument",
     "remove_instrument", "update_instrument", "raw_query", "raw_write", "define_alias",
-    "remove_alias", "define_composite", "remove_composite", "load_setup", "run_script_now",
+    "remove_alias", "define_composite", "check_composite", "remove_composite", "load_setup", "run_script_now",
     "shutdown",
     # the Driver Wizard writes driver code (init scripts are Python)
     "wizard_templates", "wizard_check", "wizard_list", "wizard_load", "wizard_save",

@@ -3,7 +3,13 @@ import time
 import numpy as np
 import pytest
 
-from easymeasure.backend.channels import Alias, Composite
+from easymeasure.backend.channels import Alias
+from easymeasure.backend.composites import MultiComposite, Variable
+
+
+def one(name, targets, **var):
+    """A multivariate composite with one variable called like the composite."""
+    return MultiComposite(name, [Variable(name, **var)], targets)
 from easymeasure.common.errors import ChannelError, ExpressionError, LimitError
 
 
@@ -85,14 +91,14 @@ def test_composite(demo):
     assert ch.get("detuning") == pytest.approx(0.3)
     with pytest.raises(LimitError):
         ch.set("detuning", 0.95)                 # composite limit
-    ch.add_composite(Composite("big", {"Vx": "2*x", "Vy": "x"}))
+    ch.add_composite(one("big", {"Vx": "2*big", "Vy": "big"}))
     with pytest.raises(LimitError):
         ch.set("big", 0.8)                       # Vx target 1.6 > 1: refused before writing
     assert ch.get("Vy") == pytest.approx(-0.3)    # nothing was written
     with pytest.raises(ExpressionError):
-        Composite("bad", {"Vx": "y*2"})
+        one("bad", {"Vx": "y*2"})                # y is no variable of it
     with pytest.raises(ChannelError):
-        ch.add_composite(Composite("c2", {"nope": "x"}))
+        ch.add_composite(one("c2", {"nope": "c2"}))
     with pytest.raises(ChannelError):
         ch.remove_alias("Vx")                    # used by a composite
 
@@ -101,7 +107,7 @@ def test_composite_ramp_respects_target_rates(demo):
     ch = demo.channels
     ch.add_alias(Alias("A1", "src.V3", min=-1, max=1, ramp_rate=1.0), replace=True)
     ch.add_alias(Alias("A2", "src.V4", min=-1, max=1, ramp_rate=0.5), replace=True)
-    ch.add_composite(Composite("pair", {"A1": "x", "A2": "x"}))
+    ch.add_composite(one("pair", {"A1": "pair", "A2": "pair"}))
     ch.set("pair", 0.0, ramp=False)
     t0 = time.monotonic()
     ch.set("pair", 0.25)     # A2 limits: 0.25 / 0.5 = 0.5 s
@@ -175,7 +181,7 @@ def test_review_unknown_start_refuses_to_jump(demo):
 def test_review_composite_nonlinear_path_respects_rates(demo):
     ch = demo.channels
     ch.add_alias(Alias("VL", "src.V3", min=-1, max=1, ramp_rate=2.0), replace=True)
-    ch.add_composite(Composite("q", {"VL": "x**2"}, min=-1, max=1))
+    ch.add_composite(one("q", {"VL": "q**2"}, min=-1, max=1))
     ch.set("VL", 1.0, ramp=False)
     ch.set("q", -1.0, ramp=False)
     src = demo.instruments.get("src")
@@ -191,7 +197,7 @@ def test_review_composite_nonlinear_path_respects_rates(demo):
     assert max(rates) < 2.0 * 1.6       # one tick of slack
     # ramp_step honoured through a composite
     ch.add_alias(Alias("VS", "src.V4", min=-1, max=1, ramp_step=0.1), replace=True)
-    ch.add_composite(Composite("s", {"VS": "x"}))
+    ch.add_composite(one("s", {"VS": "s"}))
     ch.set("VS", 0.0, ramp=False)
     seen.clear()
     src.write = lambda c, v: (seen.append(v), orig(c, v))

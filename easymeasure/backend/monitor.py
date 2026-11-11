@@ -109,8 +109,8 @@ class Monitor:
             target = info.get("target") or (name if info.get("kind") == "raw" else None)
             if target:
                 return target.split(".", 1)[0]
-            if info.get("kind") == "composite":
-                return "composite:" + name
+            if info.get("kind") in ("variable", "map", "read"):
+                return "composite:" + (info.get("composite") or name)
         except Exception:
             pass
         return "misc"

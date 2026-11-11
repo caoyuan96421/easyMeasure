@@ -4,6 +4,10 @@ Used for sweep mapping functions (``start + (stop-start)*t**2``), composite
 channel definitions (``0.5*x + 0.1``), composite read-back formulas and the
 manual-control "set from expression".
 
+Piecewise functions: ``piecewise(x < 0, -x, x < 1, x**2, 1)`` (the value of the
+first true condition; a final odd argument is the "otherwise" value, else NaN),
+``a if cond else b``, ``where(cond, a, b)`` and tables with ``interp(x, xs, ys)``.
+
 Because these formulas can arrive from remote (web) users, this module is a
 security boundary, built as an allow-list rather than a deny-list:
 
@@ -130,6 +134,28 @@ def _array(obj):
     return np.array(a, dtype=complex if a.dtype.kind == "c" else float)
 
 
+def _piecewise(*args):
+    """``piecewise(c1, v1, c2, v2, ..., [otherwise])``: the value of the first true
+    condition (elementwise for arrays); without *otherwise* NaN where none holds."""
+    if len(args) < 2:
+        raise ExpressionError("piecewise needs condition, value pairs")
+    pairs = args[:len(args) - len(args) % 2]
+    default = args[-1] if len(args) % 2 else np.nan
+    conds = [np.asarray(c, dtype=bool) for c in pairs[0::2]]
+    vals = list(pairs[1::2])
+    if all(c.ndim == 0 for c in conds) and all(np.ndim(v) == 0 for v in vals) \
+            and np.ndim(default) == 0:
+        for c, v in zip(conds, vals):
+            if bool(c):
+                return v
+        return default
+    shape = np.broadcast_shapes(*[np.shape(a) for a in args])
+    _check_size(int(np.prod(shape)) if shape else 1)
+    return np.select([np.broadcast_to(c, shape) for c in conds],
+                     [np.broadcast_to(np.asarray(v, dtype=float), shape) for v in vals],
+                     default=default)
+
+
 def _outer(a, b):
     _check_size(np.size(a) * np.size(b))
     return np.outer(a, b)
@@ -179,7 +205,7 @@ _NP_FUNCS = {
     "linspace": _linspace, "logspace": _logspace, "geomspace": _geomspace,
     "arange": _arange, "zeros": _zeros, "ones": _ones, "full": _full, "array": _array,
     "asarray": _array, "outer": _outer, "meshgrid": _meshgrid, "tile": _tile,
-    "repeat": _repeat,
+    "repeat": _repeat, "piecewise": _piecewise, "select": np.select,
 }
 _NP_CONSTS = {"pi": np.pi, "e": np.e, "inf": np.inf, "nan": np.nan}
 _MATH_FUNCS = {n: getattr(math, n) for n in (
@@ -328,6 +354,8 @@ class Expression:
             raise ExpressionError("expression nested too deeply") from None
         known = set(_TOP_LEVEL) | set(_MODULES)
         self.names = sorted(n for n in v.names if n not in _MODULES)
+        #: names that are not functions / constants of the evaluator (the variables)
+        self.free_names = sorted(n for n in self.names if n not in _TOP_LEVEL)
         if allowed_names is not None:
             unknown = [n for n in self.names if n not in known and n not in set(allowed_names)]
             if unknown:
@@ -342,7 +370,8 @@ class Expression:
                 if not str(k).startswith("_"):
                     ns[k] = val
         try:
-            return eval(self._code, ns)  # noqa: S307 - allow-listed AST, no builtins
+            with np.errstate(all="ignore"):   # branches of piecewise / where may be invalid
+                return eval(self._code, ns)  # noqa: S307 - allow-listed AST, no builtins
         except ExpressionError:
             raise
         except Exception as exc:
@@ -351,6 +380,23 @@ class Expression:
 
     def __repr__(self):
         return "Expression(%r)" % self.source
+
+
+def reserved(name: str) -> bool:
+    """True if *name* is a function / constant of the evaluator (not usable as a variable)."""
+    return name in _TOP_LEVEL or name in _MODULES or name in _NS_BASE
+
+
+def rename(source: str, mapping: Dict[str, str]) -> str:
+    """*source* with the variables renamed (``x`` -> ``detuning``), via the syntax tree."""
+    tree = ast.parse(source.strip(), mode="eval")
+
+    class R(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id in mapping:
+                return ast.copy_location(ast.Name(id=mapping[node.id], ctx=node.ctx), node)
+            return node
+    return ast.unparse(R().visit(tree))
 
 
 def evaluate(source: str, **variables) -> Any:

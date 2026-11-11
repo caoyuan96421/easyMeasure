@@ -5,6 +5,7 @@ Scripts are plain Python run in the backend with a small API in their namespace:
 =====================  =========================================================
 ``get(name)``          read an alias / composite / ``instrument.channel``
 ``set(name, value)``   protected (limits, ramp) write to an alias / composite
+``set_many({n: v})``   set several together (e.g. variables of one composite)
 ``set_raw(ref, v)``    unprotected write to ``instrument.channel``
 ``sleep(s)``           abortable sleep (always use this instead of time.sleep)
 ``wait_until(f, timeout, interval)``  poll ``f()`` until true
@@ -103,6 +104,10 @@ class ScriptRunner:
             ctl.check()
             return self.channels.set(n, v, ramp=ramp, abort_check=ctl.check)
 
+        def _set_many(values, ramp=True):
+            ctl.check()
+            return self.channels.set_many(values, ramp=ramp, abort_check=ctl.check)
+
         def _get(n):
             ctl.check()
             return self.channels.get(n)
@@ -136,7 +141,7 @@ class ScriptRunner:
 
         return {
             "__name__": "__easymeasure_script__",
-            "get": _get, "set": _set, "set_raw": _set_raw, "sleep": ctl.sleep,
+            "get": _get, "set": _set, "set_many": _set_many, "set_raw": _set_raw, "sleep": ctl.sleep,
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
             "warn": slog.warning, "print": _print, "instrument": _instrument,
             "run_sweep": _run_sweep, "action": _action, "np": np, "math": math, "time": time,

@@ -265,6 +265,7 @@ class ChannelRow {
   setState(state, tip = "") {
     this.label.classList.toggle("busy", state === "busy");
     this.label.classList.toggle("err", state === "error");
+    this.label.classList.toggle("held", state === "held");
     this.label.title = this.label.title.split("\n⚠")[0] + (tip ? "\n⚠ " + tip : "");
   }
 }
@@ -277,6 +278,8 @@ export class ManualPanel {
     this.sig = null;
     this.pending = {};
     this.queued = {};
+    this.held = {};
+    this.groups = new Map();
     this.lastExpr = {};
     this.filter = h("input", { placeholder: "filter channels", type: "search", on: { input: () => this._filter() } });
     this.ramp = h("input", { type: "checkbox", checked: true, title: "respect the alias ramp rates (recommended)" });
@@ -293,7 +296,7 @@ export class ManualPanel {
   _channels() {
     const out = [];
     for (const a of this.app.model.aliases()) if (a.writable && (a.dtype === "str" || !(a.shape && a.shape.length))) out.push(a);
-    for (const c of this.app.model.composites()) out.push({ ...c, dtype: "float" });
+    for (const v of this.app.model.virtualChannels()) if (v.writable) out.push(v);
     if (this.settings.checked) {
       for (const i of this.app.model.instruments()) {
         for (const c of i.channels || []) {
@@ -308,13 +311,17 @@ export class ManualPanel {
 
   _state() {
     const chans = this._channels();
-    const sig = JSON.stringify(chans.map((m) => [m.name, m.dtype, m.min, m.max, m.display_unit || m.unit,
+    const sig = JSON.stringify(chans.map((m) => [m.name, m.composite || "", m.dtype, m.min, m.max, m.display_unit || m.unit,
       m.choices || m.allowed || [], m.kind || ""]));
     if (sig !== this.sig) {
       this.sig = sig;
       this.host.replaceChildren();
       this.rows.clear();
+      this.groups = new Map();
+      const multi = new Map(this.app.model.compositeGroups().map((g) => [g.name, g.variables]));
       for (const m of chans) {
+        const comp = m.kind === "variable" ? m.composite : null;
+        if (comp && multi.has(comp) && !this.groups.has(comp)) this.host.append(this._groupHeader(comp, multi.get(comp)));
         const r = new ChannelRow(this, m);
         this.rows.set(m.name, r);
         this.host.append(r.el);
@@ -332,11 +339,63 @@ export class ManualPanel {
 
   _filter() {
     const t = this.filter.value.trim().toLowerCase();
-    for (const [n, r] of this.rows) r.el.hidden = !!t && !n.toLowerCase().includes(t);
+    for (const [n, r] of this.rows) r.el.hidden = !!t && !n.toLowerCase().includes(t) && !(r.meta.composite || "").toLowerCase().includes(t);
+    for (const [c, g] of this.groups || []) g.el.hidden = !!t && !c.toLowerCase().includes(t) && !g.variables.some((v) => v.toLowerCase().includes(t));
+  }
+
+  /** Header of the variables of one multivariate composite: "hold" collects edits,
+   *  "Set all" sends them together (set_many), as the first setting needs. */
+  _groupHeader(comp, variables) {
+    const hold = h("input", { type: "checkbox", title: "collect edits of these variables and send them with Set all",
+      on: { change: () => { if (!hold.checked) delete this.held[comp]; } } });
+    const set = btn("Set all", () => this.setGroup(comp), { cmd: "set_many", title: `set every variable of ${comp} together to the values shown` });
+    const el = h("div", { class: "man-group" }, h("b", { text: comp }), h("span", { class: "muted", text: `(${variables.join(", ")})` }),
+      h("label", { class: "check" }, hold, " hold"), set);
+    el.dataset.composite = comp;
+    this.groups.set(comp, { el, hold, variables });
+    return el;
+  }
+
+  _groupOf(name) {
+    const r = this.rows.get(name);
+    const c = r && r.meta.kind === "variable" ? r.meta.composite : null;
+    return c && this.groups && this.groups.has(c) ? c : null;
+  }
+
+  async setGroup(comp) {
+    const g = this.groups.get(comp);
+    if (!g) return;
+    const values = {};
+    for (const n of g.variables) {
+      const r = this.rows.get(n);
+      if (!r) continue;
+      const held = (this.held[comp] || {})[n];
+      values[n] = held !== undefined ? held : Number(r.editor.value);
+    }
+    for (const n of Object.keys(values)) { this.pending[n] = true; this.rows.get(n).setState("busy"); }
+    this.say(`setting ${Object.keys(values).join(", ")} together …`);
+    let ok = true, err = "";
+    try { await this.conn.request("set_many", { values, ramp: this.ramp.checked }, { timeout: 3600000 }); }
+    catch (e) { ok = false; err = e.message; }
+    delete this.held[comp];
+    for (const [n, v] of Object.entries(values)) {
+      this.pending[n] = false;
+      const r = this.rows.get(n);
+      if (r) { r.setState(ok ? "ok" : "error", err); if (ok) r.show(v, true); }
+    }
+    this.say(ok ? Object.entries(values).map(([n, v]) => `${n} = ${fmt(v, 8)}`).join(", ") + " set" : `✘ ${comp}: ${err}`);
+    this.app.model.scheduleRefresh();
   }
 
   /** One write in flight per channel; newer requests replace queued ones. */
   async requestSet(name, value) {
+    const comp = this._groupOf(name);
+    if (comp && this.groups.get(comp).hold.checked) {
+      (this.held[comp] = this.held[comp] || {})[name] = value;
+      this.rows.get(name).setState("held", "held: sent with Set all");
+      this.say(`${name} = ${fmt(value)} held; Set all sends ${Object.keys(this.held[comp]).join(", ")}`);
+      return;
+    }
     if (this.pending[name]) { this.queued[name] = value; return; }
     this.pending[name] = true;
     const row = this.rows.get(name);
