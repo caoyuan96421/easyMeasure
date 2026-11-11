@@ -1,0 +1,42 @@
+{
+  "name": "power_dependence",
+  "dimensions": [
+    {
+      "points": 36,
+      "sweep": [
+        {
+          "channel": "P",
+          "start": -70,
+          "stop": 0
+        }
+      ],
+      "record": [
+        "S11",
+        "phase"
+      ]
+    }
+  ],
+  "pre": {
+    "constants": [
+      {
+        "channel": "vna.if_bandwidth",
+        "value": 1000
+      },
+      {
+        "channel": "vna.points",
+        "value": 401
+      }
+    ]
+  },
+  "post": {
+    "constants": [
+      {
+        "channel": "P",
+        "value": -30
+      }
+    ]
+  },
+  "metadata": {
+    "sample": "resonator R3"
+  }
+}

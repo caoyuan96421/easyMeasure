@@ -1,0 +1,53 @@
+{
+  "name": "landau_fan",
+  "dimensions": [
+    {
+      "points": 101,
+      "sweep": [
+        {
+          "channel": "Vbg",
+          "start": -8,
+          "stop": 8
+        }
+      ],
+      "record": [
+        "Rxx"
+      ],
+      "snake": true
+    },
+    {
+      "points": 61,
+      "sweep": [
+        {
+          "channel": "B",
+          "start": 0,
+          "stop": 9
+        }
+      ],
+      "record": [
+        "B"
+      ],
+      "hooks": {
+        "post_sweep": {
+          "enabled": true,
+          "code": "wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600)"
+        }
+      }
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "Vbg",
+        "value": 0
+      },
+      {
+        "channel": "B",
+        "value": 0
+      }
+    ]
+  },
+  "metadata": {
+    "sample": "BLG-01"
+  }
+}

@@ -1,6 +1,6 @@
 # Sweep definition
 
-A sweep is a JSON-compatible dict. See the [Sweeps tutorial](../tutorial/sweeps.md)
+A sweep is a JSON-compatible dict. See the [Sweeps tutorial](../guide/sweeps.md)
 for explanations and examples. `validate_sweep` returns the normalised form, with
 every default filled in.
 
@@ -60,7 +60,7 @@ every default filled in.
 | `snake` | bool | `false` | alternate the direction on each pass of the outer loop |
 | `record_after_inner` | bool | `false` | (outer dimensions) run the inner dimensions before recording |
 | `label` | str | `""` | a name for the dimension, shown in the editor |
-| `hooks` | dict | all off | [point actions](../tutorial/point-actions.md): `pre_sweep`, `post_sweep`, `pre_record`, `post_record`, each `{"enabled": bool, "code": str}` (a bare string counts as enabled code) |
+| `hooks` | dict | all off | [point actions](../guide/point-actions.md): `pre_sweep`, `post_sweep`, `pre_record`, `post_record`, each `{"enabled": bool, "code": str}` (a bare string counts as enabled code) |
 
 A channel may be recorded in only one dimension.
 

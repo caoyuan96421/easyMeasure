@@ -722,9 +722,13 @@ class SweepEditor(QWidget):
         left.addWidget(self.dim_list, 1)
         for b in self._dim_buttons:
             left.addWidget(b)
+        left_host = QWidget()
+        left_host.setLayout(left)
+        left_host.setMaximumWidth(170)          # the dimension's own editor gets the room
+        left.setContentsMargins(0, 0, 0, 0)
         dims_host = QWidget()
         dl = QHBoxLayout(dims_host)
-        dl.addLayout(left)
+        dl.addWidget(left_host)
         dl.addWidget(self.dim_stack, 1)
 
         self.pre = PhaseEditor("pre")

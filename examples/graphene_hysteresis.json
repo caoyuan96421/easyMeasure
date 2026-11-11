@@ -1,0 +1,20 @@
+{
+  "name": "gate_hysteresis",
+  "dimensions": [
+    {
+      "points": 201,
+      "sweep": [
+        {
+          "channel": "Vbg",
+          "start": 0,
+          "stop": 5,
+          "mapping": "stop*(2/pi)*arcsin(sin(2*pi*t))"
+        }
+      ],
+      "record": [
+        "Rxx",
+        "@elapsed"
+      ]
+    }
+  ]
+}

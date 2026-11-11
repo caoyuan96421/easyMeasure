@@ -3,7 +3,8 @@
 For a channel recorded in dimension *k* of a sweep the data array has shape
 ``(N_k, ..., N_{D-1}) + value_shape``.  Every one of these array axes is a
 *display axis*: sweep axes use the setpoints of their first scalar sweep
-channel as coordinates, value axes use their index.  A view selects one axis
+channel as coordinates; value axes use the coordinates the driver gave
+(``DataSet.value_axes``, e.g. the frequencies of a VNA trace) or their index.  A view selects one axis
 (1-D curve) or two axes (heat map / stacked curves) and fixes every other axis
 at an index.
 """
@@ -27,11 +28,21 @@ def axes_for(ds, name: str) -> List[dict]:
                     "size": ds.shape[dim], "coords": coords})
     if arr is not None:
         vshape = arr.shape[ds.ndim - k:]
+        given = (getattr(ds, "value_axes", None) or {}).get(name) or []
         for j, n in enumerate(vshape):
-            out.append({"id": "v%d" % j, "kind": "value", "dim": j, "unit": "",
-                        "name": "%s[axis %d]" % (name, j),
-                        "label": "%s[axis %d]" % (name, j), "size": n,
-                        "coords": np.arange(n, dtype=float)})
+            ax = given[j] if j < len(given) else None
+            coords = None if not ax else np.asarray(ax.get("coords"), dtype=float).ravel()
+            if coords is not None and coords.size == n:
+                unit = ax.get("unit") or ""
+                label = ax.get("name") or "%s[axis %d]" % (name, j)
+                out.append({"id": "v%d" % j, "kind": "value", "dim": j, "unit": unit,
+                            "name": label, "label": label + (" (%s)" % unit if unit else ""),
+                            "size": n, "coords": coords})
+            else:
+                out.append({"id": "v%d" % j, "kind": "value", "dim": j, "unit": "",
+                            "name": "%s[axis %d]" % (name, j),
+                            "label": "%s[axis %d]" % (name, j), "size": n,
+                            "coords": np.arange(n, dtype=float)})
     return out
 
 

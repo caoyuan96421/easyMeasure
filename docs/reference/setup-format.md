@@ -48,10 +48,10 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
 |---|---|
 | `format` | always `"easyMeasure-setup-1"` |
 | `instruments` | `{name, driver, address, options}`; see each [driver](drivers/index.md) for its options |
-| `aliases` | `{name, target, min, max, ramp_rate, ramp_step, scale, offset, unit, allowed, read_only, description}`; see [Aliases](../tutorial/aliases.md#fields) |
-| `composites` | `{type: multi \| read \| map, …}`; see [Composite channels](../tutorial/composites.md#reference) |
+| `aliases` | `{name, target, min, max, ramp_rate, ramp_step, scale, offset, unit, allowed, read_only, description}`; see [Aliases](../guide/aliases.md#the-fields) |
+| `composites` | `{type: multi \| read \| map, …}`; see [Composite channels](../guide/composites.md#reference) |
 | `monitor` | `{channel, interval}` |
-| `actions` | `{name, code, description, confirm}`; see [User actions](../tutorial/user-actions.md) |
+| `actions` | `{name, code, description, confirm}`; see [User actions](../guide/user-actions.md) |
 
 ## Loading
 

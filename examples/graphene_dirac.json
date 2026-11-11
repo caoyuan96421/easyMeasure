@@ -1,0 +1,31 @@
+{
+  "name": "dirac_peak",
+  "dimensions": [
+    {
+      "points": 161,
+      "sweep": [
+        {
+          "channel": "Vbg",
+          "start": -8,
+          "stop": 8
+        }
+      ],
+      "record": [
+        "Rxx",
+        "Ileak"
+      ],
+      "pre_delay": 0.02
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "Vbg",
+        "value": 0
+      }
+    ]
+  },
+  "metadata": {
+    "sample": "BLG-01"
+  }
+}

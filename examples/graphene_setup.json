@@ -1,0 +1,121 @@
+{
+  "format": "easyMeasure-setup-1",
+  "instruments": [
+    {
+      "name": "bg",
+      "driver": "sim_smu",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "lockin",
+      "driver": "sim_lockin",
+      "address": "NONE",
+      "options": {
+        "sample": "graphene"
+      }
+    },
+    {
+      "name": "magnet",
+      "driver": "sim_magnet",
+      "address": "NONE",
+      "options": {}
+    },
+    {
+      "name": "tg",
+      "driver": "sim_smu",
+      "address": "NONE",
+      "options": {}
+    }
+  ],
+  "aliases": [
+    {
+      "name": "Vbg",
+      "target": "bg.voltage",
+      "min": -10,
+      "max": 10,
+      "ramp_rate": 5,
+      "unit": "V",
+      "description": "back gate"
+    },
+    {
+      "name": "Ileak",
+      "target": "bg.current",
+      "unit": "A",
+      "description": "back-gate leakage current"
+    },
+    {
+      "name": "Rxx",
+      "target": "lockin.X",
+      "scale": 100000000.0,
+      "unit": "Ω",
+      "description": "four-probe resistance (lock-in voltage / 10 nA)"
+    },
+    {
+      "name": "B",
+      "target": "magnet.field",
+      "min": -9,
+      "max": 9,
+      "unit": "T",
+      "description": "magnetic field"
+    },
+    {
+      "name": "Vtg",
+      "target": "tg.voltage",
+      "min": -10,
+      "max": 10,
+      "ramp_rate": 5,
+      "unit": "V",
+      "description": "top gate"
+    }
+  ],
+  "composites": [
+    {
+      "type": "multi",
+      "name": "nD",
+      "variables": [
+        {
+          "name": "n",
+          "min": -2.5,
+          "max": 2.5,
+          "unit": "1e12 cm^-2",
+          "description": "carrier density"
+        },
+        {
+          "name": "D",
+          "min": -0.35,
+          "max": 0.35,
+          "unit": "V/nm",
+          "description": "displacement field"
+        }
+      ],
+      "targets": {
+        "Vbg": "(n + 0.15 + D/0.0452) / (2*0.6)",
+        "Vtg": "(n + 0.15 - D/0.0452) / (2*0.9)"
+      },
+      "description": "carrier density and displacement field of the dual-gated bilayer"
+    }
+  ],
+  "monitor": [
+    {
+      "channel": "Rxx",
+      "interval": 0.5
+    },
+    {
+      "channel": "Ileak",
+      "interval": 1.0
+    },
+    {
+      "channel": "B",
+      "interval": 1.0
+    }
+  ],
+  "actions": [
+    {
+      "name": "gates to zero",
+      "code": "set_many({'Vbg': 0, 'Vtg': 0})\nprint('both gates at 0 V')",
+      "description": "ramp both gates to 0 V",
+      "confirm": false
+    }
+  ]
+}

@@ -19,6 +19,14 @@ function asArray(v) {
 }
 
 export class DataSet {
+  /** a sweep_phase event / journal phase frame: pre or post recordings, or the
+   *  coordinates of value axes ("axes") */
+  applyPhase(phase, v) {
+    if (phase === "axes") Object.assign(this.valueAxes, v || {});
+    else Object.assign(phase === "pre" ? this.pre : this.post, v || {});
+    this.version++;
+  }
+
   constructor(header) {
     this.header = header;
     this.shape = (header.shape || []).map(Number);
@@ -29,6 +37,7 @@ export class DataSet {
     this.errors = {};
     this.pre = {};
     this.post = {};
+    this.valueAxes = {};           // channel -> [{name, unit, label, coords} | null per value axis]
     this.footer = null;
     this.points = 0;
     this.lastIndex = null;
@@ -72,6 +81,7 @@ export class DataSet {
     ds.errors = { ...(snap.errors || {}) };
     ds.pre = { ...(snap.pre || {}) };
     ds.post = { ...(snap.post || {}) };
+    ds.valueAxes = { ...(snap.value_axes || {}) };
     ds.footer = snap.footer || null;
     ds.points = Number(snap.points || 0);
     ds.skipped = Number(snap.skipped || 0);
@@ -193,9 +203,21 @@ export function axesFor(ds, name) {
   }
   if (arr) {
     const vshape = arr.shape.slice(ds.ndim - k);
-    vshape.forEach((n, j) => out.push({ id: "v" + j, kind: "value", dim: j, unit: "",
-      name: `${name}[axis ${j}]`, label: `${name}[axis ${j}]`, size: n,
-      coords: Float64Array.from({ length: n }, (_, i) => i) }));
+    const given = (ds.valueAxes || {})[name] || [];
+    vshape.forEach((n, j) => {
+      const ax = given[j];
+      const c = ax && ax.coords ? asArray(ax.coords) : null;
+      if (c && c.size === n) {
+        const unit = ax.unit || "";
+        const label = ax.name || `${name}[axis ${j}]`;
+        out.push({ id: "v" + j, kind: "value", dim: j, unit, name: label,
+          label: label + (unit ? ` (${unit})` : ""), size: n, coords: Float64Array.from(c.data) });
+      } else {
+        out.push({ id: "v" + j, kind: "value", dim: j, unit: "",
+          name: `${name}[axis ${j}]`, label: `${name}[axis ${j}]`, size: n,
+          coords: Float64Array.from({ length: n }, (_, i) => i) });
+      }
+    });
   }
   return out;
 }

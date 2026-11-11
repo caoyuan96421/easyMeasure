@@ -418,6 +418,30 @@ class ChannelManager:
             return list(spec.allowed)
         return None
 
+    def value_axes(self, name: str) -> Optional[list]:
+        """Coordinates of the value axes of an array channel (alias or
+        ``instrument.channel``) whose driver names them (``ChannelSpec.axes``):
+        ``[{"name", "unit", "coords"} or None per axis]``, or None."""
+        with self._lock:
+            a = self._aliases.get(name)
+        target = a.target if a is not None else name
+        if self.is_composite(name) or "." not in target or target.startswith("@"):
+            return None
+        h, spec = self.instruments.resolve(target)
+        if not spec.axes:
+            return None
+        inst = target.split(".", 1)[0]
+        out = []
+        for ax in spec.axes:
+            if ax is None:
+                out.append(None)
+                continue
+            aspec = h.spec(ax)
+            coords = np.asarray(h.read(ax), dtype=float).ravel()
+            out.append({"name": ax, "unit": aspec.unit, "label": aspec.description or ax,
+                        "channel": "%s.%s" % (inst, ax), "coords": coords})
+        return out
+
     def _alias_spec(self, a: Alias) -> ChannelSpec:
         _, spec = self.instruments.resolve(a.target)
         return spec

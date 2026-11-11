@@ -156,7 +156,8 @@ export class LiveDataView extends DataView {
         this.ds.applyPoint(data.k, data.i, data.v || {}, data.e, !!data.skip);
         this.dataChanged();
       } else if (kind === "sweep_phase" && this.ds && data.run === this.run) {
-        Object.assign(data.phase === "pre" ? this.ds.pre : this.ds.post, data.v || {});
+        this.ds.applyPhase(data.phase, data.v);
+        if (data.phase === "axes") this.dataChanged();
       } else if (kind === "sweep_end" && this.ds && data.run === this.run) {
         this.ds.footer = data.footer || { status: data.status };
         this.ds.header.status = data.status;

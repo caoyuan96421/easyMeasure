@@ -298,8 +298,9 @@ class LiveDataView(DataView):
                                     skip=bool(data.get("skip")))
                 self.data_changed()
             elif kind == "sweep_phase" and self.ds is not None and data.get("run") == self.run:
-                target = self.ds.pre if data.get("phase") == "pre" else self.ds.post
-                target.update(data.get("v", {}))
+                self.ds.apply_phase(data.get("phase"), data.get("v", {}))
+                if data.get("phase") == "axes":
+                    self.data_changed()
             elif kind == "sweep_end" and self.ds is not None and data.get("run") == self.run:
                 self.ds.footer = data.get("footer") or {"status": data.get("status")}
                 self.ds.header["status"] = data.get("status")

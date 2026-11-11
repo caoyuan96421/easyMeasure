@@ -76,6 +76,11 @@ class ChannelSpec:
     config: bool = False
     #: accepted values (see class doc); None = anything of the right type
     allowed: Optional[List[Any]] = None
+    #: array channels: for each value axis, the name of a channel of the same instrument
+    #: holding its coordinates (e.g. ``axes=("frequencies",)`` for a VNA trace), or
+    #: None for a plain index.  A sweep reads them once, after its pre phase, and the
+    #: plots use them as coordinates and labels.
+    axes: Optional[Tuple[Optional[str], ...]] = None
 
     def __post_init__(self):
         if self.access not in ("r", "w", "rw"):
@@ -94,6 +99,8 @@ class ChannelSpec:
                 if self.shape != ():
                     raise ValueError("allowed values need a scalar channel")
                 self.allowed = [float(v) for v in vals]
+        if self.axes is not None:
+            self.axes = tuple(None if a in (None, "") else str(a) for a in self.axes)
 
     @property
     def readable(self) -> bool:
@@ -132,6 +139,7 @@ class ChannelSpec:
             "shape": None if self.shape is None else list(self.shape),
             "unit": self.unit, "description": self.description, "config": self.config,
             "allowed": None if self.allowed is None else list(self.allowed),
+            "axes": None if self.axes is None else list(self.axes),
         }
 
     @classmethod
@@ -140,7 +148,8 @@ class ChannelSpec:
         return cls(name=d["name"], access=d.get("access", "rw"), dtype=d.get("dtype", "float"),
                    shape=None if shape is None else tuple(shape), unit=d.get("unit", ""),
                    description=d.get("description", ""), timeout=d.get("timeout"),
-                   config=bool(d.get("config", False)), allowed=d.get("allowed"))
+                   config=bool(d.get("config", False)), allowed=d.get("allowed"),
+                   axes=d.get("axes"))
 
 
 @dataclass

@@ -216,8 +216,10 @@ assert abs(get('Vg') - 0.2) < 1e-9
 ok = wait_until(lambda: get('T') > 0, timeout=2)
 state['ok'] = ok
 state['idn'] = instrument('src').read('idn')
-status = run_sweep({'name': 'nested', 'dimensions': [{'points': 3, 'sweep': [{'channel': 'Vb', 'start': 0, 'stop': 0.1}], 'record': ['I']}]})
-state['nested'] = status
+ds = run_sweep({'name': 'nested', 'dimensions': [{'points': 3, 'sweep': [{'channel': 'Vb', 'start': 0, 'stop': 0.1}], 'record': ['I']}]})
+state['nested'] = ds.status
+state['nested_shape'] = ds.data['I'].shape
+state['nested_path'] = ds.path
 """
     demo.queue_add({"kind": "script", "code": code}, start=True)
     assert demo.queue.wait_idle(30)
@@ -225,6 +227,8 @@ state['nested'] = status
     assert demo.scripts.state["ok"] is True
     assert "SimSource4" in demo.scripts.state["idn"]
     assert demo.scripts.state["nested"] == "finished"
+    assert demo.scripts.state["nested_shape"] == (3,)       # the script sees the data
+    assert demo.scripts.state["nested_path"].endswith("_nested.emj")
 
 
 def test_point_hooks_order_and_context(demo):

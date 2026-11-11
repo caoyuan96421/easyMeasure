@@ -37,6 +37,8 @@ class SimMagnet(SimDirectInstrument):
             st = _STATE.setdefault(self.name, {"field": 0.0, "target": 0.0, "rate": 10.0,
                                                "t": time.monotonic()})
         self.st = st
+        # the field others see (lock-in, VNA …) follows the ramp even unpolled
+        WORLD.set_dynamic(self.name + ".field", lambda: self._update()["field"])
 
     def _action_hold(self):
         self.gate()
@@ -56,7 +58,6 @@ class SimMagnet(SimDirectInstrument):
                 st["field"] = st["target"]
             else:
                 st["field"] += step if diff > 0 else -step
-            WORLD.set(self.name + ".field", st["field"])
             return dict(st)
 
     def read(self, channel):

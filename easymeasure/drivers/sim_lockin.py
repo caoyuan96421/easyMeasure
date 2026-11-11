@@ -1,7 +1,15 @@
 """Simulated lock-in amplifier (no port; address ``NONE``).
 
-Measures the differential conductance of the simulated quantum dot.  Besides
-scalar channels it offers ``XY`` - a 2-element vector reading.
+Option ``sample`` chooses what it measures:
+
+* ``dot`` (default): the differential conductance of the simulated quantum dot
+  (gate / bias from the options ``gate`` and ``bias``);
+* ``graphene``: the four-probe voltage of a dual-gated bilayer graphene Hall bar
+  driven with ``excitation`` amperes (gates from ``back_gate`` / ``top_gate``,
+  normally two ``sim_smu`` instruments ``bg`` and ``tg``), so X = excitation × Rxx.
+
+Both see the field of ``field`` (a ``sim_magnet``).  Besides scalar channels it
+offers ``XY`` - a 2-element vector reading.
 """
 
 from __future__ import annotations
@@ -32,16 +40,25 @@ class SimLockin(SimDirectInstrument):
     ]
     ACTIONS = [ActionSpec("auto_phase", "rotate the phase so that Y = 0"),
                ActionSpec("auto_gain", "choose the sensitivity for the present signal")]
-    DEFAULT_OPTIONS = dict(gate="src.V1", bias="src.V2", field="magnet.field", **FAULT_OPTION_DOC)
+    DEFAULT_OPTIONS = dict(sample="dot", gate="src.V1", bias="src.V2", back_gate="bg.V",
+                           top_gate="tg.V", excitation=10e-9, field="magnet.field",
+                           **FAULT_OPTION_DOC)
 
     def connect(self):
         self.gate()
+        if str(self.options.get("sample", "dot")).lower() not in ("dot", "graphene"):
+            raise ChannelError("option sample must be 'dot' or 'graphene'")
         self.freq = getattr(self, "freq", 17.77)
         self.amp = getattr(self, "amp", 0.01)
         self.sens = getattr(self, "sens", "1e-3")
 
     def _xy(self):
         o = self.options
+        if str(o.get("sample", "dot")).lower() == "graphene":
+            g = WORLD.graphene(float(WORLD.get(o["back_gate"])), float(WORLD.get(o["top_gate"])),
+                               float(WORLD.get(o["field"])))
+            x = float(o.get("excitation", 10e-9)) * g["Rxx"]
+            return x, 0.01 * x + 2e-8 * float(self.rng.standard_normal())
         return WORLD.lockin(float(WORLD.get(o["gate"])), float(WORLD.get(o["bias"])),
                             float(WORLD.get(o["field"])), self.amp)
 

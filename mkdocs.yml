@@ -78,6 +78,10 @@ hooks:
 extra_css:
   - stylesheets/extra.css
 
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js
+
 exclude_docs: |
   _driver_notes/
   gen_reference.py
@@ -100,36 +104,55 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.arithmatex:
+      generic: true
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Quick start: quickstart.md
-  - Tutorial:
-      - tutorial/index.md
-      - Instruments: tutorial/instruments.md
-      - Aliases and protection: tutorial/aliases.md
-      - Composite channels: tutorial/composites.md
-      - Sweeps: tutorial/sweeps.md
-      - Point actions and flow control: tutorial/point-actions.md
-      - Run queue and scripts: tutorial/queue-scripts.md
-      - User actions: tutorial/user-actions.md
-      - Data files: tutorial/data.md
-      - Desktop GUI: tutorial/gui.md
-      - Plotting live and stored data: tutorial/plotting.md
-      - Monitor and Manual panels: tutorial/monitor-manual.md
-      - PowerPoint reports: tutorial/powerpoint.md
-      - Python clients: tutorial/clients.md
-      - Remote access and the web app: tutorial/remote.md
-      - Driver Wizard: tutorial/driver-wizard.md
-      - Writing a driver: tutorial/writing-drivers.md
-      - Simulated instruments: tutorial/simulation.md
-      - Robustness: tutorial/robustness.md
-      - Testing: tutorial/testing.md
+  - Getting started:
+      - Installation: installation.md
+      - Quick start: quickstart.md
+      - Key ideas: concepts.md
+  - Tutorials:
+      - tutorials/index.md
+      - "1: A Landau fan": tutorials/landau-fan.md
+      - "2: Rotated gate sweeps": tutorials/rotated-gates.md
+      - "3: Stop at a threshold": tutorials/stop-at-threshold.md
+      - "4: A VNA power sweep": tutorials/vna-power.md
+  - User guide:
+      - guide/index.md
+      - Building a setup:
+          - Instruments: guide/instruments.md
+          - Aliases and protection: guide/aliases.md
+          - Composite channels: guide/composites.md
+      - Measuring:
+          - Sweeps: guide/sweeps.md
+          - Point actions and flow control: guide/point-actions.md
+          - The run queue: guide/queue.md
+          - User actions: guide/user-actions.md
+          - Data files: guide/data.md
+      - Watching and reporting:
+          - Desktop GUI: guide/gui.md
+          - Plotting live and stored data: guide/plotting.md
+          - Monitor and Manual panels: guide/monitor-manual.md
+          - PowerPoint reports: guide/powerpoint.md
+      - Remote access and the web app: guide/remote.md
+      - Driver Wizard: guide/driver-wizard.md
+      - Simulated instruments: guide/simulation.md
+      - Robustness: guide/robustness.md
+      - Testing: guide/testing.md
+  - Scripting & Python:
+      - scripting/index.md
+      - Queue scripts: scripting/scripts.md
+      - Custom sweeps: scripting/custom-sweeps.md
+      - Python clients: scripting/clients.md
+      - Writing a driver: scripting/writing-drivers.md
   - Supported instruments: instruments.md
   - Reference:
       - reference/index.md

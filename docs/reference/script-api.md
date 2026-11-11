@@ -99,9 +99,10 @@ log(smu.raw_query('*IDN?'))
 
 | function | does | where |
 |---|---|---|
-| `run_sweep(definition)` | run a sweep synchronously; returns its status (`finished`, `aborted`, `error`, `terminated`) | queued scripts |
+| `run_sweep(definition)` | run a sweep synchronously and return its data: a [`DataSet`](api/easymeasure/backend/storage.md) with `.status` (`finished`, `aborted`, `error`, `terminated`), `.data`, `.setpoints`, `.value_axes`, `.path` | queued scripts |
+| `load_sweep(path)` | a sweep definition (a dict) from a `.json` file saved by the sweep editor, or from a data file (`.emj`, `.h5`); change it, then `run_sweep()` it | everywhere |
 | `user_action(name)` | run a user action; its errors stop the caller | user actions |
-| `skip_point()`, `skip_line()`, `end_sweep()` | [flow control](../tutorial/point-actions.md#flow-control) | point actions |
+| `skip_point()`, `skip_line()`, `end_sweep()` | [flow control](../guide/point-actions.md#flow-control) | point actions |
 
 ## Output and state
 

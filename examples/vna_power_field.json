@@ -1,0 +1,53 @@
+{
+  "name": "power_and_field",
+  "dimensions": [
+    {
+      "points": 36,
+      "sweep": [
+        {
+          "channel": "P",
+          "start": -70,
+          "stop": 0
+        }
+      ],
+      "record": [
+        "S11",
+        "phase"
+      ]
+    },
+    {
+      "points": 11,
+      "sweep": [
+        {
+          "channel": "B",
+          "start": 0,
+          "stop": 0.5
+        }
+      ],
+      "record": [
+        "B"
+      ],
+      "hooks": {
+        "post_sweep": {
+          "enabled": true,
+          "code": "wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600)"
+        }
+      }
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "P",
+        "value": -30
+      },
+      {
+        "channel": "B",
+        "value": 0
+      }
+    ]
+  },
+  "metadata": {
+    "sample": "resonator R3"
+  }
+}

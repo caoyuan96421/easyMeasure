@@ -81,7 +81,7 @@ pip install -e ".[test]"
 python -m pytest -q tests            # a few minutes; GUI tests run offscreen
 ```
 
-See [Testing](tutorial/testing.md) for the stress tests.
+See [Testing](guide/testing.md) for the stress tests.
 
 ## Build this documentation
 

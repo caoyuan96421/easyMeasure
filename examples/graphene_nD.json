@@ -1,0 +1,33 @@
+{
+  "name": "n_D_map",
+  "dimensions": [
+    {
+      "points": 101,
+      "sweep": [
+        {
+          "channel": "n",
+          "start": -2.5,
+          "stop": 2.5
+        }
+      ],
+      "record": [
+        "Rxx"
+      ],
+      "snake": true
+    },
+    {
+      "points": 29,
+      "sweep": [
+        {
+          "channel": "D",
+          "start": -0.35,
+          "stop": 0.35
+        }
+      ],
+      "record": []
+    }
+  ],
+  "metadata": {
+    "sample": "BLG-01"
+  }
+}

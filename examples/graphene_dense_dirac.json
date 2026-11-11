@@ -1,0 +1,27 @@
+{
+  "name": "dirac_dense",
+  "dimensions": [
+    {
+      "points": 161,
+      "sweep": [
+        {
+          "channel": "Vbg",
+          "start": -1,
+          "stop": 1,
+          "mapping": "0.3 + 7.7*sinh(3*x)/sinh(3)"
+        }
+      ],
+      "record": [
+        "Rxx"
+      ]
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "Vbg",
+        "value": 0
+      }
+    ]
+  }
+}

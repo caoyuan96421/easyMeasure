@@ -6,7 +6,7 @@ import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QCheckBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -18,7 +18,8 @@ STATUS_COLORS = {"finished": "#3a3", "terminated": "#2a9d8f", "error": "#d44", "
 
 SCRIPT_HELP = ("# get(name), set(name, value), set_raw('inst.ch', v), sleep(s),\n"
                "# wait_until(fn, timeout), log(msg), instrument(name).raw_query(cmd),\n"
-               "# run_sweep(definition), state (persistent dict), np, math, time\n")
+               "# run_sweep(definition) -> dataset (.status, .data, .setpoints), load_sweep(path) -> definition,\n"
+               "# state (persistent dict), np, math, time\n")
 
 
 def apply_queue_controls(buttons: dict, q: dict) -> None:
@@ -117,6 +118,7 @@ class QueuePanel(QWidget):
         hl.addLayout(hb)
 
         self.script = QPlainTextEdit()
+        self.script.setLineWrapMode(QPlainTextEdit.NoWrap)        # code: scroll, don't wrap
         from ..display import register_font
         register_font(self.script, 1.0, monospace=True)
         self.script.setPlainText(SCRIPT_HELP + "set('Vg', 0.1)\nsleep(1)\nlog('I = %g' % get('I'))\n")
@@ -125,7 +127,16 @@ class QueuePanel(QWidget):
         b2 = QPushButton("Run now (front of queue)")
         b1.clicked.connect(lambda: self._add_script(False))
         b2.clicked.connect(lambda: self._add_script(True))
+        self.script_open = QPushButton("Open…")
+        self.script_save = QPushButton("Save…")
+        self.script_open.setToolTip("load a .py file into the script editor")
+        self.script_save.setToolTip("save the script editor to a .py file")
+        self.script_open.clicked.connect(self._open_script)
+        self.script_save.clicked.connect(self._save_script)
+        self.script_add, self.script_now = b1, b2
         sb = FlowLayout()
+        sb.addWidget(self.script_open)
+        sb.addWidget(self.script_save)
         sb.addWidget(QLabel("Name"))
         sb.addWidget(self.script_name)
         sb.addWidget(b1)
@@ -166,6 +177,33 @@ class QueuePanel(QWidget):
         i, _ = self._selected_id()
         if i is not None:
             self._cmd("queue_remove", {"item_id": i})
+
+    def load_script_file(self, path: str) -> None:
+        """Put the code of a .py file in the editor; its stem becomes the name."""
+        from pathlib import Path
+        p = Path(path)
+        self.script.setPlainText(p.read_text(encoding="utf-8"))
+        self.script_name.setText(p.stem)
+        self.msg.setText("loaded %s" % p)
+
+    def _open_script(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open script", "", "Python (*.py);;All files (*)")
+        if path:
+            try:
+                self.load_script_file(path)
+            except (OSError, UnicodeDecodeError) as exc:
+                self.msg.setText("✘ %s" % exc)
+
+    def _save_script(self):
+        name = (self.script_name.text() or "script") + ".py"
+        path, _ = QFileDialog.getSaveFileName(self, "Save script", name, "Python (*.py)")
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self.script.toPlainText())
+                self.msg.setText("saved %s" % path)
+            except OSError as exc:
+                self.msg.setText("✘ %s" % exc)
 
     def _add_script(self, now: bool):
         code = self.script.toPlainText()

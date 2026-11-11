@@ -14,7 +14,10 @@ Scripts are plain Python run in the backend with a small API in their namespace:
 ``instrument(name)``   guarded instrument proxy: ``.raw_query``, ``.raw_write``, ``.call``,
                        ``.action``
 ``action(ref)``        run an instrument action, e.g. ``action('dmm.reset')``
-``run_sweep(defn)``    run a sweep definition synchronously (returns status)
+``run_sweep(defn)``    run a sweep definition synchronously; returns its DataSet
+                       (``.status``, ``.data``, ``.setpoints``, ``.path``)
+``load_sweep(path)``   a sweep definition (dict) from a JSON file saved by the sweep
+                       editor, or from a data file
 ``np``, ``math``, ``time``  modules
 ``state``              a dict persisting between scripts in the same backend
 =====================  =========================================================
@@ -72,6 +75,22 @@ class _InstrumentProxy:
 
     def __repr__(self):
         return "<instrument %s>" % self._h.name
+
+
+def load_sweep(path) -> dict:
+    """A sweep definition from *path*: a ``.json`` file written by the sweep editor's
+    *Save…*, or a data file (``.emj``, ``.h5``), whose header holds the definition of
+    the sweep that made it.  Returns a fresh dict, free to change before
+    ``run_sweep()``."""
+    import json
+    from pathlib import Path
+    p = Path(path).expanduser()
+    if p.suffix.lower() == ".json":
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("definition", d) if isinstance(d, dict) else d
+    from .storage import read_header
+    return dict(read_header(p)["definition"])
 
 
 class ScriptRunner:
@@ -140,7 +159,7 @@ class ScriptRunner:
             return self.run_sweep(defn)
 
         return {
-            "__name__": "__easymeasure_script__",
+            "__name__": "__easymeasure_script__", "load_sweep": load_sweep,
             "get": _get, "set": _set, "set_many": _set_many, "set_raw": _set_raw, "sleep": ctl.sleep,
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
             "warn": slog.warning, "print": _print, "instrument": _instrument,

@@ -22,5 +22,5 @@ c.call("add_instrument", name="ps", driver="scpi_generic", address="GPIB0::5::IN
 * It works with any port type: VISA, serial, TCP.
 
 For anything more than a few channels, the
-[Driver Wizard](../../tutorial/driver-wizard.md) is more convenient. It writes a real
+[Driver Wizard](../../guide/driver-wizard.md) is more convenient. It writes a real
 driver file, with an error queue, allowed values, value maps, checks and a try-it step.

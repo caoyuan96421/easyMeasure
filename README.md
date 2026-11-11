@@ -7,8 +7,13 @@ disturbing a running measurement.
 
 ![data view](docs/screenshots/data_view.png)
 
-**Documentation: <https://caoyuan96421.github.io/easyMeasure/>**: installation, quick
-start, a tutorial for every part, the list of [supported
+**Documentation: <https://caoyuan96421.github.io/easyMeasure/>**: installation, a
+[quick start](https://caoyuan96421.github.io/easyMeasure/quickstart/) that takes you
+through a first measurement in the GUI on a simulated graphene sample (no hardware
+needed), [tutorials](https://caoyuan96421.github.io/easyMeasure/tutorials/) (a Landau
+fan, rotated gate sweeps, stopping at a leakage threshold, a VNA power sweep), a user
+guide, a [scripting chapter](https://caoyuan96421.github.io/easyMeasure/scripting/),
+the list of [supported
 instruments](https://caoyuan96421.github.io/easyMeasure/instruments/) and a full
 reference (backend commands, sweep and setup formats, script API, every driver and
 module).

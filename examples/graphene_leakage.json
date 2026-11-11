@@ -1,0 +1,36 @@
+{
+  "name": "gate_leakage",
+  "dimensions": [
+    {
+      "points": 201,
+      "sweep": [
+        {
+          "channel": "Vbg",
+          "start": 0,
+          "stop": 10
+        }
+      ],
+      "record": [
+        "Ileak",
+        "Rxx"
+      ],
+      "hooks": {
+        "post_record": {
+          "enabled": true,
+          "code": "if abs(values['Ileak']) > 1e-9:\n    log('leakage %.2g A at Vbg = %.2f V: stopping' % (values['Ileak'], setpoints['Vbg']))\n    end_sweep()"
+        }
+      }
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "Vbg",
+        "value": 0
+      }
+    ]
+  },
+  "metadata": {
+    "sample": "BLG-01"
+  }
+}

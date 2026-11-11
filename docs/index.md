@@ -5,12 +5,32 @@ automatic, arbitrary-dimensional measurements**, with a crash-proof backend and
 a PySide6 GUI that can be closed, killed or restarted at any time without
 disturbing a running measurement.
 
-![The data view of the desktop GUI](screenshots/data_view.png)
+![A Landau fan measured with easyMeasure (simulated sample)](images/t1-fan.png)
 
 [Install it](installation.md){ .md-button .md-button--primary }
 [Quick start](quickstart.md){ .md-button }
-[Tutorial](tutorial/index.md){ .md-button }
+[Tutorials](tutorials/index.md){ .md-button }
 [Supported instruments](instruments.md){ .md-button }
+
+## New here?
+
+easyMeasure is made for the measurements of a physics lab: sweep a gate, step a
+magnetic field, record a lock-in, a source-measure unit or a network analyzer, and
+watch the result appear as a curve or a colour map. You do all of that from the
+window above; no programming is needed.
+
+1. **[Install it](installation.md)**: a few minutes.
+2. **[Quick start](quickstart.md)**: your first measurement, on a simulated graphene
+   sample that comes with easyMeasure. You add the instruments, give the channels
+   names and safe limits, and sweep a gate voltage to find the Dirac peak. No hardware
+   needed.
+3. **[Tutorials](tutorials/index.md)**: a Landau fan (a 2-D map), rotated gate
+   sweeps in density and displacement field, stopping a sweep when the leakage current
+   gets too high, and the power dependence of a microwave resonator measured with a
+   network analyzer.
+
+[Key ideas](concepts.md) explains the few words easyMeasure uses (instrument,
+alias, sweep, dimension, …) on one page.
 
 ## What it does
 
@@ -22,12 +42,9 @@ setpoint against the limits before the first one is set. It then runs the sweep,
 data into a crash-safe file, plots it live in as many windows as you like, and
 appends a summary slide to your PowerPoint file when it ends.
 
-```json
-{"name": "coulomb_diamonds",
- "dimensions": [
-   {"points": 101, "sweep": [{"channel": "Vg", "start": -0.6, "stop": 0.6}], "record": ["I", "X"]},
-   {"points": 41,  "sweep": [{"channel": "Vb", "start": -0.3, "stop": 0.3}], "record": ["T"]}]}
-```
+When clicking is no longer enough, the same can be done from
+[Python](scripting/index.md): loops over conditions, measurements that decide where
+to measure next, control from a Jupyter notebook.
 
 ## Highlights
 
@@ -110,9 +127,10 @@ so a script or notebook can do exactly the same.
 | I want to … | read |
 |---|---|
 | install it | [Installation](installation.md) |
-| try it in five minutes without hardware | [Quick start](quickstart.md) |
-| learn it properly | [Tutorial](tutorial/index.md) |
+| try it without hardware | [Quick start](quickstart.md) |
+| learn it with real examples | [Tutorials](tutorials/index.md) |
+| look up everything a part can do | [User guide](guide/index.md) |
 | know whether my instrument is supported | [Supported instruments](instruments.md) |
 | look up a command, a sweep field or a function | [Reference](reference/index.md) |
-| control a measurement from Python | [Python clients](tutorial/clients.md) |
-| support a new instrument | [Driver Wizard](tutorial/driver-wizard.md), [Writing a driver](tutorial/writing-drivers.md) |
+| automate measurements with Python | [Scripting and Python](scripting/index.md) |
+| support a new instrument | [Driver Wizard](guide/driver-wizard.md), [Writing a driver](scripting/writing-drivers.md) |

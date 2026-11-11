@@ -702,6 +702,24 @@ class SweepRunner:
         if phase == "post":
             self._hook("post")
 
+    def _value_axes(self) -> None:
+        """Coordinates of the value axes of the recorded array channels (VNA frequency
+        axis …), read once before the first point and stored as the ``axes`` phase."""
+        axes = {}
+        for dim in self.d["dimensions"]:
+            for n in dim["record"]:
+                if n.startswith("@"):
+                    continue
+                try:
+                    ax = self.channels.value_axes(n)
+                except Exception as exc:
+                    log.warning("value axes of %s: %s", n, exc)
+                    continue
+                if ax:
+                    axes[n] = ax
+        if axes:
+            self._store_phase("axes", axes, {})
+
     def _store_phase(self, phase, vals, errs):
         if not vals and not errs:
             return
@@ -764,6 +782,7 @@ class SweepRunner:
                 # the pre-sweep constants changed instrument settings (and maybe their
                 # channel lists): make sure the sweep still makes sense before point 1
                 validate_against(self.d, self.channels, after_pre=True)
+            self._value_axes()
             self._loop(len(self.shape) - 1, ())
             self.status = "finished"
         except EndSweep:

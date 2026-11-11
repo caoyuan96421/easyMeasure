@@ -1,0 +1,37 @@
+{
+  "name": "circle_nD",
+  "dimensions": [
+    {
+      "points": 73,
+      "sweep": [
+        {
+          "channel": "n",
+          "start": 0,
+          "stop": 0,
+          "mapping": "1.0*cos(2*pi*t)"
+        },
+        {
+          "channel": "D",
+          "start": 0,
+          "stop": 0,
+          "mapping": "0.2*sin(2*pi*t)"
+        }
+      ],
+      "record": [
+        "Rxx"
+      ]
+    }
+  ],
+  "post": {
+    "constants": [
+      {
+        "channel": "Vbg",
+        "value": 0
+      },
+      {
+        "channel": "Vtg",
+        "value": 0
+      }
+    ]
+  }
+}

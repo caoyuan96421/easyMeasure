@@ -1,0 +1,15 @@
+{
+  "name": "time_trace",
+  "dimensions": [
+    {
+      "points": 600,
+      "sweep": [],
+      "record": [
+        "Rxx",
+        "B",
+        "@elapsed"
+      ],
+      "post_delay": 0.5
+    }
+  ]
+}

@@ -617,12 +617,18 @@ class Backend:
         self._post_run(runner)
         return {"status": status, "run": run, "path": str(path), "error": runner.error}
 
-    def _script_run_sweep(self, definition: dict) -> str:
-        """``run_sweep()`` from a script: run nested in the script's thread."""
+    def _script_run_sweep(self, definition: dict):
+        """``run_sweep()`` from a script: run nested in the script's thread; returns the
+        run's :class:`DataSet` (``.status``, ``.data``, ``.setpoints``, ``.path`` …), so
+        the script can decide what to measure next from what it just measured."""
         if self.runner is not None:
             raise EasyMeasureError("a sweep is already running")
         res = self._execute_sweep_item(definition, {"id": None})
-        return res["status"]
+        ds = self.last_dataset
+        if ds is None:                     # the data file could not even be created
+            raise EasyMeasureError("sweep %s: %s" % (res["status"], res.get("error")))
+        ds.path = res["path"]
+        return ds
 
     def _post_run(self, runner: SweepRunner) -> None:
         ds = runner.dataset

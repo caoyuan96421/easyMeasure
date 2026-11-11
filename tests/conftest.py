@@ -17,10 +17,11 @@ def _isolated_home(tmp_path, monkeypatch):
     home = tmp_path / "emhome"
     home.mkdir()
     monkeypatch.setenv("EASYMEASURE_HOME", str(home))
-    from easymeasure.drivers import _simbase, simbus, simworld
+    from easymeasure.drivers import _simbase, sim_magnet, simbus, simworld
     simbus.reset_buses()
     _simbase.reset_devices()
     simworld.WORLD.reset()
+    sim_magnet._STATE.clear()          # magnets keep their field between connections
     yield home
 
 

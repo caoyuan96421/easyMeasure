@@ -256,6 +256,8 @@ class DataSet:
         self.errors: Dict[str, int] = {}
         self.pre: Dict[str, Any] = {}
         self.post: Dict[str, Any] = {}
+        #: channel -> [{"name", "unit", "label", "coords"} or None per value axis]
+        self.value_axes: Dict[str, list] = {}
         self.events: List[dict] = []
         self.footer: Optional[dict] = None
         self.points = 0
@@ -388,12 +390,17 @@ class DataSet:
             self.apply_point(obj["k"], obj["i"], obj.get("v", {}), obj.get("e"),
                              skip=bool(obj.get("skip")))
         elif ftype == PHASE:
-            target = self.pre if obj.get("phase") == "pre" else self.post
-            target.update(obj.get("v", {}))
+            self.apply_phase(obj.get("phase"), obj.get("v", {}))
         elif ftype == EVENT:
             self.events.append(obj)
         elif ftype == FOOTER:
             self.footer = obj
+
+    def apply_phase(self, phase: str, values: dict) -> None:
+        if phase == "axes":
+            self.value_axes.update(values or {})
+        else:
+            (self.pre if phase == "pre" else self.post).update(values or {})
 
     # -- slicing for plots -----------------------------------------------------
     def snapshot(self) -> dict:
@@ -405,6 +412,7 @@ class DataSet:
                 "filled": {str(k): v.copy() for k, v in self.filled.items()},
                 "errors": dict(self.errors),
                 "pre": dict(self.pre), "post": dict(self.post),
+                "value_axes": dict(self.value_axes),
                 "footer": self.footer, "points": self.points, "skipped": self.skipped,
                 "last_index": None if self.last_index is None else
                 [self.last_index[0], list(self.last_index[1])],
@@ -421,6 +429,7 @@ class DataSet:
         ds.errors = dict(snap.get("errors", {}))
         ds.pre = dict(snap.get("pre", {}))
         ds.post = dict(snap.get("post", {}))
+        ds.value_axes = dict(snap.get("value_axes") or {})
         ds.footer = snap.get("footer")
         ds.points = int(snap.get("points", 0))
         ds.skipped = int(snap.get("skipped", 0))
@@ -510,6 +519,16 @@ def export_hdf5(ds: DataSet, path) -> Path:
                     gp.attrs[n] = v
                 elif v is not None:
                     gp.create_dataset(n, data=np.asarray(v, dtype=float))
+        if ds.value_axes:
+            # /value_axes/<channel>/<i>: coordinates of value axis i (attrs name, unit)
+            gv = f.create_group("value_axes")
+            for n, axes in ds.value_axes.items():
+                gn = gv.create_group(n)
+                for i, ax in enumerate(axes):
+                    if ax:
+                        d = gn.create_dataset(str(i), data=np.asarray(ax["coords"], dtype=float))
+                        for key in ("name", "unit", "label", "channel"):
+                            d.attrs[key] = str(ax.get(key) or "")
     os.replace(tmp, path)
     return path
 
@@ -543,6 +562,15 @@ def load_hdf5(path) -> DataSet:
                     target[n] = f[phase][n][()]
                 for n, v in f[phase].attrs.items():
                     target[n] = v
+        if "value_axes" in f:
+            for n in f["value_axes"]:
+                g = f["value_axes"][n]
+                idx = sorted(int(i) for i in g)
+                axes = [None] * ((idx[-1] + 1) if idx else 0)
+                for i in idx:
+                    d = g[str(i)]
+                    axes[i] = dict({k: str(v) for k, v in d.attrs.items()}, coords=d[()])
+                ds.value_axes[n] = axes
         if "footer_json" in f.attrs:
             ds.footer = json.loads(f.attrs["footer_json"])
         ds.points = int(ds.filled[0].sum()) if 0 in ds.filled else 0

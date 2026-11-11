@@ -230,10 +230,10 @@ def driver_page(name: str, d: dict) -> str:
         for k, v in d["options"].items():
             parts.append("| `%s` | %s |" % (k, fmt_value(v)))
         parts.append("\nPlus the guard options every instrument has (`call_timeout`, `retries`, "
-                     "…, see [Robustness](../../tutorial/robustness.md#guard-options)).\n")
+                     "…, see [Robustness](../../guide/robustness.md#guard-options)).\n")
     else:
         parts.append("Only the guard options every instrument has (see "
-                     "[Robustness](../../tutorial/robustness.md#guard-options)).\n")
+                     "[Robustness](../../guide/robustness.md#guard-options)).\n")
     src = ("as the driver reports them connected to its emulator (`%s`) in its default "
            "configuration" % d["live"]) if d.get("live") else "as declared by the driver"
     parts.append("## Channels\n")
@@ -269,12 +269,12 @@ def instruments_page(drivers: dict) -> str:
     out = ["# Supported instruments\n",
            "Every driver that comes with easyMeasure. Each hardware driver is tested against "
            "an emulator built from the instrument's programming manual, so the commands it "
-           "sends are known to exist (see [Testing](tutorial/testing.md)). This page is "
+           "sends are known to exist (see [Testing](guide/testing.md)). This page is "
            "generated from the drivers themselves at every documentation build.\n",
            "Instruments without a driver: build one in minutes with the "
-           "[Driver Wizard](tutorial/driver-wizard.md) (most SCPI and other text-command "
+           "[Driver Wizard](guide/driver-wizard.md) (most SCPI and other text-command "
            "instruments), configure [`scpi_generic`](reference/drivers/scpi_generic.md) with "
-           "options, or [write a driver](tutorial/writing-drivers.md).\n",
+           "options, or [write a driver](scripting/writing-drivers.md).\n",
            "## Hardware\n",
            "| instrument | kind | driver | interfaces | channels | actions |",
            "|---|---|---|---|---|---|"]
@@ -290,7 +290,7 @@ def instruments_page(drivers: dict) -> str:
     out += ["", "## Simulated instruments\n",
             "For trying easyMeasure without hardware and for testing. Every simulated driver "
             "takes fault-injection options (see [Simulated instruments]"
-            "(tutorial/simulation.md)).\n",
+            "(guide/simulation.md)).\n",
             "| driver | simulates | channels |", "|---|---|---|"]
     for n in sim:
         d = drivers[n]
@@ -319,7 +319,7 @@ def commands_page() -> str:
            "```python\nfrom easymeasure.client import BackendClient\nc = BackendClient.connect()\n"
            "c.call(\"write_channel\", name=\"Vg\", value=0.2)\n```\n",
            "or in-process on a `Backend` object (`be.write_channel(name=\"Vg\", value=0.2)`). "
-           "**Role** is the minimum role a [remote user](../tutorial/remote.md#roles) needs "
+           "**Role** is the minimum role a [remote user](../guide/remote.md#roles) needs "
            "(*local only*: refused through the internet gateway). Commands marked ⚡ are served "
            "by a separate thread pool, so they answer even while every instrument is busy.\n",
            "| group | commands |", "|---|---|"]
@@ -430,7 +430,7 @@ def settings_page() -> str:
         if k in DEFAULT_SETTINGS:
             out.append("| `%s` | %s | %s |" % (k, fmt_value(DEFAULT_SETTINGS[k]), md_escape(cmt)))
     out += ["", "## Remote gateway configuration\n",
-            "Kept in `<home>/remote/config.json`; see [Remote access](../tutorial/remote.md). "
+            "Kept in `<home>/remote/config.json`; see [Remote access](../guide/remote.md). "
             "Show or change it with `python -m easymeasure.remote config [key=value …]` "
             "(JSON values).\n",
             "| key | default | meaning |", "|---|---|---|"]
