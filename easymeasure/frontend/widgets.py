@@ -151,11 +151,37 @@ class ElidedLabel(QLabel):
         return sh
 
 
+def fit_combo_popup(cb: QComboBox) -> None:
+    """Make the drop-down list of *cb* wide enough for its longest entry (Qt only
+    widens it by itself for non-editable combo boxes in some styles), within the
+    screen; what still does not fit is cut in the middle, not at the end."""
+    view = cb.view()
+    if cb.count() == 0:
+        return
+    want = view.sizeHintForColumn(0) + 2 * view.frameWidth() + 8
+    if cb.count() > cb.maxVisibleItems():
+        want += view.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+    screen = cb.screen()
+    if screen is not None:
+        want = min(want, screen.availableGeometry().width() - 20)
+    view.setTextElideMode(Qt.ElideMiddle)
+    view.setMinimumWidth(max(want, cb.width()))
+
+
+_POPUP_KEYS = (Qt.Key_F4, Qt.Key_Down, Qt.Key_Up, Qt.Key_Space)
+
+
 class _ShrinkFilter(QObject):
     """Application-wide: combo boxes size to a short minimum instead of their
-    longest entry (long channel names, axis labels, file names ...)."""
+    longest entry (long channel names, axis labels, file names ...); their
+    drop-down lists still show the entries in full."""
 
     def eventFilter(self, obj, ev):
+        t = ev.type()
+        if isinstance(obj, QComboBox) and (t == QEvent.MouseButtonPress or (
+                t == QEvent.KeyPress and ev.key() in _POPUP_KEYS)):
+            fit_combo_popup(obj)                 # just before the list opens
+            return False
         if ev.type() == QEvent.Polish and isinstance(obj, QAbstractScrollArea):
             # tables, lists, text editors scroll anyway: let layouts shrink them
             if obj.minimumWidth() == 0 and obj.minimumHeight() == 0:

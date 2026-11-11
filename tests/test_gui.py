@@ -1200,3 +1200,32 @@ def test_live_plots_fit_without_scrolling(app, gui):
     assert area.verticalScrollBar().maximum() > 0
     lv.cols.setValue(0)
     assert pump(app, 30, lambda: be.queue.wait_idle(0.01))
+
+
+def test_combo_lists_show_full_channel_names(app, gui):
+    """Combo boxes stay narrow, but their drop-down lists show long entries in full
+    (also editable ones, which Qt does not widen by itself)."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    w, be, _, _ = gui
+    long = "sample_temperature_of_the_mixing_chamber_plate"
+    be.define_alias(name=long, target="dmm.reading")
+    mon = w.monitor
+    assert pump(app, 5, lambda: mon.channel.findText(long) >= 0)
+    for cb in (mon.channel, w.live.plots[0].channel_box if w.live.plots else None):
+        if cb is None:
+            continue
+        cb.window().show()
+        need = cb.view().fontMetrics().horizontalAdvance(long)
+        assert cb.width() < need                                 # the box itself stays narrow
+        QTest.mouseClick(cb, Qt.LeftButton, Qt.NoModifier, QPoint(cb.width() - 5, cb.height() // 2))
+        assert pump(app, 2, lambda: cb.view().isVisible())
+        assert cb.view().width() >= need, (cb.view().width(), need)
+        cb.hidePopup()
+    # the keyboard opens it as well
+    mon.channel.setFocus()
+    mon.channel.view().setMinimumWidth(0)
+    QTest.keyClick(mon.channel, Qt.Key_F4)
+    assert pump(app, 2, lambda: mon.channel.view().isVisible())
+    assert mon.channel.view().width() >= mon.channel.view().fontMetrics().horizontalAdvance(long)
+    mon.channel.hidePopup()
