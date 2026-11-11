@@ -1,0 +1,82 @@
+# Monitor and Manual panels
+
+## Monitor
+
+The **Monitor** dock shows channels that the backend polls at their own
+intervals: temperatures, field, a leakage current, the eight readings of a supply.
+Values are pushed to every GUI and the web app.
+
+```python
+c.call("monitor_add", channel="T", interval=1.0)
+c.call("monitor_add", channel="cyg.VmeasAll", interval=0.5)
+c.call("monitor_list")          # channel, interval, last value, last error, time
+c.call("monitor_history", channel="T")    # {'T': [[t, value], …]}
+c.call("monitor_remove", channel="T")
+```
+
+In the GUI, choose the channel at the top of the dock, set the interval, and click
+**Monitor**. ✕ on a tile removes it.
+
+Every instrument is polled by its own thread, so a hung instrument never stalls
+the others. Monitoring has lower priority than a running sweep on a shared port.
+
+### Tiles
+
+Each tile shows the latest value in large type, the polling interval, and a plot
+over the chosen time span (1 min, 10 min, 1 h or all). Text channels show their
+text. Errors are shown in the tile until the next good reading.
+
+**Vector channels** can be shown two ways. Use the tile's selector to switch:
+
+| view | shows | default for |
+|---|---|---|
+| *vs time* | one curve per element against time, with a legend for up to 8 | vectors up to 16 elements, such as the eight readings of a supply |
+| *vs index* | the latest values against the element index | longer vectors, such as spectra |
+
+2-D channels, such as images, are shown as an image of the latest value.
+
+### Layout
+
+**columns**: *auto*, or 1–8 tiles side by side. *Auto* picks the arrangement
+that shows every tile largest in the available space. All tiles are shown at once
+and share the dock's area. Scroll bars appear only when the dock is smaller than the
+tiles' minimum size. The choice is remembered between sessions.
+
+## Manual
+
+The **Manual** dock lists every writable scalar channel:
+
+* aliases;
+* [composite](composites.md) variables and mappings;
+* instrument settings, with **settings** ticked.
+
+Each channel has a spin box, and a slider when it has a minimum and a maximum.
+
+* Writes are **protected and ramped**: alias limits and ramp rates apply. While a ramp
+  runs, further changes to that channel are coalesced, so only the latest value is
+  sent after it. The *ramp* box switches ramping off (jumps).
+* Right click → **Set from expression…**: a function of the present value `x`,
+  e.g. `x + 0.01` or `x/2`.
+* **Read back** (↻) reads the present value.
+* The mouse wheel only acts on a focused control, so scrolling the panel never moves
+  an instrument.
+* The filter box narrows the list by name or composite.
+
+### Composite variables: hold and Set all
+
+Variables of a multivariate composite are grouped under the composite's name. A
+group with several variables has **hold** and **Set all**:
+
+1. tick **hold**: edits now only mark the variables (blue) and are not sent;
+2. type the values of all variables;
+3. **Set all** sends them together; the hardware channels are computed once from all
+   of them.
+
+This is needed for the first setting, when the other variables have never been
+set (see [Composite channels](composites.md#multivariate-write)).
+
+### Instrument settings
+
+Tick **settings** to also list the instruments' configuration channels (in italics,
+grouped by instrument). Settings with allowed values (modes, ranges, output on/off)
+appear as drop-downs.

@@ -1,0 +1,144 @@
+site_name: easyMeasure
+site_description: A generic Python framework for multi-dimensional automated measurement
+site_url: https://caoyuan96421.github.io/easymeasure/
+repo_url: https://github.com/caoyuan96421/easymeasure
+repo_name: caoyuan96421/easymeasure
+edit_uri: edit/main/docs/
+copyright: MIT licensed
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_reference.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: sphinx
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            filters: ["!^_[^_]", "!^__(?!init__)"]
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            docstring_section_style: list
+            heading_level: 2
+            show_if_no_docstring: true
+
+validation:
+  links:
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+hooks:
+  - docs/hooks.py
+
+extra_css:
+  - stylesheets/extra.css
+
+exclude_docs: |
+  _driver_notes/
+  gen_reference.py
+  hooks.py
+
+not_in_nav: |
+  /reference/api/**
+  /reference/drivers/**
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick start: quickstart.md
+  - Tutorial:
+      - tutorial/index.md
+      - Instruments: tutorial/instruments.md
+      - Aliases and protection: tutorial/aliases.md
+      - Composite channels: tutorial/composites.md
+      - Sweeps: tutorial/sweeps.md
+      - Point actions and flow control: tutorial/point-actions.md
+      - Run queue and scripts: tutorial/queue-scripts.md
+      - User actions: tutorial/user-actions.md
+      - Data files: tutorial/data.md
+      - Desktop GUI: tutorial/gui.md
+      - Plotting live and stored data: tutorial/plotting.md
+      - Monitor and Manual panels: tutorial/monitor-manual.md
+      - PowerPoint reports: tutorial/powerpoint.md
+      - Python clients: tutorial/clients.md
+      - Remote access and the web app: tutorial/remote.md
+      - Driver Wizard: tutorial/driver-wizard.md
+      - Writing a driver: tutorial/writing-drivers.md
+      - Simulated instruments: tutorial/simulation.md
+      - Robustness: tutorial/robustness.md
+      - Testing: tutorial/testing.md
+  - Supported instruments: instruments.md
+  - Reference:
+      - reference/index.md
+      - Backend commands: reference/commands.md
+      - Sweep definition: reference/sweep-format.md
+      - Setup file: reference/setup-format.md
+      - Script API: reference/script-api.md
+      - Expressions: reference/expressions.md
+      - Command line: reference/cli.md
+      - Settings and files: reference/settings.md
+      - Instrument drivers: reference/drivers/
+      - Python API: reference/api/

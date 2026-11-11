@@ -11,29 +11,29 @@ from ..common import paths
 
 DEFAULTS = {
     "host": "0.0.0.0",            # interface to listen on ("127.0.0.1" = this computer only)
-    "port": 8443,
+    "port": 8443,                 # HTTPS / WSS port (443: no port number in the address)
     "certfile": None,             # PEM certificate chain; None = self-signed (auto-generated)
-    "keyfile": None,
+    "keyfile": None,              # private key of certfile
     "cert_names": [],             # extra host names / IPs for the self-signed certificate
     "acme": None,                 # Let's Encrypt: {domain, email, staging, directory, http_port}
                                   # (set by 'letsencrypt'; the gateway renews the certificate)
     "cert_check_s": 30.0,         # how often the gateway looks for a new certificate file
     "session_idle_hours": 12.0,   # a session with no connection for this long expires
     "session_max_days": 7.0,      # absolute session lifetime (log in again after that)
-    "max_sessions_per_user": 20,
+    "max_sessions_per_user": 20,  # logged-in sessions per account
     "max_ws_total": 64,           # simultaneous live connections
-    "max_ws_per_user": 16,
+    "max_ws_per_user": 16,        # live connections per account
     "max_conn_per_ip": 64,        # TCP connections per client address
     "max_msg_bytes": 8 * 1024 * 1024,   # largest message a client may send
     "rate": 200.0,                # requests per second per connection (sustained)
-    "burst": 600.0,
+    "burst": 600.0,               # requests a connection may send at once before rate applies
     "max_in_flight": 64,          # unanswered requests per connection
-    "login_max_failures_ip": 5,
-    "login_max_failures_user": 10,
+    "login_max_failures_ip": 5,   # failed logins from one address before it is locked out
+    "login_max_failures_user": 10,  # failed logins for one account (from anywhere)
     "lockout_s": 30.0,            # first lockout; doubles each time
-    "lockout_max_s": 3600.0,
+    "lockout_max_s": 3600.0,      # longest lockout
     "first_request_timeout": 15.0,  # TLS connection that sends no request in time is closed
-    "tls_handshake_timeout": 10.0,
+    "tls_handshake_timeout": 10.0,  # seconds for the TLS handshake
     "heartbeat_s": 20.0,          # WebSocket ping interval (detects dead peers only)
     "trust_proxy": False,         # take the client address from X-Forwarded-For
     "allowed_origins": [],        # extra browser origins allowed to connect

@@ -40,12 +40,12 @@ log = get_logger("backend")
 DEFAULT_SETTINGS = {
     "data_dir": None,            # default: ~/.easymeasure/data
     "ppt_path": "",              # append slides here when a run ends ("" = off)
-    "auto_ppt": True,
+    "auto_ppt": True,            # append a slide automatically at the end of every run
     "export_hdf5": True,         # write an .h5 copy next to the journal at the end
-    "fsync_interval": 0.5,
-    "driver_paths": [],
-    "autosave_setup": True,
-    "ppt_colormap": "viridis",
+    "fsync_interval": 0.5,       # seconds between fsyncs of the data file (data lost on a crash)
+    "driver_paths": [],          # extra directories with driver files
+    "autosave_setup": True,      # save the setup to <home>/autosave_setup.json on every change
+    "ppt_colormap": "viridis",   # colormap of the heat maps on slides
     "remote_access": False,      # start the internet gateway with the backend
     "folders_confirmed": False,  # the GUI asked for the data folder / PowerPoint file once
 }
@@ -156,9 +156,13 @@ class Backend:
 
     # ---------------------------------------------------------------- general --
     def ping(self) -> dict:
+        """Liveness check: ``{pong: <server time>, uptime: <s>}``."""
         return {"pong": time.time(), "uptime": time.time() - self.started}
 
     def get_state(self) -> dict:
+        """Everything a front end shows, in one dict: ``uptime``, ``settings``,
+        ``instruments``, ``channels`` (aliases, composites, virtual channels), ``monitor``,
+        ``actions`` (user actions), ``queue``, ``current_run`` and ``resources``."""
         return {
             "uptime": time.time() - self.started,
             "settings": self.get_settings(),
@@ -172,9 +176,14 @@ class Backend:
         }
 
     def get_settings(self) -> dict:
+        """The backend settings (see :data:`DEFAULT_SETTINGS`) plus derived values
+        such as the effective data folder."""
         return copy.deepcopy(self.settings)
 
     def set_settings(self, **kwargs) -> dict:
+        """Change backend settings, e.g. ``set_settings(data_dir="D:/data", ppt_path="runs.pptx")``.
+        Unknown keys are refused; a data folder that cannot be created is refused.
+        Returns the new settings."""
         unknown = [k for k in kwargs if k not in DEFAULT_SETTINGS]
         if unknown:
             raise ChannelError("unknown setting(s): %s" % ", ".join(unknown))
@@ -197,16 +206,21 @@ class Backend:
         return self.get_settings()
 
     def recent_logs(self, n: int = 500, min_level: int = 0) -> list:
+        """The last *n* log records at or above *min_level* (logging levels)."""
         return self.ring.recent(int(n), int(min_level))
 
     # ---------------------------------------------------------------- drivers --
     def list_drivers(self) -> dict:
+        """All drivers that could be loaded: ``{drivers: {name: {description, options,
+        channels, shared, interfaces, idn_match, suggest}}, errors: {file: message}}``."""
         return self.drivers.describe()
 
     def _driver_paths(self) -> list:
         return [self.user_driver_dir] + [Path(p) for p in self.settings.get("driver_paths") or []]
 
     def rescan_drivers(self) -> dict:
+        """Load the driver directories again (after adding or changing a driver file);
+        returns the same as :meth:`list_drivers`."""
         self.drivers.extra_paths = self._driver_paths()
         self.drivers.scan()
         return self.drivers.describe()
@@ -218,6 +232,7 @@ class Backend:
         return {m.name for m in pkgutil.iter_modules(pkg.__path__)}
 
     def wizard_templates(self) -> list:
+        """The Driver Wizard's starting points (generic SCPI, SMU, DMM, line protocol)."""
         from ..drivers import _command
         return _command.templates()
 
@@ -252,6 +267,7 @@ class Backend:
         return out
 
     def wizard_load(self, name: str) -> dict:
+        """The definition of a driver made with the wizard, to edit it again."""
         from ..drivers import _command
         path = self.user_driver_dir / ("%s.py" % name)
         if not path.exists():
@@ -293,6 +309,7 @@ class Backend:
                 "warnings": chk["warnings"]}
 
     def wizard_delete(self, name: str) -> None:
+        """Delete a driver file made with the wizard (refused while an instrument uses it)."""
         from ..drivers import _command
         path = self.user_driver_dir / ("%s.py" % name)
         if not _command.is_wizard_file(path):
@@ -361,16 +378,24 @@ class Backend:
         return r
 
     def list_resources(self) -> list:
+        """The ports in use: one entry per resource (address, interface, owners,
+        shared flag)."""
         return self.resources.list()
 
     # ------------------------------------------------------------ instruments --
     def add_instrument(self, name: str, driver: str, address: str = "NONE",
                        options: Optional[dict] = None, connect: bool = True) -> dict:
+        """Add an instrument: a *name* of your choice, a *driver* from
+        :meth:`list_drivers`, an *address* (``GPIB0::12::INSTR``, ``COM3``, ``TCPIP0::…``,
+        ``DAQ::Dev1``, ``SIM::…``, ``NONE``) and driver *options*.  With *connect* it is
+        connected at once; a failed connection is reported in the returned description
+        (``state``, ``last_error``) and retried on demand."""
         h = self.instruments.add(name, driver, address, options or {}, connect=connect)
         self._changed("instruments")
         return h.describe()
 
     def remove_instrument(self, name: str) -> None:
+        """Disconnect and remove an instrument (refused while aliases use it)."""
         used = [a.name for a in self.channels.aliases() if a.target.split(".")[0] == name]
         if used:
             raise ChannelError("instrument %s is used by alias(es) %s" % (name, ", ".join(used)))
@@ -393,18 +418,22 @@ class Backend:
         return h.describe()
 
     def connect_instrument(self, name: str) -> dict:
+        """Connect an instrument that is disconnected; returns its description."""
         h = self.instruments.get(name)
         h.connect()
         self._changed("instruments")
         return h.describe()
 
     def disconnect_instrument(self, name: str) -> dict:
+        """Disconnect an instrument (it stays in the setup); returns its description."""
         h = self.instruments.get(name)
         h.disconnect(release=False)
         self._changed("instruments")
         return h.describe()
 
     def reconnect_instrument(self, name: str) -> dict:
+        """Disconnect and connect again (e.g. after a power cycle); returns its
+        description."""
         h = self.instruments.get(name)
         h.reconnect()
         self._changed("instruments")
@@ -417,13 +446,20 @@ class Backend:
         self._changed("instruments")
 
     def list_instruments(self) -> list:
+        """Every instrument with its driver, address, options, state, last error,
+        channels and actions."""
         return self.instruments.describe()
 
     # --------------------------------------------------------------- channels --
     def read_channel(self, name: str) -> Any:
+        """Read an alias, a composite channel or ``instrument.channel``."""
         return self.channels.get(name)
 
     def write_channel(self, name: str, value: Any, ramp: bool = True) -> Any:
+        """Set an alias, composite channel or configuration channel.  Alias limits
+        apply and, with *ramp*, the value is approached at the alias' ramp rate.
+        Measurement channels of instruments cannot be set raw (use an alias or
+        ``set_raw`` in a script).  Returns the value that was set."""
         return self.channels.set(name, value, ramp=ramp)
 
     def query_channel(self, ref: str, value: Any) -> Any:
@@ -431,9 +467,11 @@ class Backend:
         return self.channels.query_raw(ref, value)
 
     def raw_query(self, instrument: str, command: str) -> str:
+        """Send a command to an instrument and return its reply (admin only remotely)."""
         return self.instruments.get(instrument).raw_query(command)
 
     def raw_write(self, instrument: str, command: str) -> None:
+        """Send a command to an instrument without reading a reply (admin only remotely)."""
         self.instruments.get(instrument).raw_write(command)
 
     def run_action(self, ref: str) -> None:
@@ -448,9 +486,14 @@ class Backend:
             self.channels.forget_instrument(inst)
 
     def channel_info(self, name: str) -> dict:
+        """Kind, unit, limits, ramp rate, shape and writability of a channel name."""
         return self.channels.info(name)
 
     def define_alias(self, replace: bool = False, **alias) -> dict:
+        """Define an alias: ``name``, ``target`` (``instrument.channel``) and optional
+        ``min``, ``max``, ``ramp_rate`` (units/s), ``ramp_step``, ``scale``, ``offset``,
+        ``unit``, ``allowed``, ``read_only``, ``description``.  With *replace* an existing
+        alias of that name is changed.  Returns the stored definition."""
         a = Alias.from_dict(alias)
         self.instruments.resolve(a.target)  # must exist now
         self.channels.add_alias(a, replace=replace)
@@ -458,6 +501,7 @@ class Backend:
         return a.to_dict()
 
     def remove_alias(self, name: str) -> None:
+        """Remove an alias (refused while a composite channel uses it)."""
         self.monitor.remove(name)
         self.channels.remove_alias(name)
         self._changed("channels")
@@ -489,6 +533,8 @@ class Backend:
         return dict(c.to_dict(), channels=c.channels(), warnings=warnings)
 
     def remove_composite(self, name: str) -> None:
+        """Remove a composite channel (refused while another composite uses one of its
+        channels)."""
         c = next((o for o in self.channels.composites() if o.name == name), None)
         self.channels.remove_composite(name)
         for ch in (c.channels() if c is not None else [name]):
@@ -502,10 +548,14 @@ class Backend:
         return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in plan.items()}
 
     def list_channels(self) -> dict:
+        """Aliases, composites and the channels composites define (``virtual``), with
+        their last values."""
         return self.channels.describe()
 
     # ---------------------------------------------------------------- monitor --
     def monitor_add(self, channel: str, interval: float = 1.0) -> list:
+        """Poll *channel* every *interval* seconds and push its values to the front
+        ends (``monitor`` events).  Returns the monitor list."""
         if not self.channels.exists(channel):
             raise ChannelError("unknown channel %r" % channel)
         self.monitor.add(channel, float(interval))
@@ -513,18 +563,25 @@ class Backend:
         return self.monitor.config()
 
     def monitor_remove(self, channel: str) -> list:
+        """Stop monitoring *channel*; returns the monitor list."""
         self.monitor.remove(channel)
         self._changed("monitor")
         return self.monitor.config()
 
     def monitor_list(self) -> list:
+        """The monitored channels with interval, last value, last error and time."""
         return self.monitor.status()
 
     def monitor_history(self, channel: Optional[str] = None) -> dict:
+        """Recent values of one monitored channel (or of all): ``{channel: [[t, value], …]}``."""
         return self.monitor.history(channel)
 
     # ----------------------------------------------------------------- sweeps --
     def validate_sweep(self, definition: dict) -> dict:
+        """Check a sweep definition against the present channels without running it:
+        all setpoints are computed and limit-checked.  Returns ``{ok, warnings, shape,
+        total_points, min_duration, definition}`` (the normalised definition) or raises
+        with the first problem."""
         d = normalize_definition(definition)
         warnings = validate_against(d, self.channels)
         shape = [dim["points"] for dim in d["dimensions"]]
@@ -617,6 +674,8 @@ class Backend:
         return self._ppt(ds, ppt_path)
 
     def current_run(self) -> Optional[dict]:
+        """The running sweep: ``{run, name, path, status, progress, definition,
+        paused}``, or None."""
         with self._run_lock:
             r = self.runner
             if r is None:
@@ -637,27 +696,37 @@ class Backend:
         return snap
 
     def list_runs(self, limit: int = 200) -> list:
+        """The newest data files in the data folder (path, name, size, modification time)."""
         return self.store.list_runs(int(limit))
 
     def load_run(self, path: str) -> dict:
+        """A stored run (complete or partial ``.emj`` file) as a snapshot: header,
+        setpoints, data and status."""
         return DataSet.load(path).snapshot()
 
     def read_run_header(self, path: str) -> dict:
+        """Only the header of a stored run (its definition and metadata)."""
         return read_header(path)
 
     # ------------------------------------------------------------------ queue --
     def queue_add(self, item: dict, start: bool = False, position: Optional[int] = None) -> int:
+        """Add ``{kind: "sweep", definition}`` or ``{kind: "script", code, name}`` to the
+        queue (at *position*, default the end); with *start* the queue starts.  Returns
+        the item id."""
         if item.get("kind") == "sweep":
             validate_against(normalize_definition(item.get("definition") or {}), self.channels)
         return self.queue.add(item, start=start, position=position)
 
     def queue_remove(self, item_id: int) -> None:
+        """Remove a waiting queue item."""
         self.queue.remove(int(item_id))
 
     def queue_move(self, item_id: int, position: int) -> None:
+        """Move a waiting queue item to *position*."""
         self.queue.move(int(item_id), int(position))
 
     def queue_clear(self) -> None:
+        """Remove every waiting queue item."""
         self.queue.clear()
 
     def queue_start(self) -> bool:
@@ -665,26 +734,35 @@ class Backend:
         return self.queue.start()
 
     def queue_stop(self) -> None:
+        """Stop after the current item (the rest stays queued)."""
         self.queue.stop()
 
     def queue_state(self) -> dict:
+        """``{state, can, processing, stop_on_error, current, queued, history}``; ``state`` is idle /
+        running / paused / aborting and ``can`` lists the controls that apply now."""
         return self.queue.describe()
 
     def queue_options(self, stop_on_error: Optional[bool] = None) -> dict:
+        """Set queue options (``stop_on_error``: stop the queue when an item fails);
+        returns the queue state."""
         if stop_on_error is not None:
             self.queue.stop_on_error = bool(stop_on_error)
         return self.queue.describe()
 
     def pause(self) -> None:
+        """Pause the running item at the next point (sweeps) or line (scripts)."""
         self.queue.pause()
 
     def resume(self) -> None:
+        """Resume a paused item."""
         self.queue.resume()
 
     def abort(self) -> None:
+        """Abort the running item; the sweep's post phase still runs (by default)."""
         self.queue.abort()
 
     def abort_all(self) -> None:
+        """Abort the running item, clear the queue and abort running user actions."""
         self.queue.abort_all()
         self.user_actions.abort()
 
@@ -695,6 +773,7 @@ class Backend:
         return r
 
     def list_user_actions(self) -> list:
+        """The user actions with their code, ``running`` flag and ``last`` run result."""
         return self.user_actions.describe()
 
     def define_user_action(self, name: str, code: str, description: str = "",
@@ -708,10 +787,12 @@ class Backend:
         return a.to_dict()
 
     def remove_user_action(self, name: str) -> None:
+        """Delete a user action (refused while it runs)."""
         self.user_actions.remove(name)
         self._changed("actions")
 
     def move_user_action(self, name: str, position: int) -> None:
+        """Move a user action to *position* (0 = first) in the list."""
         self.user_actions.move(name, position)
         self._changed("actions")
 
@@ -721,6 +802,8 @@ class Backend:
         return self.user_actions.run(name)
 
     def abort_user_action(self, name: Optional[str] = None) -> list:
+        """Abort the running user action *name* (or every running one); returns the
+        names asked to stop."""
         return self.user_actions.abort(name)
 
     def run_script_now(self, code: str, name: str = "script") -> int:
@@ -730,9 +813,12 @@ class Backend:
 
     # ------------------------------------------------------------------ setup --
     def get_setup(self) -> dict:
+        """The present setup as a dict (see :meth:`save_setup`)."""
         return setup_io.capture(self.instruments, self.channels, self.monitor, self.user_actions)
 
     def save_setup(self, path: Optional[str] = None) -> dict:
+        """The setup (instruments, aliases, composites, monitor list, user actions) as a
+        dict; with *path* also written there as JSON."""
         s = self.get_setup()
         if path:
             setup_io.save(path, s)
@@ -740,6 +826,9 @@ class Backend:
 
     def load_setup(self, setup: Optional[dict] = None, path: Optional[str] = None,
                    replace: bool = True, connect: bool = True) -> list:
+        """Load a setup from a dict or a JSON file.  *replace* (default) removes what is
+        there first; *connect* connects the instruments.  Returns the problems found
+        (an empty list when everything loaded)."""
         if self.runner is not None:
             raise ChannelError("cannot load a setup while a sweep is running")
         if setup is None:
@@ -964,6 +1053,7 @@ class Backend:
         return users.list()
 
     def remote_remove_user(self, name: str) -> list:
+        """Delete a remote account (local GUI only); returns the remaining accounts."""
         from ..remote import config as rconfig
         from ..remote.users import UserStore
         users = UserStore(rconfig.users_path(self.home))
@@ -972,6 +1062,8 @@ class Backend:
         return users.list()
 
     def remote_stop(self, persist: bool = True) -> dict:
+        """Stop the internet gateway; with *persist* remote access stays off after a
+        restart.  Returns :meth:`remote_status`."""
         self._remote_want = False
         if persist and self.settings.get("remote_access"):
             self.set_settings(remote_access=False)
@@ -1036,6 +1128,7 @@ class Backend:
         threading.Thread(target=watch, name="remote-watch", daemon=True).start()
 
     def shutdown(self, force: bool = False) -> str:
+        """Shut the backend down (refused while a sweep runs, unless *force*)."""
         if self.runner is not None and not force:
             raise ChannelError("a sweep is running; abort it first or use force")
         log.warning("backend shutdown requested")

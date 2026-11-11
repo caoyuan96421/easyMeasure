@@ -1,0 +1,41 @@
+name: docs
+
+# Build the documentation (reference pages are generated from the code) and
+# publish it to the gh-pages branch, which GitHub Pages serves at
+# https://caoyuan96421.github.io/easymeasure/
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: System libraries for Qt (the command-line help of the GUI imports it)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libxkbcommon0 libgl1
+      - name: Install easyMeasure and the documentation tools
+        run: |
+          pip install -e ".[docs]"
+      - name: Build (strict) and publish to gh-pages
+        env:
+          QT_QPA_PLATFORM: offscreen
+          DISABLE_MKDOCS_2_WARNING: "true"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdocs gh-deploy --strict --force --no-history

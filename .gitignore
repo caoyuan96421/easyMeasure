@@ -9,3 +9,5 @@ dist/
 *.h5
 *.pptx
 !examples/*.json
+site/
+docs/__pycache__/
