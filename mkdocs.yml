@@ -1,8 +1,8 @@
 site_name: easyMeasure
 site_description: A generic Python framework for multi-dimensional automated measurement
-site_url: https://caoyuan96421.github.io/easymeasure/
-repo_url: https://github.com/caoyuan96421/easymeasure
-repo_name: caoyuan96421/easymeasure
+site_url: https://caoyuan96421.github.io/easyMeasure/
+repo_url: https://github.com/caoyuan96421/easyMeasure
+repo_name: caoyuan96421/easyMeasure
 edit_uri: edit/main/docs/
 copyright: MIT licensed
 

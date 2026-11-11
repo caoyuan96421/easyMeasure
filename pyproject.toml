@@ -35,8 +35,8 @@ docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26", "mkdocs-gen-files>
         "mkdocs-literate-nav>=0.6"]
 
 [project.urls]
-Documentation = "https://caoyuan96421.github.io/easymeasure/"
-Source = "https://github.com/caoyuan96421/easymeasure"
+Documentation = "https://caoyuan96421.github.io/easyMeasure/"
+Source = "https://github.com/caoyuan96421/easyMeasure"
 
 [project.scripts]
 easymeasure-backend = "easymeasure.backend.__main__:main"

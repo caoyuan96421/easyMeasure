@@ -7,8 +7,8 @@ VISA and DAQ runtimes are best supported.
 ## From the repository
 
 ```bash
-git clone https://github.com/caoyuan96421/easymeasure.git
-cd easymeasure
+git clone https://github.com/caoyuan96421/easyMeasure.git
+cd easyMeasure
 python -m venv .venv
 .venv\Scripts\activate          # Windows;  source .venv/bin/activate on Linux / macOS
 pip install -e .

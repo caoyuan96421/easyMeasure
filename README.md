@@ -7,9 +7,9 @@ disturbing a running measurement.
 
 ![data view](docs/screenshots/data_view.png)
 
-**Documentation: <https://caoyuan96421.github.io/easymeasure/>**: installation, quick
+**Documentation: <https://caoyuan96421.github.io/easyMeasure/>**: installation, quick
 start, a tutorial for every part, the list of [supported
-instruments](https://caoyuan96421.github.io/easymeasure/instruments/) and a full
+instruments](https://caoyuan96421.github.io/easyMeasure/instruments/) and a full
 reference (backend commands, sweep and setup formats, script API, every driver and
 module).
 

@@ -2,7 +2,7 @@ name: docs
 
 # Build the documentation (reference pages are generated from the code) and
 # publish it to the gh-pages branch, which GitHub Pages serves at
-# https://caoyuan96421.github.io/easymeasure/
+# https://caoyuan96421.github.io/easyMeasure/
 on:
   push:
     branches: [main]
