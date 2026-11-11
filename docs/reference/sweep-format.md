@@ -77,6 +77,13 @@ and one of:
 
 Text channels cannot be swept.
 
+Variables of one multivariate composite are set together, also when they are swept
+in different dimensions: the outer ones are then set with the inner ones at every
+inner point. A combination that would drive a target of the composite out of range
+is skipped, refused or clamped according to the composite's `out_of_range`
+([Composite channels](../guide/composites.md#out-of-range)). Skipped combinations are
+counted in the validation warnings and in the footer's `out_of_range_skipped`.
+
 ## Pre / post phase
 
 | field | type | meaning |

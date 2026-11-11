@@ -6,8 +6,8 @@
       "sweep": [
         {
           "channel": "n",
-          "start": -2.5,
-          "stop": 2.5
+          "start": -4,
+          "stop": 4
         }
       ],
       "record": [
@@ -16,12 +16,12 @@
       "snake": true
     },
     {
-      "points": 29,
+      "points": 31,
       "sweep": [
         {
           "channel": "D",
-          "start": -0.35,
-          "stop": 0.35
+          "start": -0.45,
+          "stop": 0.45
         }
       ],
       "record": []

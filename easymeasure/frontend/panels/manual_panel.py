@@ -8,11 +8,12 @@ Each channel row has a spin box, a slider (when the alias has both a minimum and
 a maximum) and a context menu on the spin box (right click) to enter a math
 expression of the present value ``x`` (e.g. ``x + 0.01``, ``x/2``, ``0.1*pi``).
 
-Variables of a multivariate composite channel are grouped under the composite's
-name.  A group with several variables has "hold" and "Set all": while hold is
-ticked, edits only mark the variables and "Set all" sends them in one go (the
-hardware channels are computed once from all of them) - needed for the first
-setting, when the other variables have never been set yet.
+Variables of a multivariate composite channel are grouped (indented) under the
+composite's name.  A group has "hold", "Set all" and "Set all to zero": while
+hold is ticked, edits only mark the variables and "Set all" sends them in one go
+(the hardware channels are computed once from all of them) - needed for the
+first setting, when the other variables have never been set yet.  "Set all to
+zero" sets every variable to 0 together, the usual way to start.
 
 Writes go through the backend's protected path (limits, ramp rates).  While a
 channel is still ramping, newer requests for it are coalesced: only the latest
@@ -36,6 +37,7 @@ from ...common.exprs import Expression
 from ..widgets import shrinkable_label
 
 SLIDER_STEPS = 1000
+GROUP_INDENT = 18      # px: variables under the header of their composite
 
 
 def _parse(text: str, numeric: bool):
@@ -377,6 +379,8 @@ class ManualPanel(QWidget):
                 r += 1
             row = ChannelRow(self, meta, kind)
             self.rows[meta["name"]] = row
+            if comp in multi:
+                row.label.setIndent(GROUP_INDENT)      # under its group's header
             self.grid.addWidget(row.label, r, 0)
             self.grid.addWidget(row.editor, r, 1)
             if row.slider is not None:
@@ -403,24 +407,31 @@ class ManualPanel(QWidget):
         btn.setText("Set all")
         btn.setToolTip("set every variable of %s together to the values shown" % comp)
         btn.clicked.connect(lambda: self.set_group(comp))
+        zero = QToolButton()
+        zero.setText("Set all to zero")
+        zero.setToolTip("set every variable of %s to 0 together (limits and ramps apply)" % comp)
+        zero.clicked.connect(lambda: self.set_group(comp, zero=True))
         hold.toggled.connect(lambda on: None if on else self._held.pop(comp, None))
         box = QWidget()
         hl = QHBoxLayout(box)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.addWidget(hold)
         hl.addWidget(btn)
+        hl.addWidget(zero)
         hl.addStretch(1)
         self.grid.addWidget(lab, r, 0)
         self.grid.addWidget(box, r, 1, 1, 3)
-        self.groups[comp] = {"label": lab, "box": box, "hold": hold, "variables": list(variables)}
+        self.groups[comp] = {"label": lab, "box": box, "hold": hold, "set": btn, "zero": zero,
+                             "variables": list(variables)}
 
     def _group_of(self, name: str) -> Optional[str]:
         row = self.rows.get(name)
         comp = row.meta.get("composite") if row is not None and row.kind == "variable" else None
         return comp if comp in self.groups else None
 
-    def set_group(self, comp: str) -> None:
-        """Set all variables of a multivariate composite together (``set_many``)."""
+    def set_group(self, comp: str, zero: bool = False) -> None:
+        """Set all variables of a multivariate composite together (``set_many``): to
+        the values shown, or with *zero* all to 0."""
         g = self.groups.get(comp)
         if g is None:
             return
@@ -429,7 +440,7 @@ class ManualPanel(QWidget):
             row = self.rows.get(n)
             if row is None or not isinstance(row.editor, QDoubleSpinBox):
                 continue
-            values[n] = self._held.get(comp, {}).get(n, row.editor.value())
+            values[n] = 0.0 if zero else self._held.get(comp, {}).get(n, row.editor.value())
         for n in values:
             self._pending[n] = True
             self.rows[n].set_state("busy")

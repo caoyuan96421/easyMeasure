@@ -36,7 +36,7 @@ The web app mirrors the GUI:
   curves, X/Y choice, sliders, follow latest, colormaps, colour levels by dragging
   the colour bar, and zoom and pan;
 * **monitor tiles**, with columns and per-element curves for vector channels;
-* **the Manual panel**: spin box, slider, right-click expression, hold + Set all;
+* **the Manual panel**: spin box, slider, right-click expression, Set all to zero, hold + Set all;
 * **the log**, and downloads of data files and the PowerPoint file.
 
 It reconnects by itself when the network, gateway or backend restarts, and it works

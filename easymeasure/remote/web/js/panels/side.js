@@ -401,6 +401,7 @@ export class ManualPanel {
         if (comp && multi.has(comp) && !this.groups.has(comp)) this.host.append(this._groupHeader(comp, multi.get(comp)));
         const r = new ChannelRow(this, m);
         this.rows.set(m.name, r);
+        if (comp && multi.has(comp)) r.el.classList.add("in-group");   // indented under its header
         this.host.append(r.el);
         if (m.last === null || m.last === undefined) this.readBack(m.name);
       }
@@ -421,13 +422,15 @@ export class ManualPanel {
   }
 
   /** Header of the variables of one multivariate composite: "hold" collects edits,
-   *  "Set all" sends them together (set_many), as the first setting needs. */
+   *  "Set all" sends them together (set_many), as the first setting needs;
+   *  "Set all to zero" sets every variable to 0 together. */
   _groupHeader(comp, variables) {
     const hold = h("input", { type: "checkbox", title: "collect edits of these variables and send them with Set all",
       on: { change: () => { if (!hold.checked) delete this.held[comp]; } } });
     const set = btn("Set all", () => this.setGroup(comp), { cmd: "set_many", title: `set every variable of ${comp} together to the values shown` });
+    const zero = btn("Set all to zero", () => this.setGroup(comp, true), { cmd: "set_many", title: `set every variable of ${comp} to 0 together (limits and ramps apply)` });
     const el = h("div", { class: "man-group" }, h("b", { text: comp }), h("span", { class: "muted", text: `(${variables.join(", ")})` }),
-      h("label", { class: "check" }, hold, " hold"), set);
+      h("label", { class: "check" }, hold, " hold"), set, zero);
     el.dataset.composite = comp;
     this.groups.set(comp, { el, hold, variables });
     return el;
@@ -439,7 +442,7 @@ export class ManualPanel {
     return c && this.groups && this.groups.has(c) ? c : null;
   }
 
-  async setGroup(comp) {
+  async setGroup(comp, zero = false) {
     const g = this.groups.get(comp);
     if (!g) return;
     const values = {};
@@ -447,7 +450,7 @@ export class ManualPanel {
       const r = this.rows.get(n);
       if (!r) continue;
       const held = (this.held[comp] || {})[n];
-      values[n] = held !== undefined ? held : Number(r.editor.value);
+      values[n] = zero ? 0 : held !== undefined ? held : Number(r.editor.value);
     }
     for (const n of Object.keys(values)) { this.pending[n] = true; this.rows.get(n).setState("busy"); }
     this.say(`setting ${Object.keys(values).join(", ")} together …`);

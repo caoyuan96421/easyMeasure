@@ -33,7 +33,8 @@ const FORMULA_HELP = "Formulas: + - * / **, abs, sqrt, exp, log, sin …, min/ma
   "piecewise(cond1, v1, cond2, v2, …, default), interp(x, xs, ys)";
 
 function compSummary(c) {
-  if ((c.type || "multi") === "multi") return Object.entries(c.targets || {}).map(([k, v]) => `${k} = ${v}`).join("; ");
+  if ((c.type || "multi") === "multi") return Object.entries(c.targets || {}).map(([k, v]) => `${k} = ${v}`).join("; ") +
+    (c.out_of_range && c.out_of_range !== "skip" ? `  [out of range: ${c.out_of_range}]` : "");
   if (c.type === "read") return c.expression || "";
   return `${c.target} = ${c.forward}  (x = ${c.backward})`;
 }
@@ -80,12 +81,18 @@ export function compositeDialog(model, conn, c, onSave = null) {
   const targets = h("textarea", { rows: 5, spellcheck: false, class: "comp-targets",
     placeholder: "one per line:  channel = formula of the variables\ne.g.\nVL = U + eps\nVR = U - eps" });
   targets.value = Object.entries(kind === "multi" ? c.targets || {} : {}).map(([k, e]) => `${k} = ${e}`).join("\n");
+  const OOR = { skip: "Skip the point (sweeps)", error: "Error", clamp: "Clamp to the limit" };
+  const oorNow = kind === "multi" && c.out_of_range in OOR ? c.out_of_range : "skip";
+  const oor = h("select", { class: "comp-oor", title: "when a combination of the variables would put a target outside its range: " +
+      "Skip - a sweep skips that point (a direct write is refused); Error - refused everywhere; Clamp - the target stops at its limit" },
+    Object.entries(OOR).map(([k, l]) => h("option", { value: k, text: l, selected: k === oorNow })));
   const multi = h("div", { class: "form" },
     h("label", { text: "Variables" }), h("div", {},
       h("table", { class: "comp-vars" }, h("thead", {}, h("tr", {}, ["Name", "Min", "Max", "Unit", "Ramp", "Description", ""].map((t) => h("th", { text: t })))), vbody),
       h("button", { text: "Add variable", class: "comp-add-var", on: { click: () => addVar({}) } })),
     h("label", { text: "Targets" }), targets,
-    h("span"), h("div", { class: "help", text: "channels that can be driven: " + writable.join(", ") }));
+    h("span"), h("div", { class: "help", text: "channels that can be driven: " + writable.join(", ") }),
+    h("label", { text: "Out of range" }), oor);
 
   // composite read
   const expr = inp(kind === "read" ? c.expression : "", "e.g. (VL - VR)/2", "comp-expr");
@@ -130,6 +137,7 @@ export function compositeDialog(model, conn, c, onSave = null) {
         if (i < 0) throw new Error(`line '${line}' needs 'channel = formula'`);
         d.targets[line.slice(0, i).trim()] = line.slice(i + 1).trim();
       }
+      d.out_of_range = oor.value;
     } else if (d.type === "read") {
       Object.assign(d, { expression: expr.value.trim(), unit: rUnit.value.trim() });
     } else {

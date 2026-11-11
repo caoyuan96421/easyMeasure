@@ -71,11 +71,20 @@ def save(widget: QWidget, name: str, marks=(), labels=None, crop: QWidget = None
         f.setBold(True)
         f.setPointSize(11)
         p.setFont(f)
+        limit = QRect(QPoint(0, 0), widget.size())
+        if crop is not None:
+            limit = QRect(crop.mapTo(widget, QPoint(0, 0)), crop.size())
+        rects = []
+        for m in marks:
+            if m is not None and m.isVisible():
+                tl = m.mapTo(widget, QPoint(0, 0))
+                rects.append(QRect(tl.x() - 3, tl.y() - 3, m.width() + 6, m.height() + 6))
+            else:
+                rects.append(None)
         for k, m in enumerate(marks):
-            if m is None or not m.isVisible():
+            r = rects[k]
+            if r is None:
                 continue
-            tl = m.mapTo(widget, QPoint(0, 0))
-            r = QRect(tl.x() - 3, tl.y() - 3, m.width() + 6, m.height() + 6)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r, 5, 5)
@@ -84,8 +93,15 @@ def save(widget: QWidget, name: str, marks=(), labels=None, crop: QWidget = None
                 br = p.fontMetrics().boundingRect(txt)
                 box = QRect(r.right() - br.width() - 10, r.top() - br.height() - 6,
                             br.width() + 12, br.height() + 6)
-                if box.top() < 0:
-                    box.moveTop(r.bottom() + 2)
+                clash = any(o is not None and o is not r and o.intersects(box) and
+                            not o.contains(r) for o in rects)
+                if box.top() < limit.top() or clash:
+                    # no room above: beside it, else inside its right end
+                    mid = r.center().y() - box.height() // 2
+                    if r.right() + 4 + box.width() <= limit.right():
+                        box.moveTopLeft(QPoint(r.right() + 4, mid))
+                    else:
+                        box.moveTopRight(QPoint(r.right() - 4, mid))
                 p.setBrush(RED)
                 p.setPen(Qt.NoPen)
                 p.drawRoundedRect(box, 4, 4)
@@ -116,7 +132,11 @@ def _patched_exec(self):
     fill(self)
     pump(0.4)
     if name:
-        save(self, name, marks(self))
+        m = marks(self)
+        if isinstance(m, tuple):          # (widgets, labels)
+            save(self, name, *m)
+        else:
+            save(self, name, m)
     if hasattr(self, "_ok"):
         self._ok()
     else:
@@ -433,22 +453,67 @@ def tutorial_nd(be, w):
     sp._alias_from_raw()
     pump(3, lambda: any(a["name"] == "Vtg" for a in w.model.aliases()))
 
+    # -- a second lock-in for the current, and Rxx = Vxx / I
+    def fill_ilockin(d):
+        d.name.setText("ilockin")
+        d.driver.setCurrentText("sim_lockin")
+        d.address.setEditText("NONE")
+        set_options(d, sample="graphene", measure="current", source="lockin.amplitude")
+    expect(sp_mod.InstrumentDialog, fill_ilockin, "t2-add-ilockin",
+           lambda d: ([d.name, d.driver, d.options], ["1", "2", "3"]))
+    sp._add_inst()
+    pump(3, lambda: any(i["name"] == "ilockin" for i in w.model.instruments()))
+    pump(1.0)
+    for inst, alias, unit, desc in (("lockin", "Vxx", "V", "four-probe voltage"),
+                                    ("ilockin", "I", "A", "AC current through the sample")):
+        select_row(sp.inst, inst)
+        pump(0.5)
+        select_row(sp.raw, "X")
+
+        def fill(d, alias=alias, unit=unit, desc=desc):
+            d.name.setText(alias)
+            d.unit.setText(unit)
+            d.description.setText(desc)
+        expect(sp_mod.AliasDialog, fill, None)
+        sp._alias_from_raw()
+        pump(3, lambda alias=alias: any(a["name"] == alias for a in w.model.aliases()))
+    pump(0.5)
+    select_row(sp.alias, "Rxx")
+    sp._remove_alias()
+    pump(3, lambda: not any(a["name"] == "Rxx" for a in w.model.aliases()))
+
+    def fill_read(d):
+        d.name.setText("Rxx")
+        d.type.setCurrentIndex(d.type.findData("read"))
+        d.expression.setText("Vxx / I")
+        d.r_unit.setText("Ω")
+        d.description.setText("four-probe resistance")
+        d.check()
+        pump(3, lambda: "✔" in d.info.text())
+    expect(sp_mod.CompositeDialog, fill_read, "t2-read",
+           lambda d: ([d.name, d.type, d.expression, d.r_unit, d.check_btn],
+                      ["1", "2", "3", "4", "5"]))
+    sp._edit_comp(None)
+    pump(3, lambda: any(c["name"] == "Rxx" for c in w.model.composites()))
+
     def fill_nd(d):
         d.name.setText("nD")
         d.type.setCurrentIndex(0)
         while d.vars.rowCount():
             d.vars.removeRow(0)
-        d._add_var({"name": "n", "min": -2.5, "max": 2.5, "unit": "1e12 cm^-2",
+        d._add_var({"name": "n", "min": -4, "max": 4, "unit": "1e12 cm^-2",
                     "description": "carrier density"})
-        d._add_var({"name": "D", "min": -0.35, "max": 0.35, "unit": "V/nm",
+        d._add_var({"name": "D", "min": -0.45, "max": 0.45, "unit": "V/nm",
                     "description": "displacement field"})
         d.targets.setPlainText("Vbg = (n + 0.15 + D/0.0452) / (2*0.6)\n"
                                "Vtg = (n + 0.15 - D/0.0452) / (2*0.9)")
+        d.out_of_range.setCurrentIndex(d.out_of_range.findData("skip"))
         d.description.setText("carrier density and displacement field of the dual-gated bilayer")
         d.check()
         pump(3, lambda: "✔" in d.info.text())
     expect(sp_mod.CompositeDialog, fill_nd, "t2-composite",
-           lambda d: [d.type, d.vars, d.targets, d.check_btn], )
+           lambda d: ([d.type, d.vars, d.targets, d.out_of_range, d.check_btn],
+                      ["1", "2", "3", "4", "5"]))
     sp._edit_comp(None)
     pump(3, lambda: any(c["name"] == "nD" for c in w.model.composites()))
     pump(1.0)
@@ -457,15 +522,10 @@ def tutorial_nd(be, w):
     mp = w.manual
     pump(5, lambda: "nD" in mp.groups and "n" in mp.rows)
     g = mp.groups["nD"]
-    g["hold"].setChecked(True)
-    mp.rows["n"].editor.setValue(0.5)
-    mp.rows["D"].editor.setValue(0.1)
-    pump(0.5)
-    save(w, "t2-manual", [g["hold"], mp.rows["n"].editor, mp.rows["D"].editor,
-                          g["box"]], ["1", "2", "2", "3"], crop=w.manual)
-    mp.set_group("nD")
-    pump(5, lambda: be.channels.last_value("D") == 0.1)
-    g["hold"].setChecked(False)
+    mp.set_group("nD", zero=True)
+    pump(10, lambda: be.channels.last_value("D") == 0.0 and not mp._pending.get("D"))
+    pump(1.0)
+    save(w, "t2-manual", [g["label"], g["zero"]], ["1", "2"], crop=w.manual)
 
     tab(w, "Sweep")
     d = json.loads((ROOT / "examples" / "graphene_nD.json").read_text())
@@ -473,9 +533,12 @@ def tutorial_nd(be, w):
     pump(0.5)
     w.editor.dim_list.setCurrentRow(0)
     pump(0.3)
+    w.editor.validate()
+    pump(5, lambda: "valid" in w.editor.status.text())
+    pump(0.5)
     dim0 = w.editor.dim_stack.currentWidget()
-    save(w, "t2-sweep", [w.editor.dim_list, dim0.sweep_box, dim0.rec_box], ["1", "2", "3"],
-         crop=w.left_tabs)
+    save(w, "t2-sweep", [w.editor.dim_list, dim0.sweep_box, dim0.rec_box, w.editor.status],
+         ["1", "2", "3", "4"], crop=w.left_tabs)
     magnet_at_zero(be)
     w.editor._queue(True)
     wait_idle(be, 1800)

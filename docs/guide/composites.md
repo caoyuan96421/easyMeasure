@@ -55,9 +55,10 @@ other variables' last values.
 !!! note "The first setting"
     While a variable has never been set, the targets that need it cannot be
     computed, so setting `eps` alone fails with a message naming the missing `U`.
-    Set the variables together the first time. In a script or from Python, use
-    `set_many`. In a sweep, put them in the same dimension. In the Manual panel,
-    tick **hold**, type the values, then click **Set all**.
+    Set the variables together the first time. In the Manual panel, click
+    **Set all to zero**, or tick **hold**, type the values, then click **Set all**.
+    In a script or from Python, use `set_many`. A sweep sets them together by
+    itself (below).
 
 ### Limits and ramps
 
@@ -69,6 +70,37 @@ Ramps keep **every** channel within its own rate at the same time: the variable'
 `ramp_rate` and each target alias' `ramp_rate`. This also holds along non-linear
 relations: with `targets={"VL": "q**2"}`, moving `q` from −1 to 1 drives `VL`
 1 → 0 → 1, at no point faster than `VL`'s rate.
+
+### Out of range
+
+Often the region you want in the variables doesn't fit in the box the hardware
+limits allow: a rectangle in $(n, D)$ is a tilted rectangle in $(V_{bg}, V_{tg})$, and
+its corners may need more than ±10 V. **Out of range** in the composite editor
+(`out_of_range` in the definition) decides what happens when a combination of the
+variables would drive a target outside its limits:
+
+| Out of range | in a sweep | set by hand or from a script |
+|---|---|---|
+| **Skip the point** (`skip`, the default) | the point is skipped before any channel is set, as if a [point action](point-actions.md) called `skip_point()` first: nothing moves and its data stay NaN. Validation says how many points will be skipped | refused, with the reason |
+| **Error** (`error`) | the sweep is refused by validation, naming the first bad point | refused |
+| **Clamp to the limit** (`clamp`) | the target is set to the nearest end of its range; the point is measured | the same |
+
+*Skip* suits maps (the region the hardware can reach is measured, the rest is left
+empty). *Error* is for measurements where every point matters. *Clamp* suits targets
+where the nearest reachable value is good enough. Note that with *Clamp* a point is
+labelled with variable values the hardware did not quite reach.
+
+### In sweeps
+
+Variables of one composite are always set together:
+
+* swept in the **same dimension**, they are set together at every point;
+* swept in **different dimensions** (`n` inner, `D` outer), the outer variable is not
+  written on its own: at every inner point both are set together. So a new `D` never
+  moves the gates with the old `n` left over from the previous line, and every
+  combination the hardware sees is one of the sweep's points, checked in advance.
+
+Validation checks every combination the sweep will set.
 
 ### Formulas
 
@@ -87,7 +119,16 @@ including piecewise functions and vectors:
 
 ## Composite read
 
-A read-only channel computed from others: aliases, variables, mappings or other reads:
+A read-only channel computed from others: aliases, variables, mappings or other reads.
+The classic case is a resistance from two lock-ins, one measuring the voltage
+($V_{xx}$) and one the current ($I$): a composite read `Rxx` with the formula
+`Vxx / I` and unit Ω. In the editor, choose the type *Composite read* and type the
+formula; the line below it lists the channels it may use.
+[Tutorial 2](../tutorials/rotated-gates.md#2-measure-the-current-too-rxx-vxx-i) sets
+this up step by step.
+
+Reading the channel reads its inputs and evaluates the formula. Other examples: a
+conductance `1/Rxx`, a difference `(V1 - V2)/2`, a power in dB `10*log10(P)`.
 
 ??? example "From Python"
 
@@ -237,7 +278,7 @@ channels it would define and any warnings, without changing anything:
 
 | type | fields |
 |---|---|
-| `multi` | `name`, `variables` (names or `{name, min, max, unit, ramp_rate, description}`), `targets` `{channel: formula}`, `description` |
+| `multi` | `name`, `variables` (names or `{name, min, max, unit, ramp_rate, description}`), `targets` `{channel: formula}`, `out_of_range` (`skip` (default), `error` or `clamp`), `description` |
 | `read` | `name`, `expression`, `unit`, `description` |
 | `map` | `name`, `target`, `forward` (of `x`), `backward` (of `y`), `min`, `max` (required), `unit`, `ramp_rate`, `tolerance`, `description` |
 

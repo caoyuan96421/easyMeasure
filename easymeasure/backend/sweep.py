@@ -54,6 +54,14 @@ Three special calls change the flow (think of nested ``for`` loops):
     ``post_record`` it keeps the point just recorded (e.g. stop when a threshold
     is crossed and see that point); the skips discard it.
 
+Variables of one multivariate composite are set together.  When they are swept in
+different dimensions (``n`` inner, ``D`` outer), the outer ones are not written on
+their own: they are set together with the inner ones at every inner point, so the
+hardware only ever sees whole combinations.  A combination that would put a target
+of the composite out of range is skipped (``skip_point()`` before anything is set)
+when the composite's ``out_of_range`` is ``"skip"``; validation counts such points
+and, for ``"error"``, refuses the sweep.
+
 Mapping expressions may use ``i`` (index), ``N`` (points), ``t`` = i/(N-1),
 ``start``, ``stop``, ``x`` (= linear value between start and stop) and numpy.
 A mapping is mandatory for vector/tensor channels.
@@ -77,7 +85,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from ..common.errors import (AbortRequested, ChannelError, EasyMeasureError, LimitError,
-                             EndSweep, SkipLine, SkipPoint, SweepDefinitionError)
+                             EndSweep, OutOfRange, SkipLine, SkipPoint, SweepDefinitionError)
 from ..common.exprs import Expression
 from .logsys import get_logger
 from .storage import EVENT, FOOTER, HEADER, PHASE, POINT, DataSet, JournalWriter
@@ -92,6 +100,8 @@ log = get_logger("sweep")
 MAX_POINTS_PER_DIM = 10_000_000
 MAX_TOTAL_POINTS = 100_000_000
 MAX_SETPOINT_ELEMENTS = 20_000_000
+#: combinations of composite variables checked one by one in validation
+MAX_COMBINATIONS_CHECKED = 250_000
 #: per-point hooks of a dimension, in the order they run
 POINT_HOOKS = ("pre_sweep", "post_sweep", "pre_record", "post_record")
 
@@ -292,6 +302,23 @@ def _pre_configured(d: dict, channels) -> set:
     return out
 
 
+def composite_dims(d: dict, channels) -> Dict[str, Dict[int, List[str]]]:
+    """For every multivariate composite whose variables are swept: dimension ->
+    the variables swept there."""
+    out: Dict[str, Dict[int, List[str]]] = {}
+    if not hasattr(channels, "group_of"):
+        return out
+    for k, dim in enumerate(d["dimensions"]):
+        for s in dim["sweep"]:
+            try:
+                g = channels.group_of(s["channel"])
+            except Exception:
+                g = None
+            if g is not None:
+                out.setdefault(g, {}).setdefault(k, []).append(s["channel"])
+    return out
+
+
 def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
     """Check channel existence/direction and limits for every setpoint.
 
@@ -307,6 +334,8 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
     errors: List[str] = []
     setpoints = compute_setpoints(d)
     deferred = set() if after_pre else _pre_configured(d, channels)
+    comps = composite_dims(d, channels)
+    skipped: Dict[str, int] = {}          # composite -> combinations it will skip
 
     def problem(name: str, text: str) -> None:
         insts = _instruments_of(channels, name) & deferred
@@ -342,34 +371,22 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
                 errors.append("%s is a scalar channel but its mapping returns arrays" % ch)
                 continue
             if info["kind"] == "variable" and \
-                    sum(channels.group_of(o["channel"]) == info["composite"]
-                        for o in dim["sweep"]) > 1:
+                    sum(len(v) for v in comps.get(info["composite"], {}).values()) > 1:
                 continue          # checked together with the other variables below
             try:
                 for v in sp:
-                    # partial: a variable of the same composite set by an outer
-                    # dimension is not known yet
-                    channels.check_value(ch, v if np.ndim(v) else float(v), partial=True)
+                    # partial: a variable of the same composite that is not swept
+                    # may not be known yet
+                    try:
+                        channels.check_value(ch, v if np.ndim(v) else float(v), partial=True)
+                    except OutOfRange as exc:
+                        if exc.mode != "skip":
+                            raise
+                        skipped[exc.composite] = skipped.get(exc.composite, 0) + 1
             except LimitError as exc:
                 errors.append(str(exc))
             except ChannelError as exc:
                 problem(ch, str(exc))
-        groups: Dict[str, List[str]] = {}
-        for s in dim["sweep"]:
-            g = channels.group_of(s["channel"]) if hasattr(channels, "group_of") else None
-            if g is not None:
-                groups.setdefault(g, []).append(s["channel"])
-        for g, names in groups.items():
-            if len(names) < 2:
-                continue
-            try:
-                for i in range(dim["points"]):
-                    channels.check_many({n: float(setpoints[k][n][i]) for n in names},
-                                        partial=True)
-            except LimitError as exc:
-                errors.append(str(exc))
-            except ChannelError as exc:
-                problem(names[0], str(exc))
         for name, code in active_hooks(dim).items():
             try:
                 compile(code, "<%s-hook>" % name, "exec")
@@ -385,6 +402,38 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
                     problem(r, "record channel %s is not readable" % r)
             except Exception as exc:
                 problem(r, "record channel %s: %s" % (r, exc))
+    # variables of one composite swept together (in one or several dimensions): every
+    # combination that the sweep will set is checked
+    for g, by_dim in comps.items():
+        names = [n for k in sorted(by_dim) for n in by_dim[k]]
+        if len(names) < 2:
+            continue
+        ks = sorted(by_dim)
+        sizes = [d["dimensions"][k]["points"] for k in ks]
+        total = int(np.prod(sizes))
+        if total > MAX_COMBINATIONS_CHECKED:
+            warnings.append("composite %s: %d combinations of %s are too many to check in "
+                            "advance; each is checked when it is reached" % (g, total,
+                                                                             ", ".join(names)))
+            continue
+        try:
+            for flat in range(total):
+                idx = np.unravel_index(flat, sizes)
+                values = {n: float(setpoints[k][n][i]) for k, i in zip(ks, idx)
+                          for n in by_dim[k]}
+                try:
+                    channels.check_many(values, partial=True)
+                except OutOfRange as exc:
+                    if exc.mode != "skip":
+                        raise
+                    skipped[g] = skipped.get(g, 0) + 1
+        except LimitError as exc:
+            errors.append(str(exc))
+        except ChannelError as exc:
+            problem(names[0], str(exc))
+    for g, n in sorted(skipped.items()):
+        warnings.append("composite %s: %d point%s out of range, will be skipped"
+                        % (g, n, "" if n == 1 else "s"))
     for ph in (("post",) if after_pre else ("pre", "post")):
         # a constant may depend on an earlier one of the same phase (mode first, then
         # the compliance of that mode): those are only checked when they are applied
@@ -492,6 +541,10 @@ class RunControl:
             self._abort.wait(min(remaining, 0.05))
 
 
+class _OutOfRangeSkip(SkipPoint):
+    """A combination of composite variables out of range (``out_of_range="skip"``)."""
+
+
 def _skip_point() -> None:
     """In a per-point action: skip the rest of this point (its data stay NaN)."""
     raise SkipPoint()
@@ -528,10 +581,14 @@ class SweepRunner:
         self.extra_header = extra_header or {}
         self.setpoints = compute_setpoints(self.d)
         # swept channels in order; variables of one multivariate composite are set
-        # together at the place of the first of them
-        self._set_groups: List[List[List[str]]] = []
-        for dim in self.d["dimensions"]:
-            groups: List[List[str]] = []
+        # together at the place of the first of them.  Each entry: (channels,
+        # composite or None, deferred): a deferred group belongs to a composite also
+        # swept in an inner dimension and is set together with that one
+        self._set_groups: List[List[tuple]] = []
+        comps = composite_dims(self.d, channels)
+        innermost = {g: min(by_dim) for g, by_dim in comps.items()}
+        for k, dim in enumerate(self.d["dimensions"]):
+            groups: List[tuple] = []
             where: Dict[str, List[str]] = {}
             for s in dim["sweep"]:
                 ch = s["channel"]
@@ -539,10 +596,12 @@ class SweepRunner:
                 if g is not None and g in where:
                     where[g].append(ch)
                     continue
-                groups.append([ch])
+                names = [ch]
+                groups.append((names, g, g is not None and innermost[g] < k))
                 if g is not None:
-                    where[g] = groups[-1]
+                    where[g] = names
             self._set_groups.append(groups)
+        self._pending: Dict[str, Dict[str, Any]] = {}   # composite -> outer variables
         self.shape = [dim["points"] for dim in self.d["dimensions"]]
         self.dataset: Optional[DataSet] = None
         self.journal: Optional[JournalWriter] = None
@@ -554,6 +613,7 @@ class SweepRunner:
         self._pass_counts = [0] * len(self.shape)
         self._hooks = [active_hooks(dim) for dim in self.d["dimensions"]]
         self.skipped_points = 0
+        self.out_of_range_skipped = 0
         self._ended_at: Optional[dict] = None
         if any(self._hooks) and script_runner is None:
             raise EasyMeasureError("this sweep has point hooks but no script runner")
@@ -823,7 +883,12 @@ class SweepRunner:
                     self.control.abort()
         footer = {"status": self.status, "error": self.error, "ended": time.time(),
                   "points": self.dataset.points, "read_failures": self.read_failures,
-                  "skipped_points": self.skipped_points}
+                  "skipped_points": self.skipped_points,
+                  "out_of_range_skipped": self.out_of_range_skipped}
+        if self.out_of_range_skipped:
+            log.info("run %d: %d point%s skipped because a composite would be out of range",
+                     self.run_number, self.out_of_range_skipped,
+                     "" if self.out_of_range_skipped == 1 else "s")
         if self.status == "terminated":
             footer["terminated_at"] = self._ended_at
         self._journal(FOOTER, footer, sync=True)
@@ -853,11 +918,31 @@ class SweepRunner:
             try:
                 if hooks:
                     self._point_hook(k, "pre_sweep", ctx)
-                for group in self._set_groups[k]:
-                    if len(group) == 1:
-                        self._set(group[0], ctx["setpoints"][group[0]])
+                todo = []
+                for names, g, outer_var in self._set_groups[k]:
+                    values = {n: ctx["setpoints"][n] for n in names}
+                    if outer_var:          # set with the inner variables of g
+                        self._pending.setdefault(g, {}).update(values)
+                        continue
+                    if g is not None:
+                        values = dict(self._pending.get(g, {}), **values)
+                        try:
+                            reason = self.channels.check_point(values)
+                        except Exception:
+                            reason = None   # setting it fails, with the usual handling
+                        if reason is not None:
+                            if not self.out_of_range_skipped:
+                                log.info("run %d: point %s skipped: %s (further points out "
+                                         "of range are skipped quietly)", self.run_number,
+                                         list(idx), reason)
+                            raise _OutOfRangeSkip()
+                    todo.append(values)
+                for values in todo:
+                    if len(values) == 1:
+                        name, value = next(iter(values.items()))
+                        self._set(name, value)
                     else:                 # variables of one composite: set together
-                        self._set_many({n: ctx["setpoints"][n] for n in group})
+                        self._set_many(values)
                 if hooks:
                     self._point_hook(k, "post_sweep", ctx)
                 if dim["pre_delay"]:
@@ -868,6 +953,9 @@ class SweepRunner:
                     self._loop(k - 1, idx)      # a skip in there belongs to the inner dim
                 if dim["record_after_inner"] and k > 0:
                     self._record_event(k, idx, dim, ctx)
+            except _OutOfRangeSkip:
+                self.out_of_range_skipped += 1
+                self._skip_point(k, idx, quiet=True)
             except SkipPoint:
                 self._skip_point(k, idx)
             except SkipLine:

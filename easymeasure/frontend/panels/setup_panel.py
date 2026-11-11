@@ -333,7 +333,9 @@ def composite_summary(c: dict) -> str:
     """One line describing a composite definition (for tables)."""
     t = c.get("type", "multi")
     if t == "multi":
-        return "; ".join("%s = %s" % kv for kv in (c.get("targets") or {}).items())
+        oor = c.get("out_of_range", "skip")
+        return "; ".join("%s = %s" % kv for kv in (c.get("targets") or {}).items()) + \
+            ("  [out of range: %s]" % oor if oor != "skip" else "")
     if t == "read":
         return c.get("expression", "")
     return "%s = %s  (x = %s)" % (c.get("target"), c.get("forward"), c.get("backward"))
@@ -344,6 +346,11 @@ def composite_channels(c: dict):
     if t == "multi":
         return [v["name"] for v in c.get("variables") or []]
     return [c["name"]]
+
+
+#: out-of-range actions of a multivariate composite (key, label)
+OUT_OF_RANGE_CHOICES = [("skip", "Skip the point (sweeps)"), ("error", "Error"),
+                        ("clamp", "Clamp to the limit")]
 
 
 class CompositeDialog(QDialog):
@@ -391,6 +398,17 @@ class CompositeDialog(QDialog):
             "one per line:  channel = formula of the variables\ne.g.\n"
             "VL = U + eps\nVR = U - eps\nVg = piecewise(U < 0, 0, 2*U)\n\n"
             "channels that can be driven: " + ", ".join(n for n in writable if n not in own))
+        self.out_of_range = QComboBox()
+        for key, label in OUT_OF_RANGE_CHOICES:
+            self.out_of_range.addItem(label, key)
+        keys = [k for k, _ in OUT_OF_RANGE_CHOICES]
+        oor = c.get("out_of_range", "skip") if kind == "multi" else "skip"
+        self.out_of_range.setCurrentIndex(keys.index(oor) if oor in keys else 0)
+        self.out_of_range.setToolTip(
+            "when a combination of the variables would put a target outside its range "
+            "(an alias' limits):\nSkip: a sweep skips that point (a direct write is refused)\n"
+            "Error: refused everywhere; a sweep with such a point does not start\n"
+            "Clamp: the target stops at the end of its range")
         mw = QWidget()
         ml = QFormLayout(mw)
         ml.setContentsMargins(0, 0, 0, 0)
@@ -399,6 +417,7 @@ class CompositeDialog(QDialog):
         vbox.addLayout(vb)
         ml.addRow("Variables", vbox)
         ml.addRow("Targets", self.targets)
+        ml.addRow("Out of range", self.out_of_range)
 
         # -- composite read
         self.expression = QLineEdit(c.get("expression", "") if kind == "read" else "")
@@ -510,7 +529,8 @@ class CompositeDialog(QDialog):
                     raise ValueError("line %r needs 'channel = formula'" % line)
                 k, v = line.split("=", 1)
                 targets[k.strip()] = v.strip()
-            d.update(variables=vs, targets=targets)
+            d.update(variables=vs, targets=targets,
+                     out_of_range=self.out_of_range.currentData())
         elif kind == "read":
             d.update(expression=self.expression.text().strip(), unit=self.r_unit.text().strip())
         else:

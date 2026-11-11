@@ -1,7 +1,10 @@
 # Tutorial 2: rotated gate sweeps with composite channels
 
-**You will learn:** composite channels, which let you sweep physical quantities instead of
-instrument voltages, and setting several of them together.
+**You will learn:** composite channels. A *composite read* computes a channel from
+others ($R_{xx} = V_{xx}/I$ from two lock-ins). A *multivariate write* lets you sweep
+physical quantities (density and displacement field) instead of instrument voltages.
+You will also see what happens to points that would need a gate voltage beyond its
+limit.
 
 **The physics.** Your bilayer graphene has a top gate too. The two gates together set
 two physical quantities:
@@ -32,9 +35,49 @@ Add a second `sim_smu` named `tg` (address `NONE`). Make an alias of `tg.voltage
 named `Vtg`, with limits −10 … 10 V and ramp rate 5 V/s, exactly like `Vbg`
 ([Quick start, step 4](../quickstart.md#4-name-the-channels-you-care-about)).
 
-## 2. The composite channel
+## 2. Measure the current too: Rxx = Vxx / I
 
-On *Instruments & channels*, under **Composites**, click **Add…**:
+So far, `Rxx` was the lock-in voltage × 10⁸, which assumes that exactly 10 nA flows.
+The current is set by the lock-in's 10 mV output and a 1 MΩ series resistor. That
+is fine while the sample has a few kΩ. But once the gap opens, the sample reaches
+hundreds of kΩ, the current drops, and $V_{xx}/10\,\text{nA}$ underestimates $R_{xx}$.
+The usual remedy is to measure the current with a second lock-in, locked to the
+first one's reference, and divide.
+
+**The second lock-in.** *Instruments → Add…*: name `ilockin`, driver `sim_lockin`,
+address `NONE`. In the lab this is a second SR830 measuring with its current input.
+The simulation needs to know that it measures the current, driven by the first
+lock-in's output:
+
+![The current lock-in](../images/t2-add-ilockin.png)
+
+1. Name `ilockin`.
+2. Driver `sim_lockin`.
+3. Options: `"sample": "graphene"`, `"measure": "current"`, `"source": "lockin.amplitude"`.
+
+**Two aliases.** Make an alias of `lockin.X` named `Vxx` (unit V), and one of
+`ilockin.X` named `I` (unit A).
+
+**Rxx as a composite read.** Select the old alias `Rxx` and click **Remove**. Then,
+under **Composites**, click **Add…**:
+
+![A composite read: Rxx = Vxx / I](../images/t2-read.png)
+
+1. Name `Rxx`, the same name as before, so every sweep that records `Rxx` keeps
+   working.
+2. **Type**: *Composite read*, a read-only channel computed from others.
+3. **Formula**: `Vxx / I`. Any formula of channels works: `1/Rxx` for a conductance,
+   `(V1 - V2)/I` for a voltage measured as a difference, and so on.
+4. **Unit**: Ω.
+5. **Check**, then **OK**.
+
+Reading `Rxx` now reads `Vxx` and `I` and divides. It can be recorded, monitored and
+plotted like any channel. In the gap, at $D = 0.3$ V/nm, it reads about a third more than
+the old alias did, because only about 7.5 nA flow there.
+
+## 3. The composite channel n, D
+
+On *Instruments & channels*, under **Composites**, click **Add…** again:
 
 ![A multivariate composite: n and D drive Vbg and Vtg](../images/t2-composite.png)
 
@@ -43,8 +86,8 @@ On *Instruments & channels*, under **Composites**, click **Add…**:
 
     | Name | Min | Max | Unit | Description |
     |---|---|---|---|---|
-    | `n` | -2.5 | 2.5 | 1e12 cm^-2 | carrier density |
-    | `D` | -0.35 | 0.35 | V/nm | displacement field |
+    | `n` | -4 | 4 | 1e12 cm^-2 | carrier density |
+    | `D` | -0.45 | 0.45 | V/nm | displacement field |
 
     Each variable gets its own limits, unit and, optionally, a ramp rate.
 3. **Targets**: one line per gate, `channel = formula of the variables`:
@@ -54,12 +97,15 @@ On *Instruments & channels*, under **Composites**, click **Add…**:
     Vtg = (n + 0.15 - D/0.0452) / (2*0.9)
     ```
 
-4. **Check** asks the backend whether everything is right without saving anything:
+4. **Out of range**: what to do with a combination of `n` and `D` that would need a
+   gate voltage beyond its ±10 V limit. Leave it at *Skip the point* (see
+   [below](#5-sweep-n-and-d)).
+5. **Check** asks the backend whether everything is right without saving anything:
    the names, the formulas, and that the targets exist and can be set. It answers
    `✔ defines n, D`.
 
-**OK**, and the composite appears in the list, with the last values of its
-variables:
+**OK**, and the composite appears in the list next to `Rxx`, with the last values of
+its variables:
 
 ![The composites table](../images/t2-composites.png)
 
@@ -71,44 +117,66 @@ Whenever one of them is set:
   the ±10 V of `Vbg` and `Vtg`;
 * both gates then ramp **together**, each within its own ramp rate.
 
-A point that would push a gate beyond 10 V is refused before anything moves.
+## 4. Set n and D by hand
 
-## 3. Set n and D by hand
+The **Manual** panel now has a group **nD**, with `n` and `D` indented below it. There
+is one catch the first time. Setting `n` alone needs a value for `D` to compute the
+gates, and `D` has never been set. So start with both at zero:
 
-The **Manual** panel now has a group **nD**, with `n` and `D`. There is one catch the
-first time. Setting `n` alone needs a value for `D` to compute the gates, and `D` has
-never been set. So the first time, set them together:
+![Set all to zero](../images/t2-manual.png)
 
-![Setting n and D together: hold, then Set all](../images/t2-manual.png)
-
-1. Tick **hold**: changes are collected instead of sent at once.
-2. Type the values of `n` and `D`.
-3. **Set all**: both are set in one go.
+1. The group header of the composite `nD`, with its variables `n` and `D` indented
+   below it.
+2. **Set all to zero**: `n` and `D` are set to 0 together, and both gates move there.
 
 From then on, you can change either one alone; the other keeps its value.
 
-## 4. Sweep n and D
+To set both to other values at once, tick **hold**, type the values, and click
+**Set all**: the changes are collected and sent together.
+
+## 5. Sweep n and D
 
 In the **Sweep editor**, sweep the *variables*:
 
 ![Sweeping n (dimension 1) at each D (dimension 2)](../images/t2-sweep.png)
 
 1. Two dimensions.
-2. Dimension 1: `n` from −2.5 to 2.5 in 101 points, snake scan. Dimension 2: `D` from
-   −0.35 to 0.35 in 29 points.
+2. Dimension 1: `n` from −4 to 4 in 101 points, snake scan. Dimension 2: `D` from
+   −0.45 to 0.45 in 31 points.
 3. Record `Rxx`.
+4. **Validate** computes all 3131 combinations, converts each to gate voltages and
+   checks them. Some of them are out of range: at large $n$ and $D$ of the same sign,
+   $V_{bg}$ would have to exceed 10 V. Validation says how many points will be
+   skipped.
 
-**Validate** computes all 2929 points, converts each to gate voltages and checks them.
-Try making the range of `n` larger: validation then tells you which point would need a
-gate beyond 10 V, and the sweep can't be started. This sweep is
-`examples/graphene_nD.json`.
+This sweep is `examples/graphene_nD.json`.
 
-## 5. The result
+**Out-of-range points.** Usually the rectangle you want in $(n, D)$ doesn't fit in
+the square the gates allow. The composite's **Out of range** setting decides what
+happens to the corners:
+
+| Out of range | in a sweep | set by hand or from a script |
+|---|---|---|
+| **Skip the point** (default) | the point is skipped before anything is set: no gate moves, its data stay empty | refused, with the reason |
+| **Error** | the sweep does not start; validation names the first bad point | refused |
+| **Clamp to the limit** | the gate stops at its limit; the point is measured, but not at the $(n, D)$ it is labelled with | the gate stops at its limit |
+
+For $n$–$D$ maps, *Skip* is what you want: you get the whole region the gates can
+reach, and an empty corner where they can't. *Error* is for when every point must
+be measured. *Clamp* suits cases where running into the limit is harmless and the
+nearest reachable value is good enough.
+
+`n` is swept in dimension 1 and `D` in dimension 2, but the gates never see one
+without the other. At every point, `n` and `D` are set together, so a new value of
+`D` doesn't move the gates with the old `n` from the end of the previous line.
+
+## 6. The result
 
 ![Rxx against n and D: the gap opens at n = 0](../images/t2-map.png)
 
 At $n = 0$ the resistance grows steeply with $|D|$: the band gap of bilayer graphene
-opening in a displacement field. The same measurement plotted against $V_{bg}$ and
+opening in a displacement field. The two empty corners are the skipped points, where
+$V_{bg}$ would have exceeded 10 V. The same measurement plotted against $V_{bg}$ and
 $V_{tg}$ would show the same feature along a tilted line.
 
 !!! tip "Sweeping two things in one dimension"
@@ -123,7 +191,7 @@ $V_{tg}$ would show the same feature along a tilted line.
 | type | what it does | example |
 |---|---|---|
 | **Multivariate write** | variables of your choice drive hardware channels through formulas | $n, D$ → $V_{bg}, V_{tg}$; detuning ε and energy U of a double dot |
-| **Composite read** | a read-only formula of other channels | conductance `1/Rxx`; $R = V/I$; a sum of two signals |
+| **Composite read** | a read-only formula of other channels | $R_{xx} = V_{xx}/I$; conductance `1/Rxx`; a sum of two signals |
 | **Simple mapping** | a one-to-one view of one channel, with formulas both ways (checked to be each other's inverse) | a field in mT on a supply in A; a temperature in °C on a controller in K |
 
 Formulas can be piecewise: `piecewise(x < 0, -x, 2*x)`, `a if c else b`, `interp(x,
@@ -132,9 +200,12 @@ Formulas can be piecewise: `piecewise(x < 0, -x, 2*x)`, `a if c else b`, `interp
 
 ## What you learned
 
+* A **composite read** computes a channel from others, such as $R_{xx} = V_{xx}/I$
+  from two lock-ins. It is read, recorded and plotted like any channel.
 * A **multivariate composite** turns physical quantities ($n$, $D$) into the voltages
   of several instruments. You sweep the physics; easyMeasure moves the hardware.
 * Every point is checked against the limits of the variables **and** of every gate.
-* The first time, set the variables together: **hold** + **Set all**.
+  With **Out of range: Skip**, points the gates can't reach are left out of the map.
+* Start with **Set all to zero**, then set either variable alone.
 
 **Next:** [Tutorial 3: stop at a threshold](stop-at-threshold.md).

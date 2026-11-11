@@ -322,6 +322,14 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
     while demo.channels.last_value("U") != 0.2 and time.time() - t0 < 10:
         time.sleep(0.1)
     assert demo.channels.get("Vx") == pytest.approx(0.3) and demo.channels.get("Vy") == pytest.approx(0.1)
+    # indented under the header; "Set all to zero"
+    assert page.locator(".man-row.in-group:has(.man-label:text-is('eps'))").count() == 1
+    grp.locator("button:text-is('Set all to zero')").click()
+    t0 = time.time()
+    while demo.channels.last_value("U") != 0.0 and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.channels.get("Vx") == pytest.approx(0.0) and demo.channels.get("Vy") == pytest.approx(0.0)
+    assert c["out_of_range"] == "skip"
     assert not errors, errors
     page.context.close()
 

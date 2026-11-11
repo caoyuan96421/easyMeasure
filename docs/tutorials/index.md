@@ -32,8 +32,9 @@ instruments the first three tutorials use.
 
     ![](../images/t2-map.png)
 
-    Sweep carrier density and displacement field instead of two gate voltages:
-    composite channels, and setting several channels together.
+    $R_{xx} = V_{xx}/I$ from two lock-ins, and sweeps of carrier density and
+    displacement field instead of two gate voltages: composite channels, and what
+    happens to points the gates can't reach.
 
 -   **[Tutorial 3: stop at a threshold](stop-at-threshold.md)**
 

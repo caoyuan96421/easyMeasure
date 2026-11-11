@@ -95,6 +95,36 @@ def test_gap_opens_with_displacement_field(graphene):
     assert graphene.read_channel(name="Rxx") < r3 / 10
 
 
+def test_rxx_from_two_lockins(graphene):
+    """Rxx = Vxx / I is right where the sample is insulating; Vxx / 10 nA is not,
+    because the current through the 1 MΩ series resistor drops."""
+    from easymeasure.drivers.simworld import WORLD
+    graphene.set_many(values={"n": 0.0, "D": 0.0})
+    i0 = graphene.read_channel(name="I")
+    assert i0 == pytest.approx(0.01 / (1e6 + 3 * 4.6e3 + 2e3), rel=0.03)
+    graphene.set_many(values={"n": 0.0, "D": 0.3})
+    vbg, vtg = graphene.read_channel(name="Vbg"), graphene.read_channel(name="Vtg")
+    true = np.mean([WORLD.graphene(vbg, vtg, 0.0)["Rxx"] for _ in range(20)])
+    rxx = np.mean([graphene.read_channel(name="Rxx") for _ in range(5)])
+    naive = np.mean([graphene.read_channel(name="Vxx") for _ in range(5)]) * 1e8
+    assert rxx == pytest.approx(true, rel=0.03)
+    assert naive < 0.85 * true
+    assert graphene.read_channel(name="I") < 0.8 * i0
+
+
+def test_nd_map_skips_the_corners(graphene):
+    """The tutorial's n-D map: combinations needing a gate beyond ±10 V are skipped."""
+    d = json.loads((EX / "graphene_nD.json").read_text())
+    r = graphene.validate_sweep(definition=d)
+    n = np.linspace(-4, 4, 101)[:, None]
+    dd = np.linspace(-0.45, 0.45, 31)[None, :]
+    vbg = (n + 0.15 + dd / 0.0452) / 1.2
+    vtg = (n + 0.15 - dd / 0.0452) / 1.8
+    expected = int(((np.abs(vbg) > 10) | (np.abs(vtg) > 10)).sum())
+    assert expected > 0
+    assert "composite nD: %d points out of range, will be skipped" % expected in r["warnings"]
+
+
 def test_landau_minima_and_unpolled_magnet(graphene):
     """Rxx dips at filling factor 4 in a field, and the lock-in sees the field even
     when nobody reads the magnet (it ramps by itself)."""

@@ -40,6 +40,19 @@ class LimitError(ChannelError):
     """A requested value violates an alias' min/max protection."""
 
 
+class OutOfRange(LimitError):
+    """A multivariate composite would drive one of its targets outside its range.
+
+    ``composite`` names the composite, ``mode`` is its out-of-range action
+    (``"error"`` or ``"skip"``; ``"clamp"`` never raises this): a sweep skips the
+    point when the mode is ``"skip"``."""
+
+    def __init__(self, message: str, composite: str = "", mode: str = "error"):
+        super().__init__(message)
+        self.composite = composite
+        self.mode = mode
+
+
 class DriverError(EasyMeasureError):
     """A driver could not be found or imported."""
 

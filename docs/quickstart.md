@@ -13,7 +13,7 @@ you would wire it up like this:
 | role | real instrument | simulated stand-in (this page) |
 |---|---|---|
 | back-gate voltage, and measure the gate leakage current | a source-measure unit, e.g. Keithley 2400 (`keithley2400`, GPIB) | `sim_smu` |
-| four-probe voltage, with a 10 nA AC current through the sample | a lock-in amplifier, e.g. SR830 (`sr830`, GPIB) | `sim_lockin` with `sample = graphene` |
+| four-probe voltage; its 10 mV sine output drives about 10 nA through a 1 MΩ series resistor and the sample | a lock-in amplifier, e.g. SR830 (`sr830`, GPIB) | `sim_lockin` with `sample = graphene` |
 
 The steps are the same with the real instruments. Only the driver and the address
 differ.
@@ -130,6 +130,10 @@ conversion for you. Select `lockin`, then its channel `X`, then **Make alias…*
 * **Name** `Rxx`.
 * **Scale** `1e8`, since the alias value is the raw value × scale.
 * **Unit** `Ω`.
+
+This assumes the current stays at 10 nA, which holds while the sample resistance is
+small compared with the 1 MΩ series resistor. [Tutorial 2](tutorials/rotated-gates.md#2-measure-the-current-too-rxx-vxx-i)
+measures the current with a second lock-in and computes $R_{xx} = V_{xx}/I$ exactly.
 
 Now you have three aliases:
 

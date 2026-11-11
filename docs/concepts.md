@@ -23,7 +23,8 @@ Seven words cover almost everything in easyMeasure.
 
     * carrier density and displacement field, driving two gates
       ([tutorial 2](tutorials/rotated-gates.md));
-    * a resistance computed from a voltage and a current;
+    * a resistance computed from a voltage and a current measured by two lock-ins
+      ([tutorial 2](tutorials/rotated-gates.md#2-measure-the-current-too-rxx-vxx-i));
     * a temperature in °C on a controller that works in K.
 
 **Sweep**

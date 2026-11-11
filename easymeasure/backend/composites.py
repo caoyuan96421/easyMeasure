@@ -18,6 +18,15 @@ piecewise functions work: ``piecewise(x < 0, -x, x)``, ``a if c else b``,
     value of the others).  Reading a variable gives the value it was last set to,
     NaN before that.
 
+    ``out_of_range`` says what happens when a combination of the variables would
+    drive a target outside its own range (an alias' limits …):
+
+    * ``"skip"`` (default): a sweep skips that point (as ``skip_point()`` before
+      the swept channels are set); a direct write is refused;
+    * ``"error"``: refused everywhere; a sweep containing such a point fails
+      validation;
+    * ``"clamp"``: the target is set to the nearest end of its range.
+
 ``read`` – composite read
     A formula of other channels (aliases, mappings, variables, other reads)::
 
@@ -50,6 +59,8 @@ from ..common.errors import ChannelError, ExpressionError
 from ..common.exprs import Expression, rename, reserved
 
 KINDS = ("multi", "read", "map")
+#: what a multivariate composite does with combinations that put a target out of range
+OUT_OF_RANGE = ("skip", "error", "clamp")
 #: kinds of the channels composites provide (``ChannelManager.info()["kind"]``)
 VIRTUAL_KINDS = ("variable", "map", "read")
 INVERSE_SAMPLES = 2001
@@ -150,11 +161,16 @@ class MultiComposite(CompositeBase):
     type = "multi"
 
     def __init__(self, name: str, variables: Iterable, targets: Dict[str, str],
-                 description: str = ""):
+                 description: str = "", out_of_range: str = "skip"):
         if not ok_name(name):
             raise ChannelError("invalid composite name %r" % name)
         self.name = name
         self.description = description or ""
+        oor = str(out_of_range or "skip").strip().lower()
+        if oor not in OUT_OF_RANGE:
+            raise ChannelError("composite %s: out_of_range must be one of %s, got %r"
+                               % (name, ", ".join(OUT_OF_RANGE), out_of_range))
+        self.out_of_range = oor
         self.variables: List[Variable] = [Variable.from_any(v) for v in (variables or [])]
         if not self.variables:
             raise ChannelError("composite %s has no variables" % name)
@@ -196,7 +212,8 @@ class MultiComposite(CompositeBase):
     def to_dict(self) -> dict:
         return {"type": "multi", "name": self.name,
                 "variables": [v.to_dict() for v in self.variables],
-                "targets": dict(self.targets), "description": self.description}
+                "targets": dict(self.targets), "out_of_range": self.out_of_range,
+                "description": self.description}
 
 
 class ReadComposite(CompositeBase):
@@ -355,7 +372,8 @@ def composite_from_dict(d: dict) -> Tuple[CompositeBase, List[str]]:
         return MultiComposite(name, [var], targets, d.get("description", "")), notes
     if kind == "multi":
         return MultiComposite(d.get("name", ""), d.get("variables") or [], d.get("targets") or {},
-                              d.get("description", "")), notes
+                              d.get("description", ""),
+                              d.get("out_of_range") or "skip"), notes
     if kind == "read":
         return ReadComposite(d.get("name", ""), d.get("expression", ""), d.get("unit", ""),
                              d.get("description", "")), notes

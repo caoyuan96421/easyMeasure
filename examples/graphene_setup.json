@@ -8,6 +8,16 @@
       "options": {}
     },
     {
+      "name": "ilockin",
+      "driver": "sim_lockin",
+      "address": "NONE",
+      "options": {
+        "sample": "graphene",
+        "measure": "current",
+        "source": "lockin.amplitude"
+      }
+    },
+    {
       "name": "lockin",
       "driver": "sim_lockin",
       "address": "NONE",
@@ -45,11 +55,16 @@
       "description": "back-gate leakage current"
     },
     {
-      "name": "Rxx",
+      "name": "Vxx",
       "target": "lockin.X",
-      "scale": 100000000.0,
-      "unit": "Ω",
-      "description": "four-probe resistance (lock-in voltage / 10 nA)"
+      "unit": "V",
+      "description": "four-probe voltage"
+    },
+    {
+      "name": "I",
+      "target": "ilockin.X",
+      "unit": "A",
+      "description": "AC current through the sample"
     },
     {
       "name": "B",
@@ -76,15 +91,15 @@
       "variables": [
         {
           "name": "n",
-          "min": -2.5,
-          "max": 2.5,
+          "min": -4,
+          "max": 4,
           "unit": "1e12 cm^-2",
           "description": "carrier density"
         },
         {
           "name": "D",
-          "min": -0.35,
-          "max": 0.35,
+          "min": -0.45,
+          "max": 0.45,
           "unit": "V/nm",
           "description": "displacement field"
         }
@@ -93,7 +108,15 @@
         "Vbg": "(n + 0.15 + D/0.0452) / (2*0.6)",
         "Vtg": "(n + 0.15 - D/0.0452) / (2*0.9)"
       },
-      "description": "carrier density and displacement field of the dual-gated bilayer"
+      "description": "carrier density and displacement field of the dual-gated bilayer",
+      "out_of_range": "skip"
+    },
+    {
+      "type": "read",
+      "name": "Rxx",
+      "expression": "Vxx / I",
+      "unit": "Ω",
+      "description": "four-probe resistance"
     }
   ],
   "monitor": [

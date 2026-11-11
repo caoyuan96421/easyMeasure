@@ -234,4 +234,5 @@ dialog.modal h3 { margin: 0 0 10px; font-size: 1.15rem; }
 .comp-info { white-space: pre-line; margin-top: 4px; }
 .man-group { display: flex; gap: 8px; align-items: center; margin-top: 6px; padding-top: 3px; border-top: 1px solid var(--border, #444); }
 .man-label.held { color: #2f7fd0; }
+.man-row.in-group .man-label { padding-left: 1.2em; }   /* variables under their composite */
 .mon-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

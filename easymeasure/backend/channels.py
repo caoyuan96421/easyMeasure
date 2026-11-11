@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..common.errors import ChannelError, ExpressionError, LimitError
+from ..common.errors import ChannelError, ExpressionError, LimitError, OutOfRange
 from .composites import CompositeBase, as_value, find_cycle
 from .instrument import ChannelSpec, InstrumentManager
 from .logsys import get_logger
@@ -538,10 +538,55 @@ class ChannelManager:
     def check_many(self, values: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
         """Check setting several channels at once (variables of one composite together);
         returns every value that would be written."""
-        plan = self._plan(self._start_values(values), partial=partial)
-        for n, v in plan.items():
-            self._check_node(n, v)
+        origins: Dict[str, str] = {}
+        plan = self._plan(self._start_values(values), partial=partial, origins=origins)
+        self._check_plan(plan, origins)
         return plan
+
+    def _check_plan(self, plan: Dict[str, Any], origins: Dict[str, str]) -> None:
+        """Limits of every channel of a plan.  A value a multivariate composite
+        computed that is out of range raises :class:`OutOfRange`, naming the
+        composite and its out-of-range action (a sweep skips such points)."""
+        for n, v in plan.items():
+            try:
+                self._check_node(n, v)
+            except OutOfRange:
+                raise
+            except LimitError as exc:
+                c = self._composites.get(origins.get(n, ""))
+                if c is None or c.type != "multi":
+                    raise
+                mode = "skip" if c.out_of_range == "skip" else "error"
+                raise OutOfRange("%s (computed by composite %s%s)" % (
+                    exc, c.name, ", which skips such points in sweeps" if mode == "skip" else ""),
+                    c.name, mode) from None
+
+    def check_point(self, values: Dict[str, Any]) -> Optional[str]:
+        """For a sweep point: ``None`` if *values* can be set, the reason if a
+        composite with ``out_of_range="skip"`` puts a target out of range (the point
+        is to be skipped).  Every other problem raises."""
+        try:
+            self.check_many(values)
+        except OutOfRange as exc:
+            if exc.mode == "skip":
+                return str(exc)
+            raise
+        return None
+
+    def limits_of(self, n: str):
+        """``(min, max)`` of a settable channel (alias, variable or mapping); ``None``
+        where there is no limit."""
+        k = self.kind(n)
+        if k == "alias":
+            a = self._aliases[n]
+            return a.min, a.max
+        if k == "variable":
+            var = self._owner[n].var[n]
+            return var.min, var.max
+        if k == "map":
+            m = self._owner[n]
+            return m.min, m.max
+        return None, None
 
     def _raw_config_spec(self, name: str):
         """The spec of ``instrument.channel`` if it is a configuration channel."""
@@ -613,11 +658,15 @@ class ChannelManager:
             return [o.target]
         return []
 
-    def _plan(self, start: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
+    def _plan(self, start: Dict[str, Any], partial: bool = False,
+              origins: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Every channel a write of *start* sets, with its value: variables of
         multivariate composites drive their targets (the other variables at their
         last values), mappings their target; processed in dependency order so that a
-        composite fed by several changed variables is evaluated once with all of them."""
+        composite fed by several changed variables is evaluated once with all of them.
+        Targets of a composite with ``out_of_range="clamp"`` are clamped to their
+        range.  *origins*, if given, receives the source of every value (the
+        composite that computed it, or ``"the request"``)."""
         order: List[str] = []
         state: Dict[str, int] = {}
         for root in start:                         # depth-first post-order, iterative
@@ -684,18 +733,27 @@ class ChannelManager:
                         raise ChannelError("composite %s, target %s: %s" % (c.name, t, exc)) \
                             from None
                     if not np.isfinite(tv).all():
-                        raise LimitError("composite %s: target %s would be %s at %s" % (
-                            c.name, t, _fmt(tv), ", ".join("%s=%g" % (d, env[d]) for d in deps)))
+                        raise OutOfRange("composite %s: target %s would be %s at %s" % (
+                            c.name, t, _fmt(tv), ", ".join("%s=%g" % (d, env[d]) for d in deps)),
+                            c.name, "skip" if c.out_of_range == "skip" else "error")
+                    if c.out_of_range == "clamp":
+                        lo, hi = self.limits_of(t)
+                        if lo is not None or hi is not None:
+                            tv = as_value(np.clip(tv, -np.inf if lo is None else lo,
+                                                  np.inf if hi is None else hi))
                     assign(t, tv, c.name)
             elif n in vals:
                 o = self._owner.get(n)
                 if o is not None and o.type == "map":
-                    self._check_node(n, vals[n])     # forward only inside its range
+                    # forward only inside its range
+                    self._check_plan({n: vals[n]}, origin)
                     try:
                         y = o.fwd(vals[n])
                     except (ExpressionError, ChannelError) as exc:
                         raise ChannelError(str(exc)) from None
                     assign(o.target, y, o.name)
+        if origins is not None:
+            origins.update(origin)
         return vals
 
     def _check_node(self, n: str, v) -> None:
@@ -894,9 +952,9 @@ class ChannelManager:
         same point of a sweep): everything they drive is computed and checked first,
         then all hardware targets move together.  Returns every value written."""
         start = self._start_values(values)
-        plan = self._plan(start)
-        for n, v in plan.items():
-            self._check_node(n, v)
+        origins: Dict[str, str] = {}
+        plan = self._plan(start, origins=origins)
+        self._check_plan(plan, origins)
         leaves = sorted(n for n in plan if n in self._aliases)
         locks = [self._set_lock(n) for n in leaves]
         for lk in locks:

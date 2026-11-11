@@ -1064,6 +1064,10 @@ def test_composite_editor_and_manual_groups(app, gui):
         dlg.vars.item(0, col).setText(txt)
     dlg._add_var({"name": "U", "min": 0, "max": 0.5, "ramp_rate": 1})
     dlg.targets.setPlainText("Vx = U + eps\nVy = U - eps")
+    assert dlg.out_of_range.currentData() == "skip"          # the default
+    dlg.out_of_range.setCurrentIndex(dlg.out_of_range.findData("clamp"))
+    assert dlg.value()["out_of_range"] == "clamp"
+    dlg.out_of_range.setCurrentIndex(dlg.out_of_range.findData("skip"))
     v = dlg.value()
     assert v["type"] == "multi" and [x["name"] for x in v["variables"]] == ["eps", "U"]
     assert v["variables"][1]["ramp_rate"] == 1 and v["targets"]["Vy"] == "U - eps"
@@ -1110,6 +1114,14 @@ def test_composite_editor_and_manual_groups(app, gui):
     g["hold"].setChecked(False)
     mp.rows["eps"].editor.setValue(0.0)                   # now one alone is fine
     assert pump(app, 10, lambda: abs(be.channels.get("Vx") - 0.2) < 1e-9)
+    # the variables are indented under their group; "Set all to zero"
+    from easymeasure.frontend.panels.manual_panel import GROUP_INDENT
+    assert mp.rows["eps"].label.indent() == GROUP_INDENT and mp.rows["Vg"].label.indent() <= 0
+    g["zero"].click()
+    assert pump(app, 10, lambda: not mp._pending.get("U") and
+                be.channels.last_value("U") == pytest.approx(0.0))
+    assert be.channels.get("Vx") == pytest.approx(0.0) and be.channels.get("Vy") == \
+        pytest.approx(0.0)
     mp.filter.setText("gates")
     assert g["label"].isVisibleTo(mp) and mp.rows["U"].label.isVisibleTo(mp)
     assert not mp.rows["Vg"].label.isVisibleTo(mp)

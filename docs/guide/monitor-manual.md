@@ -68,18 +68,20 @@ Each channel has a spin box, and a slider when it has a minimum and a maximum.
   an instrument.
 * The filter box narrows the list by name or composite.
 
-### Composite variables: hold and Set all
+### Composite variables: Set all to zero, hold and Set all
 
-Variables of a multivariate composite are grouped under the composite's name. A
-group with several variables has **hold** and **Set all**:
+Variables of a multivariate composite are listed, indented, under a header with the
+composite's name. The header has three controls:
 
-1. tick **hold**: edits now only mark the variables (blue) and are not sent;
-2. type the values of all variables;
-3. **Set all** sends them together; the hardware channels are computed once from all
-   of them.
+* **Set all to zero** sets every variable to 0 together, with limits and ramps as
+  usual. This is the easy way to start: a variable can only be set alone once the
+  others have a value.
+* **hold**: while ticked, edits only mark the variables (blue) and are not sent.
+* **Set all** sends the held values together; the hardware channels are computed
+  once from all of them.
 
-This is needed for the first setting, when the other variables have never been
-set (see [Composite channels](composites.md#multivariate-write)).
+See [Composite channels](composites.md#multivariate-write) and
+[tutorial 2](../tutorials/rotated-gates.md#4-set-n-and-d-by-hand).
 
 ### Instrument settings
 

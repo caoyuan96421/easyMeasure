@@ -13,7 +13,9 @@ a magnet that ramps in real time, a camera whose spot moves with two voltages.
 |---|---|
 | `sim_source` | 4-channel DC source, SCPI over a shared `SIM::` bus |
 | `sim_dmm` | DMM measuring a simulated quantum dot (Coulomb diamonds) on the same bus |
-| `sim_lockin` | lock-in: X, Y, R, θ and a 2-vector `XY` |
+| `sim_lockin` | lock-in: X, Y, R, θ and a 2-vector `XY`. With `sample = graphene`, a dual-gated bilayer graphene Hall bar driven through a 1 MΩ series resistor; `measure = current` makes it the current lock-in, with `source` naming the driving lock-in's `amplitude` |
+| `sim_smu` | source-measure unit: sources a gate voltage, measures the gate leakage (breakdown near 8 V) |
+| `sim_vna` | vector network analyzer: S11 traces of a superconducting resonator against power and field |
 | `sim_spectrum` | 1-D trace per reading; the peak shifts with field and voltage |
 | `sim_camera` | 2-D image per reading; the spot moves with two voltages |
 | `sim_awg` | vector-valued write channel (waveform) |

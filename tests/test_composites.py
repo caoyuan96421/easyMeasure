@@ -13,7 +13,7 @@ import pytest
 from easymeasure.backend.composites import (MapComposite, MultiComposite,
                                             Variable, composite_from_dict, find_cycle)
 from easymeasure.backend.storage import DataSet
-from easymeasure.common.errors import ChannelError, ExpressionError, LimitError
+from easymeasure.common.errors import ChannelError, ExpressionError, LimitError, OutOfRange
 from easymeasure.common.exprs import Expression
 
 
@@ -403,6 +403,58 @@ def test_sweeps_over_composites(demo):
     assert item["status"] == "finished", item
     np.testing.assert_allclose(DataSet.load(item["path"]).data["Tset"],
                                [293.15, 296.15, 299.15], atol=1e-6)
+
+
+def test_out_of_range_actions(demo):
+    """skip (default): sweeps skip combinations that put a target out of range, a direct
+    write is refused; error: the sweep does not start; clamp: the target stops at
+    its limit.  Variables swept in different dimensions are set together, so an outer
+    variable never moves the hardware with a stale inner one."""
+    be = demo
+    gates(be, targets={"Vx": "3*U + eps", "Vy": "U - eps"})      # Vx: ±1 V
+    assert next(c for c in be.list_channels()["composites"]
+                if c["name"] == "gates")["out_of_range"] == "skip"
+    eps, U = np.linspace(-0.4, 0.4, 5), np.linspace(0.0, 0.5, 6)
+    out = (3 * U[None, :] + eps[:, None]) > 1 + 1e-9                # (eps, U)
+    d = {"name": "oor", "dimensions": [
+        {"points": 5, "sweep": [{"channel": "eps", "start": -0.4, "stop": 0.4}], "record": ["Vx"]},
+        {"points": 6, "sweep": [{"channel": "U", "start": 0.0, "stop": 0.5}], "record": []}]}
+    r = be.validate_sweep(d)
+    assert "composite gates: %d points out of range, will be skipped" % out.sum() in r["warnings"]
+    be.set_many({"eps": 0.0, "U": 0.0})
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(60)
+    item = be.queue_state()["history"][-1]
+    assert item["status"] == "finished", item
+    ds = DataSet.load(item["path"])
+    np.testing.assert_array_equal(np.isnan(ds.data["Vx"]), out)
+    np.testing.assert_allclose(ds.data["Vx"][~out], (3 * U[None, :] + eps[:, None])[~out],
+                               atol=1e-9)
+    # both in one dimension: skipped the same way
+    d1 = {"name": "diag", "dimensions": [
+        {"points": 6, "sweep": [{"channel": "U", "start": 0, "stop": 0.5},
+                                {"channel": "eps", "start": 0, "stop": 0}], "record": ["Vx"]}]}
+    be.queue_add({"kind": "sweep", "definition": d1}, start=True)
+    assert be.queue.wait_idle(60)
+    np.testing.assert_array_equal(np.isnan(DataSet.load(be.queue_state()["history"][-1]["path"])
+                                           .data["Vx"]), 3 * U > 1 + 1e-9)
+    # a direct write is refused in skip mode, and says why
+    with pytest.raises(OutOfRange, match="Vx.*above maximum 1.*composite gates, which skips"):
+        be.set_many({"eps": 0.4, "U": 0.5})
+    # error: the sweep is refused before it starts
+    gates(be, targets={"Vx": "3*U + eps", "Vy": "U - eps"}, out_of_range="error", replace=True)
+    with pytest.raises(Exception, match="Vx.*above maximum 1"):
+        be.validate_sweep(d)
+    # clamp: the target stops at its limit, the other follows its formula
+    gates(be, targets={"Vx": "3*U + eps", "Vy": "U - eps"}, out_of_range="clamp", replace=True)
+    assert be.validate_sweep(d)["warnings"] == []
+    be.set_many({"eps": 0.1, "U": 0.5}, ramp=False)
+    assert be.channels.get("Vx") == pytest.approx(1.0) and be.channels.get("Vy") == pytest.approx(0.4)
+    with pytest.raises(ChannelError, match="out_of_range must be one of"):
+        gates(be, out_of_range="wrap", replace=True)
+    # kept in setups
+    assert composite_from_dict(next(c for c in be.list_channels()["composites"]
+                                    if c["name"] == "gates"))[0].out_of_range == "clamp"
 
 
 def test_setups_keep_nested_composites(demo, tmp_path):
