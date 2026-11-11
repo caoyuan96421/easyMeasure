@@ -1120,3 +1120,83 @@ def test_composite_editor_and_manual_groups(app, gui):
     wr, rd = w.editor._channel_lists()
     assert {"eps", "U", "Tset_C", "detuning"} <= set(wr) and "Vdiff" not in wr
     assert "Vdiff" in rd
+
+
+def test_monitor_vector_curves_and_columns(app, gui):
+    """A short vector channel is drawn as one curve per element against time; a long
+    one as its latest value against the index; tiles go in a chosen number of columns."""
+    w, be, _, _ = gui
+    mon = w.monitor
+    be.monitor_add("XY", 0.1)
+    be.monitor_add("spectrum", 0.2)
+    be.monitor_add("I", 0.2)
+    assert pump(app, 10, lambda: all(n in mon.tiles and mon.tiles[n].latest is not None
+                                     for n in ("XY", "spectrum", "I")))
+    xy, sp = mon.tiles["XY"], mon.tiles["spectrum"]
+    assert pump(app, 10, lambda: len(xy.va) >= 3)
+    xy.dirty = True
+    xy.redraw()
+    assert xy.view.isVisibleTo(xy) and xy.view.currentText() == "vs time"
+    assert len(xy.traces) == 2                                   # X and Y, each over time
+    x0, y0 = xy.traces[0].getData()
+    assert len(x0) == len(xy.va) and x0[-1] == 0 and np.allclose(y0, [a[0] for a in xy.va])
+    assert xy.traces[0].opts["pen"].color() != xy.traces[1].opts["pen"].color()
+    assert xy.value.text().startswith("[") and xy.value.text().count(",") == 1
+    xy.view.setCurrentIndex(1)                                   # latest vs index
+    xy.redraw()
+    assert xy.traces == [] and list(xy.curve.getData()[0]) == [0, 1]
+    sp.dirty = True
+    sp.redraw()
+    assert sp.view.currentText() == "vs index" or not sp.view.isVisibleTo(sp)
+    assert len(sp.curve.getData()[0]) == 201 and sp.traces == []
+    # columns
+    names = list(mon.tiles)
+    mon.columns.setValue(2)
+    pos = {n: mon.grid.getItemPosition(mon.grid.indexOf(t))[:2] for n, t in mon.tiles.items()}
+    assert [pos[n] for n in names] == [(k // 2, k % 2) for k in range(len(names))]
+    from PySide6.QtCore import QSettings
+    assert int(QSettings("easyMeasure", "gui").value("monitor_columns")) == 2
+    # nothing scrolls while the tiles fit; the tiles share the panel's height
+    mon.scroll.fit()
+    assert mon.scroll.verticalScrollBar().maximum() == 0 or \
+        mon.host.layout().minimumSize().height() > mon.scroll.maximumViewportSize().height()
+    be.monitor_remove("spectrum")
+    assert pump(app, 5, lambda: "spectrum" not in mon.tiles)
+    names = list(mon.tiles)
+    pos = {n: mon.grid.getItemPosition(mon.grid.indexOf(t))[:2] for n, t in mon.tiles.items()}
+    assert [pos[n] for n in names] == [(k // 2, k % 2) for k in range(len(names))]
+    mon.columns.setValue(0)                                      # auto
+
+
+def test_live_plots_fit_without_scrolling(app, gui):
+    """All plots of the live view are shown at once in the available area: auto
+    columns pick the arrangement, and scroll bars only appear below the plots'
+    minimum sizes."""
+    from easymeasure.frontend.panels.data_panel import auto_columns
+    from PySide6.QtCore import QSize
+    m = QSize(300, 200)
+    assert auto_columns(1, QSize(600, 400), m) == 1
+    assert auto_columns(4, QSize(1000, 800), m) == 2           # 2×2, not 4×1 or 1×4
+    assert auto_columns(4, QSize(1600, 300), m) == 4           # a wide strip: one row
+    assert auto_columns(4, QSize(400, 1000), m) == 1           # tall and narrow: a column
+    assert auto_columns(3, QSize(500, 300), m) == 1            # nothing fits: no sideways scroll
+    w, be, _, _ = gui
+    w.resize(1400, 900)
+    be.queue_add({"kind": "sweep", "definition": SWEEP}, start=True)
+    lv = w.live
+    assert pump(app, 30, lambda: lv.ds is not None and len(lv.plots) == 4)
+    pump(app, 1.0)
+    area = lv.grid_scroll
+    assert lv._eff_cols == 2
+    assert area.verticalScrollBar().maximum() == 0 and area.horizontalScrollBar().maximum() == 0
+    vp = area.viewport().size()
+    for p in lv.plots:                                          # each gets a fair share
+        assert p.height() > vp.height() / 2 - 40 and p.width() > vp.width() / 2 - 40
+    # a tiny area: scroll bars, never squeezed below the minimum
+    lv.cols.setValue(1)
+    area.resize(300, 200)
+    area.fit()
+    assert lv.grid_host.height() >= lv.grid_host.layout().minimumSize().height()
+    assert area.verticalScrollBar().maximum() > 0
+    lv.cols.setValue(0)
+    assert pump(app, 30, lambda: be.queue.wait_idle(0.01))

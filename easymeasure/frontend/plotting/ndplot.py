@@ -98,8 +98,8 @@ class NDPlotWidget(QWidget):
                 top.addWidget(box)
             else:
                 top.addWidget(w)
-        for cb, n in ((self.channel_box, 8), (self.mode_box, 5), (self.x_box, 6),
-                      (self.y_box, 6), (self.cmap_box, 8)):
+        for cb, n in ((self.channel_box, 6), (self.mode_box, 4), (self.x_box, 4),
+                      (self.y_box, 4), (self.cmap_box, 8)):
             cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             cb.setMinimumContentsLength(n)
         # less frequently used options live in a small popup to keep the bar short
@@ -141,7 +141,7 @@ class NDPlotWidget(QWidget):
         self.hist.sigLevelChangeFinished.connect(self._levels_dragged)
         style_axes(self.plot)
         style_axes(self.hist)
-        self.glw.setMinimumSize(160, 120)
+        self.glw.setMinimumSize(150, 90)
         self.curves: List[pg.PlotDataItem] = []
         self.readout = shrinkable_label(QLabel(" "), wrap=False)
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)

@@ -404,6 +404,16 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   value axes, other axes become sliders (*follow latest* tracks new data); curve,
   stacked curves or heat map (Y is grayed out for 1-D data); drag the histogram to set levels, pick colormaps.
   Redraws are coalesced, so fast sweeps don't load the GUI.
+* **Layout**: every plot of a data view and every monitor tile is shown at once.
+  They share the available area. Scroll bars appear, in either direction, only
+  when the area is smaller than the plots' or tiles' minimum size.
+  *columns: auto* picks the arrangement that shows them largest, or set the
+  number of columns yourself.
+* **Monitor**: scalars are plotted against time. Vector channels (e.g. the eight
+  readings of a multi-output supply) are shown one of two ways:
+  * *vs time*: one curve per element against time, the default up to 16 elements;
+  * *vs index*: the latest values against the element index, the default for
+    longer vectors such as spectra.
 * **Monitor** dock, **Manual** dock below it and **Log** dock. The Manual panel lists
   every writable scalar alias, composite variable and mapping with a spin box, a slider (when the alias
   has a minimum and a maximum) and, on right click, *Set from expression…* (a function

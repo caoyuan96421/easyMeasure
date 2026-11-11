@@ -324,3 +324,85 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
     assert demo.channels.get("Vx") == pytest.approx(0.3) and demo.channels.get("Vy") == pytest.approx(0.1)
     assert not errors, errors
     page.context.close()
+
+
+def test_web_monitor_vector_curves_and_columns(browser, gw, demo):
+    errors = []
+    demo.monitor_add("XY", 0.1)
+    demo.monitor_add("spectrum", 0.3)
+    demo.monitor_add("I", 0.3)
+    page = open_page(browser, gw, "vic", errors)              # a viewer may arrange the view
+    tile = page.locator(".mon-tile", has=page.locator("b:text-is('XY')"))
+    tile.wait_for(timeout=10000)
+    page.wait_for_function("""() => { const t = [...document.querySelectorAll('.mon-tile')]
+        .find(e => e.querySelector('b').textContent === 'XY');
+        return t && /^\\[[^,]+, [^,]+\\]$/.test(t.querySelector('.mon-value').textContent); }""",
+                           timeout=10000)
+    assert tile.locator(".mon-view").is_visible() and tile.locator(".mon-view").input_value() == "time"
+    spec = page.locator(".mon-tile", has=page.locator("b:text-is('spectrum')"))
+    assert not spec.locator(".mon-view").is_visible()       # 201 points: drawn against the index
+    page.wait_for_timeout(1500)
+    assert page.evaluate("""() => { const c = [...document.querySelectorAll('.mon-tile')]
+        .find(e => e.querySelector('b').textContent === 'XY').querySelector('canvas');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, s = new Set();
+        for (let i = 0; i < d.length; i += 4) if (d[i+3] && Math.max(d[i], d[i+1], d[i+2]) -
+            Math.min(d[i], d[i+1], d[i+2]) > 80) s.add((d[i] >> 5) + ',' + (d[i+1] >> 5) + ',' + (d[i+2] >> 5));
+        return s.size; }""") >= 2                            # two coloured traces
+    tile.locator(".mon-view").select_option("index")
+    # the tiles share the panel's height: no scrolling unless their plots are already
+    # down to the minimum
+    st = page.evaluate("""() => { const h = document.querySelector('.mon-tiles');
+        return { sh: h.scrollHeight, ch: h.clientHeight, sw: h.scrollWidth, cw: h.clientWidth,
+                 ph: [...h.querySelectorAll('.plot-host')].filter(e => !e.hidden).map(e => e.offsetHeight) }; }""")
+    assert st["sw"] <= st["cw"] + 1, st
+    assert st["sh"] <= st["ch"] + 1 or max(st["ph"]) <= 51, st
+    hs = page.evaluate("[...document.querySelectorAll('.mon-tile')].map(e => e.offsetHeight)")
+    assert max(hs) - min(hs) <= 2
+    page.set_viewport_size({"width": 1600, "height": 1300})      # room enough: no scrolling
+    page.wait_for_timeout(500)
+    st = page.evaluate("""() => { const h = document.querySelector('.mon-tiles');
+        return { sh: h.scrollHeight, ch: h.clientHeight,
+                 ph: [...h.querySelectorAll('.plot-host')].map(e => e.offsetHeight) }; }""")
+    assert st["sh"] <= st["ch"] + 1 and min(st["ph"]) > 60, st
+    # columns
+    assert page.input_value(".mon-columns") == "0"            # auto
+    page.select_option(".mon-columns", "2")
+    xs = page.evaluate("""() => [...document.querySelectorAll('.mon-tile')].map(e =>
+        Math.round(e.getBoundingClientRect().left))""")
+    assert len(set(xs)) == 2 and xs[0] < xs[1] and xs[0] == xs[2]
+    page.reload()
+    page.wait_for_selector(".mon-tile", timeout=15000)
+    assert page.input_value(".mon-columns") == "2"            # remembered in this browser
+    assert not errors, errors
+    page.context.close()
+
+
+
+def test_web_live_plots_fit_without_scrolling(browser, gw, demo):
+    """All live plots are in view at once, sharing the area; the plot grid only
+    scrolls below the plots' minimum size."""
+    import os
+    from test_gui import SWEEP
+    errors = []
+    page = open_page(browser, gw, "olga", errors)
+    demo.queue_add({"kind": "sweep", "definition": SWEEP}, start=True)
+    page.wait_for_function("document.querySelectorAll('.dataview .ndplot').length === 4", timeout=20000)
+    page.wait_for_timeout(1500)
+    st = page.evaluate("""() => { const g = document.querySelector('.dataview .plot-grid');
+        const r = [...g.querySelectorAll('.ndplot')].map(e => e.getBoundingClientRect());
+        return { sh: g.scrollHeight, ch: g.clientHeight, sw: g.scrollWidth, cw: g.clientWidth,
+                 cols: new Set(r.map(x => Math.round(x.left))).size, h: r.map(x => x.height) }; }""")
+    if os.environ.get("EM_SHOTS"):
+        page.screenshot(path=os.path.join(os.environ["EM_SHOTS"], "web_live.png"))
+    assert st["sh"] <= st["ch"] + 1 and st["sw"] <= st["cw"] + 1, st
+    assert st["cols"] == 2 and max(st["h"]) - min(st["h"]) <= 2, st
+    # a short window: the grid scrolls rather than squeezing the plots
+    page.set_viewport_size({"width": 1000, "height": 420})
+    page.wait_for_timeout(800)
+    st = page.evaluate("""() => { const g = document.querySelector('.dataview .plot-grid');
+        return { sh: g.scrollHeight, ch: g.clientHeight,
+                 ph: Math.min(...[...g.querySelectorAll('.plot-host')].map(e => e.offsetHeight)) }; }""")
+    assert st["ph"] >= 109 and st["sh"] > st["ch"], st
+    demo.queue.wait_idle(30)
+    assert not errors, errors
+    page.context.close()

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QM
 
 from ...backend.storage import DataSet
 from ..plotting.ndplot import NDPlotWidget
-from ..widgets import FlowLayout, shrinkable_label
+from ..widgets import FitArea, FlowLayout, shrinkable_label
 from ..workers import run_in_background
 
 
@@ -23,6 +23,31 @@ def _fmt_t(s: Optional[float]) -> str:
     h, r = divmod(s, 3600)
     m, sec = divmod(r, 60)
     return "%d:%02d:%02d" % (h, m, sec) if h else "%d:%02d" % (m, sec)
+
+
+def auto_columns(n_plots: int, area, min_size, spacing: int = 6, max_cols: int = 4) -> int:
+    """Columns for *n_plots* in *area* (QSize): among the arrangements in which every
+    plot keeps at least *min_size*, the one with the largest plots (judged by the
+    shorter of width and 1.5 × height, plots being wider than tall); when none fits,
+    the one that overflows least - preferring any that needs no sideways scrolling."""
+    if n_plots <= 1:
+        return 1
+    W, H = max(area.width(), 1), max(area.height(), 1)
+    best, best_score, least, least_over = 1, None, 1, None
+    for n in range(1, min(max_cols, n_plots) + 1):
+        rows = -(-n_plots // n)
+        cw = (W - spacing * (n - 1)) / n
+        ch = (H - spacing * (rows - 1)) / rows
+        hover = max(0.0, min_size.width() - cw) * n
+        vover = max(0.0, min_size.height() - ch) * rows
+        over = (hover > 0, hover + vover)
+        if over == (False, 0.0):
+            score = min(cw, 1.5 * ch)
+            if best_score is None or score > best_score + 1e-9:
+                best, best_score = n, score
+        elif least_over is None or over < least_over:
+            least, least_over = n, over
+    return best if best_score is not None else least
 
 
 class DataView(QWidget):
@@ -48,7 +73,8 @@ class DataView(QWidget):
         self.cols.setValue(0)
         self.cols.setPrefix("columns: ")
         self.cols.setSpecialValueText("columns: auto")
-        self.cols.setToolTip("number of plot columns (auto = by available width)")
+        self.cols.setToolTip("number of plot columns (auto = the arrangement that shows every "
+                             "plot largest in the available space)")
         self._eff_cols = None
         self.ppt_btn = QPushButton("Add slide to PPT")
         self.copy_btn = QPushButton("Copy sweep to editor")
@@ -70,11 +96,9 @@ class DataView(QWidget):
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         self.details.setVisible(False)
-        from PySide6.QtWidgets import QScrollArea
-        grid_scroll = QScrollArea()
-        grid_scroll.setWidgetResizable(True)
-        grid_scroll.setFrameShape(QScrollArea.NoFrame)
-        grid_scroll.setWidget(self.grid_host)       # scrolls instead of squashing plots
+        # every plot in view; scroll bars only below the plots' minimum sizes
+        grid_scroll = FitArea(self.grid_host)
+        self.grid_scroll = grid_scroll
         split = QSplitter(Qt.Vertical)
         split.addWidget(grid_scroll)
         split.addWidget(self.details)
@@ -143,7 +167,14 @@ class DataView(QWidget):
         n = self.cols.value()
         if n > 0:
             return n
-        return max(1, min(4, len(self.plots) or 1, self.width() // 420))
+        return auto_columns(len(self.plots), self.grid_scroll.maximumViewportSize(),
+                            self._plot_min_size(), self.grid.spacing())
+
+    def _plot_min_size(self):
+        from PySide6.QtCore import QSize
+        w = max([p.minimumSizeHint().width() for p in self.plots] + [160])
+        h = max([max(p.minimumHeight(), p.minimumSizeHint().height()) for p in self.plots] + [150])
+        return QSize(w, h)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -155,8 +186,15 @@ class DataView(QWidget):
             self.grid.takeAt(0)
         n = self._effective_cols()
         self._eff_cols = n
+        rows = (len(self.plots) + n - 1) // n
         for i, p in enumerate(self.plots):
             self.grid.addWidget(p, i // n, i % n)
+        # every cell the same size (not the first plot taking what the others leave)
+        for r in range(max(rows, self.grid.rowCount())):
+            self.grid.setRowStretch(r, 1 if r < rows else 0)
+        for c in range(max(n, self.grid.columnCount())):
+            self.grid.setColumnStretch(c, 1 if c < n else 0)
+        self.grid_scroll.fit()
 
     def data_changed(self) -> None:
         for p in self.plots:
@@ -164,6 +202,9 @@ class DataView(QWidget):
             p.mark_dirty()
 
     def _update_header(self) -> None:
+        if self.cols.value() == 0 and self.plots and self.isVisible() and \
+                self._effective_cols() != self._eff_cols:
+            self._relayout()                 # the plots' minimum sizes changed
         ds = self.ds
         if ds is None:
             self.title.setText("<b>no data</b>")

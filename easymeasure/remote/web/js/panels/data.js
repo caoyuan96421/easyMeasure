@@ -1,9 +1,12 @@
 // Data views: the live view of the running sweep and views of stored runs.
 
-import { h, btn, bar, fmt, fmtTime } from "../ui.js";
+import { h, btn, bar, fmt, fmtTime, autoColumns } from "../ui.js";
 import { NDPlot } from "../plot.js";
 import { DataSet } from "../dataset.js";
 import { toJSONable } from "../codec.js";
+
+const PLOT_MIN_W = 240;   // px: below this the plots scroll sideways instead of shrinking
+const PLOT_MIN_H = 110;   // px of the plot area itself
 
 export class DataView {
   constructor(app, { live = false } = {}) {
@@ -25,8 +28,12 @@ export class DataView {
       btn("Add slide to PPT", () => this._ppt(), { cmd: "make_ppt", title: "append a slide for this run to the PowerPoint file configured on the backend" }),
       btn("Details", () => { this.details.hidden = !this.details.hidden; }));
     this.el = h("div", { class: "dataview" }, this.title, this.bar, this.grid, this.details);
-    new ResizeObserver(() => { if (this.cols.value === "0" && this._effCols() !== this._eff) this._relayout(); }).observe(this.el);
-    this._hdrTimer = setInterval(() => this._updateHeader(), 500);
+    // every plot in view: the plots share the area; it scrolls only below their minimum size
+    new ResizeObserver(() => { if (this.cols.value === "0" && this._effCols() !== this._eff) this._relayout(); }).observe(this.grid);
+    this._hdrTimer = setInterval(() => {
+      this._updateHeader();
+      if (this.cols.value === "0" && this.plots.length && this.el.offsetParent !== null && this._effCols() !== this._eff) this._relayout();
+    }, 500);
   }
 
   destroy() { clearInterval(this._hdrTimer); for (const p of this.plots) p.destroy(); }
@@ -65,13 +72,16 @@ export class DataView {
   _effCols() {
     const n = Number(this.cols.value);
     if (n > 0) return n;
-    return Math.max(1, Math.min(4, this.plots.length || 1, Math.floor(this.el.clientWidth / 420) || 1));
+    if (!this.grid.clientHeight) return Math.max(1, Math.min(4, this.plots.length || 1, Math.floor(this.el.clientWidth / 420) || 1));
+    let minH = 180;
+    for (const p of this.plots) if (p.el.offsetHeight) minH = Math.max(minH, p.el.offsetHeight - p.pc.el.offsetHeight + PLOT_MIN_H);
+    return autoColumns(this.plots.length, this.grid.clientWidth, this.grid.clientHeight, PLOT_MIN_W, minH, 8, 4);
   }
 
   _relayout() {
     const n = this._effCols();
     this._eff = n;
-    this.grid.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+    this.grid.style.gridTemplateColumns = `repeat(${n}, minmax(${PLOT_MIN_W}px, 1fr))`;
     this.grid.replaceChildren(...this.plots.map((p) => p.el));
   }
 

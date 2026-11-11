@@ -141,7 +141,9 @@ table.grid.edit input { width: 100%; }
 /* ---- data views & plots ------------------------------------------------------ */
 .dataview { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; height: 100%; }
 .dv-title { font-weight: 600; overflow-wrap: anywhere; }
-.plot-grid { display: grid; gap: 8px; flex: 1 1 auto; align-content: start; }
+/* the plots share the view's height; the grid scrolls only below their minimum size */
+.plot-grid { display: grid; gap: 8px; flex: 1 1 0; min-height: 0; overflow: auto; grid-auto-rows: minmax(min-content, 1fr); }
+.plot-grid .ndplot .plot-host { flex: 1 1 auto; height: auto; min-height: 110px; resize: none; }
 .details { font-family: var(--font-mono); font-size: .85rem; background: var(--panel2); padding: 6px; border-radius: 4px; max-height: 300px; overflow: auto; margin: 0; }
 .ndplot { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 5px; padding: 4px; background: var(--panel); min-width: 0; }
 .plot-bar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -151,7 +153,9 @@ table.grid.edit input { width: 100%; }
 .popover { right: 0; top: 100%; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; width: 260px; }
 .popover input[type="number"] { width: 7em; }
 .plot-host { position: relative; height: 330px; min-height: 140px; resize: vertical; overflow: hidden; margin-top: 3px; }
-.plot-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+/* out of the flow: the canvas's pixel size must not count towards the minimum height of
+   its row (plots that share the available height would never shrink) */
+.plot-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .sliders { display: flex; flex-direction: column; gap: 2px; }
 .slider-row { display: grid; grid-template-columns: minmax(60px, max-content) 1fr minmax(90px, max-content); gap: 6px; align-items: center; font-size: .9rem; }
 .slbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -163,12 +167,16 @@ table.grid.edit input { width: 100%; }
 
 /* ---- monitor / manual / log --------------------------------------------------- */
 .side-box .panel { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.mon-tiles { display: flex; flex-direction: column; gap: 6px; }
-.mon-tile { border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; background: var(--panel); }
+.side-box .panel.monitor { overflow: hidden; }
+/* the tiles share the panel; it scrolls only below their minimum size */
+.mon-tiles { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; flex: 1 1 0; min-height: 0; overflow: auto;
+  grid-auto-rows: minmax(min-content, 1fr); }
+.mon-tile { border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; background: var(--panel);
+  display: flex; flex-direction: column; min-width: 0; }
 .mon-head { display: flex; gap: 4px; align-items: center; }
 .mon-head button { padding: 0 6px; }
 .mon-value { font-family: var(--font-mono); font-size: 1.6rem; line-height: 1.2; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.mon-tile .plot-host { height: 110px; min-height: 70px; }
+.mon-tile .plot-host { flex: 1 1 auto; height: auto; min-height: 50px; resize: none; }
 .mon-err { color: var(--err); font-size: .88rem; }
 .man-rows { display: flex; flex-direction: column; gap: 2px; }
 .man-row { display: grid; grid-template-columns: minmax(50px, 9em) minmax(70px, 8em) auto minmax(40px, 1fr) auto; gap: 4px; align-items: center; }
@@ -205,6 +213,10 @@ dialog.modal h3 { margin: 0 0 10px; font-size: 1.15rem; }
   .workspace { flex-direction: column; overflow: visible; }
   .pane.left, .pane.right, .pane.side { flex: 0 0 auto !important; width: 100%; border-left: none; }
   .tabbody { overflow: visible; }
+  .plot-grid { overflow: visible; grid-auto-rows: auto; }
+  .plot-grid .ndplot .plot-host { height: 300px; }
+  .side-box .panel.monitor, .mon-tiles { overflow: visible; }
+  .mon-tile .plot-host { height: 110px; }
   .splitter { display: none; }
   .logpane { flex-basis: 220px !important; }
   .form.head { grid-template-columns: max-content minmax(0, 1fr); }
@@ -221,3 +233,4 @@ dialog.modal h3 { margin: 0 0 10px; font-size: 1.15rem; }
 .comp-info { white-space: pre-line; margin-top: 4px; }
 .man-group { display: flex; gap: 8px; align-items: center; margin-top: 6px; padding-top: 3px; border-top: 1px solid var(--border, #444); }
 .man-label.held { color: #2f7fd0; }
+.mon-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

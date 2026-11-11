@@ -1,12 +1,25 @@
 // Right-hand side: Monitor (live tiles pushed by the backend), Manual control
 // (spin box + slider per writable alias) and the Log panel.
 
-import { h, btn, bar, fmt, clock, promptDialog, throttle } from "../ui.js";
+import { h, btn, bar, fmt, clock, promptDialog, throttle, autoColumns } from "../ui.js";
 import { PlotCanvas } from "../plot.js";
 import { evaluate } from "../expr.js";
 import { NDArray } from "../codec.js";
+import * as cmaps from "../colormaps.js";
 
 const HISTORY = 3000;
+const MAX_TRACES = 64;      // vectors up to this length keep a per-element history
+const TIME_VIEW_MAX = 16;   // ... and start in the "vs time" view up to this length
+const MAX_COLUMNS = 8;
+const TILE_MIN_W = 190;       // px: below this the tiles scroll sideways instead of shrinking
+const TILE_PLOT_MIN_H = 50;
+const traceColor = (i, n) => cmaps.color("turbo", n > 1 ? 0.08 + 0.84 * i / (n - 1) : 0.5);
+function fmtVector(d) {
+  if (d.length <= 8) return "[" + Array.from(d, (x) => fmt(x, 4)).join(", ") + "]";
+  let lo = Infinity, hi = -Infinity;
+  for (const q of d) { if (q < lo) lo = q; if (q > hi) hi = q; }
+  return `[${d.length}]  min ${fmt(lo, 4)}  max ${fmt(hi, 4)}`;
+}
 const SPANS = [["1 min", 60], ["10 min", 600], ["1 h", 3600], ["all", 0]];
 
 class MonitorTile {
@@ -14,16 +27,21 @@ class MonitorTile {
     this.name = name;
     this.t = [];
     this.v = [];
+    this.ta = [];      // 1-D vectors: times and values
+    this.va = [];
     this.latest = null;
     this.kind = null;
     this.dirty = false;
+    this.viewSet = false;
+    this.view = h("select", { class: "mon-view", hidden: true, title: "vector channel: every element against time, or the latest value against the element index",
+      on: { change: () => { this.dirty = true; } } }, [h("option", { text: "vs time", value: "time" }), h("option", { text: "vs index", value: "index" })]);
     this.value = h("div", { class: "mon-value", text: "—" });
     this.err = h("div", { class: "mon-err" });
     this.span = h("select", { on: { change: () => { this.dirty = true; } } }, SPANS.map(([l], i) => h("option", { text: l, value: i, selected: i === 1 })));
     this.pc = new PlotCanvas({ compact: true });
     this.rm = btn("✕", () => onRemove(name), { cmd: "monitor_remove", title: "stop monitoring" });
     this.el = h("div", { class: "mon-tile" },
-      h("div", { class: "mon-head" }, h("b", { text: name }), h("span", { class: "grow" }), this.span, this.rm),
+      h("div", { class: "mon-head" }, h("b", { text: name }), h("span", { class: "grow" }), this.view, this.span, this.rm),
       this.value, this.pc.el, this.err);
   }
 
@@ -32,7 +50,17 @@ class MonitorTile {
     this.err.textContent = "";
     const v = msg.value, t = Number(msg.t || Date.now() / 1000);
     if (typeof v === "string") { this.kind = "str"; this.latest = v; }
-    else if (v instanceof NDArray && v.ndim >= 1) { this.kind = "array"; this.latest = v; }
+    else if (v instanceof NDArray && v.ndim >= 1) {
+      this.kind = "array";
+      this.latest = v;
+      if (v.ndim === 1 && v.size > 0 && v.size <= MAX_TRACES) {
+        if (this.va.length && this.va[this.va.length - 1].length !== v.size) { this.ta = []; this.va = []; }
+        this.ta.push(t);
+        this.va.push(Float64Array.from(v.data));
+        if (this.ta.length > HISTORY) { this.ta.splice(0, this.ta.length - HISTORY); this.va.splice(0, this.va.length - HISTORY); }
+      }
+      if (!this.viewSet) { this.view.value = v.ndim === 1 && v.size <= TIME_VIEW_MAX ? "time" : "index"; this.viewSet = true; }
+    }
     else {
       const f = Number(v instanceof NDArray ? v.data[0] : v);
       if (!Number.isFinite(f) && !Number.isNaN(f)) return;
@@ -62,10 +90,23 @@ class MonitorTile {
     } else if (this.kind === "array") {
       const a = this.latest;
       this.pc.el.hidden = false;
+      this.view.hidden = !(a.ndim === 1 && a.size <= MAX_TRACES);
       if (a.ndim === 1) {
+        this.value.textContent = fmtVector(a.data);
+        if (!this.view.hidden && this.view.value === "time" && this.va.length) {
+          // one curve per element against time
+          const span = SPANS[Number(this.span.value)][1];
+          const tl = this.ta[this.ta.length - 1];
+          let i0 = 0;
+          if (span) while (i0 < this.ta.length && this.ta[i0] < tl - span) i0++;
+          const x = Float64Array.from(this.ta.slice(i0), (q) => q - tl);
+          const n = this.va[0].length, rows = this.va.slice(i0);
+          const series = [];
+          for (let j = 0; j < n; j++) series.push({ x, y: Float64Array.from(rows, (r) => r[j]), color: traceColor(j, n), width: 1.2, name: `[${j}]` });
+          this.pc.setContent({ kind: "curves", series });
+          return;
+        }
         const x = Float64Array.from({ length: a.size }, (_, i) => i);
-        let mx = -Infinity; for (const q of a.data) if (q > mx) mx = q;
-        this.value.textContent = `[${a.size}]  max ${fmt(mx, 4)}`;
         this.pc.setContent({ kind: "curves", series: [{ x, y: a.data, color: "#80ed99", width: 1 }] });
       } else {
         const ny = a.shape[0], nx = a.size / ny;
@@ -90,13 +131,26 @@ export class MonitorPanel {
     this.interval = h("input", { type: "number", value: "1", min: "0.1", step: "0.1", class: "w-num", title: "poll interval (s)" });
     this.msg = h("div", { class: "msg" });
     this.host = h("div", { class: "mon-tiles" });
+    let cols = "0";
+    try { const v = localStorage.getItem("em.monitor.columns"); if (v !== null) cols = v; } catch (e) { /* storage blocked */ }
+    this.columns = h("select", { class: "mon-columns", title: "number of monitor tiles side by side (auto = the arrangement that shows every tile largest)",
+      on: { change: () => this._setColumns() } },
+      [h("option", { value: "0", text: "columns: auto" })].concat(Array.from({ length: MAX_COLUMNS }, (_, i) =>
+        h("option", { value: String(i + 1), text: `${i + 1} column${i ? "s" : ""}` }))));
+    this.columns.value = /^[0-8]$/.test(cols) ? cols : "0";
+    this._eff = null;
+    this._setColumns();
     this.el = h("div", { class: "panel monitor" },
-      bar(this.chan, this.list, this.interval, h("span", { text: "s" }), btn("Monitor", () => this._add(), { cmd: "monitor_add" })),
+      bar(this.chan, this.list, this.interval, h("span", { text: "s" }), btn("Monitor", () => this._add(), { cmd: "monitor_add" }),
+        this.columns),
       this.msg, this.host);
     app.model.on("state", (st) => this._state(st));
     this.conn.on("event", (k, d) => { if (k === "monitor" && d) this._push(d); });
     this.conn.on("connected", () => this._history());
     setInterval(() => { if (this.el.offsetParent !== null) for (const t of this.tiles.values()) t.redraw(); }, 150);
+    // every tile in view: they share the panel; it scrolls only below their minimum size
+    new ResizeObserver(() => { if (this.columns.value === "0" && this._effCols() !== this._eff) this._relayout(); }).observe(this.host);
+    setInterval(() => { if (this.columns.value === "0" && this.el.offsetParent !== null && this._effCols() !== this._eff) this._relayout(); }, 700);
   }
 
   _state(st) {
@@ -111,11 +165,34 @@ export class MonitorPanel {
       }
     }
     for (const [n, t] of this.tiles) if (!names.includes(n)) { t.el.remove(); this.tiles.delete(n); }
+    this._relayout();
     for (const m of st.monitor || []) {
       const t = this.tiles.get(m.channel);
       if (t && t.kind === null && m.last_value !== null && m.last_value !== undefined) t.push({ value: m.last_value, t: m.last_time });
     }
     this.msg.textContent = names.length ? "" : "no monitored channels";
+  }
+
+  _effCols() {
+    const n = Number(this.columns.value) || 0;
+    if (n > 0) return n;
+    if (!this.tiles.size || !this.host.clientHeight) return 1;
+    let minH = 90;
+    for (const t of this.tiles.values()) {
+      if (t.el.offsetHeight) minH = Math.max(minH, t.el.offsetHeight - (t.pc.el.hidden ? 0 : t.pc.el.offsetHeight - TILE_PLOT_MIN_H));
+    }
+    return autoColumns(this.tiles.size, this.host.clientWidth, this.host.clientHeight, TILE_MIN_W, minH, 6, MAX_COLUMNS);
+  }
+
+  _setColumns() {
+    try { localStorage.setItem("em.monitor.columns", this.columns.value); } catch (e) { /* storage blocked */ }
+    this._relayout();
+  }
+
+  _relayout() {
+    const n = this._effCols();
+    this._eff = n;
+    this.host.style.gridTemplateColumns = `repeat(${n}, minmax(${TILE_MIN_W}px, 1fr))`;
   }
 
   _push(d) {
@@ -129,7 +206,7 @@ export class MonitorPanel {
       for (const [name, pts] of Object.entries(hist || {})) {
         let t = this.tiles.get(name);
         if (!t) { t = new MonitorTile(name, (x) => this._remove(x)); this.tiles.set(name, t); this.host.append(t.el); this.app.applyPermissions(t.el); }
-        t.t = []; t.v = [];
+        t.t = []; t.v = []; t.ta = []; t.va = [];
         for (const [tt, v] of pts) t.push({ t: tt, value: v });
       }
     } catch (e) { /* ignore */ }

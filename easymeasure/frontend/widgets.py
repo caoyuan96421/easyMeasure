@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt
-from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QComboBox, QLabel, QLayout, QSizePolicy, QStyle,
-                               QWidgetItem)
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QComboBox, QLabel, QLayout,
+                               QScrollArea, QSizePolicy, QStyle, QWidget, QWidgetItem)
 
 
 class FlowLayout(QLayout):
@@ -173,3 +173,57 @@ def install_resize_friendly_defaults(app: QApplication) -> None:
         f = _ShrinkFilter(app)
         app.installEventFilter(f)
         app._em_shrink_filter = f
+
+
+class FitArea(QScrollArea):
+    """A scroll area that gives its content exactly the visible area, so every child
+    (plot, tile …) is shown at once, and only scrolls - in either direction - when
+    the area is smaller than what the content's layout really needs (the children's
+    minimum sizes).  A plain ``widgetResizable`` scroll area sizes its content by the
+    size *hints* instead, which scrolls long before anything is squeezed."""
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setWidgetResizable(False)
+        self.setWidget(content)
+        content.installEventFilter(self)
+        self._fitting = False
+
+    def _need(self) -> QSize:
+        w = self.widget()
+        lay = w.layout()
+        m = lay.minimumSize() if lay is not None else w.minimumSizeHint()
+        return m.expandedTo(w.minimumSize())
+
+    def fit(self) -> None:
+        if self._fitting or self.widget() is None:
+            return
+        self._fitting = True
+        try:
+            need = self._need()
+            vp = self.maximumViewportSize()          # the viewport without scroll bars
+            sb = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+            hbar = need.width() > vp.width()
+            vbar = need.height() > vp.height() - (sb if hbar else 0)
+            hbar = need.width() > vp.width() - (sb if vbar else 0)   # one bar takes room
+            w = max(vp.width() - (sb if vbar else 0), need.width())
+            h = max(vp.height() - (sb if hbar else 0), need.height())
+            self.widget().resize(w, h)
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.fit()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.widget() and ev.type() == QEvent.LayoutRequest:
+            QTimer.singleShot(0, self.fit)
+        return False
+
+    def sizeHint(self) -> QSize:
+        return QSize(200, 150)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(60, 40)

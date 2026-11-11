@@ -379,3 +379,26 @@ export function throttle(fn, ms = 80) {
     setTimeout(() => requestAnimationFrame(() => { pending = false; last = performance.now(); fn(); }), wait);
   };
 }
+
+/** Columns for `n` items of at least `minW` × `minH` in a `W` × `H` area: among the
+ *  arrangements where every item keeps its minimum, the one with the largest items
+ *  (the shorter of width and 1.5 × height); when none fits, the one that overflows
+ *  least, preferring any that needs no sideways scrolling. */
+export function autoColumns(n, W, H, minW, minH, gap = 8, maxCols = 4) {
+  if (n <= 1) return 1;
+  W = Math.max(W, 1); H = Math.max(H, 1);
+  let best = 1, bestScore = null, least = 1, leastOver = null;
+  for (let c = 1; c <= Math.min(maxCols, n); c++) {
+    const rows = Math.ceil(n / c);
+    const cw = (W - gap * (c - 1)) / c, ch = (H - gap * (rows - 1)) / rows;
+    const hover = Math.max(0, minW - cw) * c, vover = Math.max(0, minH - ch) * rows;
+    if (hover === 0 && vover === 0) {
+      const score = Math.min(cw, 1.5 * ch);
+      if (bestScore === null || score > bestScore + 1e-9) { best = c; bestScore = score; }
+    } else {
+      const over = (hover > 0 ? 1e9 : 0) + hover + vover;
+      if (leastOver === null || over < leastOver) { least = c; leastOver = over; }
+    }
+  }
+  return bestScore !== null ? best : least;
+}
