@@ -9,7 +9,7 @@ Three roles, each including the rights of the one before:
     Run measurements within the configured setup: set channels (alias limits and
     ramp rates are always enforced by the backend), run instrument actions,
     monitor channels, queue / start / pause / abort sweeps, add PPT slides,
-    reconnect instruments.  Cannot run Python code (scripts, sweep hooks), change
+    reconnect instruments, run the user actions an admin defined.  Cannot run Python code (scripts, sweep hooks), change
     instruments, aliases or their limits, send raw instrument commands, change
     backend settings or touch files outside the data directory.
 ``admin``
@@ -33,17 +33,21 @@ VIEW = {
     "read_channel", "channel_info", "list_channels", "monitor_list", "monitor_history",
     "validate_sweep", "queue_state", "current_run", "run_snapshot", "list_runs", "load_run",
     "read_run_header", "get_setup", "save_setup", "recent_logs", "list_clients",
+    "list_user_actions",
 }
 OPERATE = {
     "write_channel", "set_many", "query_channel", "run_action", "monitor_add", "monitor_remove",
     "queue_add", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
     "queue_options", "pause", "resume", "abort", "abort_all", "make_ppt",
     "connect_instrument", "disconnect_instrument", "reconnect_instrument",
+    # user actions: running one runs code an admin wrote, defining one is writing code
+    "run_user_action", "abort_user_action",
 }
 ADMIN = {
     "set_settings", "rescan_drivers", "discover_resources", "add_instrument",
     "remove_instrument", "update_instrument", "raw_query", "raw_write", "define_alias",
     "remove_alias", "define_composite", "check_composite", "remove_composite", "load_setup", "run_script_now",
+    "define_user_action", "remove_user_action", "move_user_action",
     "shutdown",
     # the Driver Wizard writes driver code (init scripts are Python)
     "wizard_templates", "wizard_check", "wizard_list", "wizard_load", "wizard_save",

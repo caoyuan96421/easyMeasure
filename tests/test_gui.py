@@ -144,14 +144,12 @@ def test_monitor_panel_and_manual_control(app, gui):
     w.monitor._add()
     assert pump(app, 5, lambda: "Vg" in w.monitor.tiles and w.monitor.tiles["Vg"].latest is not None)
     sp = w.setup_panel
-    sp.m_chan.setEditText("Vg")
-    sp.m_value.setText("0.05")
-    sp._manual_set()
-    assert pump(app, 5, lambda: "←" in sp.m_result.text() or "✘" in sp.m_result.text())
-    assert be.read_channel("Vg") == pytest.approx(0.05)
-    sp.m_value.setText("7")
-    sp._manual_set()
-    assert pump(app, 5, lambda: "✘" in sp.m_result.text())
+    assert not hasattr(sp, "m_chan")                 # setting by hand is the Manual panel
+    sp._write("dmm.nplc", "1")
+    assert pump(app, 5, lambda: "←" in sp.msg.text() or "✘" in sp.msg.text())
+    assert be.read_channel("dmm.nplc") == pytest.approx(1)
+    sp._write("Vg", "7")
+    assert pump(app, 5, lambda: "✘" in sp.msg.text())
 
 
 def test_ndplot_standalone_modes(app):
@@ -1229,3 +1227,58 @@ def test_combo_lists_show_full_channel_names(app, gui):
     assert pump(app, 2, lambda: mon.channel.view().isVisible())
     assert mon.channel.view().width() >= mon.channel.view().fontMetrics().horizontalAdvance(long)
     mon.channel.hidePopup()
+
+
+def test_user_actions_panel(app, gui, monkeypatch):
+    """The Actions panel: define (dialog), run, confirm, abort, reorder, remove."""
+    from PySide6.QtWidgets import QMessageBox
+    from easymeasure.frontend.panels.setup_panel import UserActionDialog
+    w, be, _, _ = gui
+    sp = w.setup_panel
+    dlg = UserActionDialog(None, w.model.readable_channels(), [], parent=w)
+    dlg.name.setText("gates to zero")
+    dlg.description.setText("Vx, Vy to 0 V")
+    dlg.insert.setCurrentIndex(dlg.insert.findText("Vx"))
+    dlg._insert(dlg.insert.findText("Vx"))
+    assert dlg.code.toPlainText() == "'Vx'"
+    dlg.code.setPlainText("set_many({'Vx': 0, 'Vy': 0}, ramp=False)")
+    dlg._ok()
+    v = dlg.result_value
+    assert v == {"name": "gates to zero", "code": "set_many({'Vx': 0, 'Vy': 0}, ramp=False)",
+                 "description": "Vx, Vy to 0 V", "confirm": False}
+    bad = UserActionDialog(None, [], [], parent=w)
+    bad.name.setText("x")
+    bad.code.setPlainText("set(")
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    bad._ok()
+    assert bad.result_value is None                          # syntax error: not accepted
+    be.define_user_action(**v)
+    be.define_user_action(name="slow", code="sleep(20)", confirm=True)
+    assert pump(app, 5, lambda: sp.uact.rowCount() == 2)
+    assert [sp.uact.item(r, 0).text() for r in range(2)] == ["gates to zero", "slow"]
+    be.channels.set("Vx", 0.3, ramp=False)
+    sp.uact.selectRow(0)
+    sp._run_uact()
+    assert pump(app, 10, lambda: "done" in sp.msg.text())
+    assert be.channels.get("Vx") == 0
+    assert pump(app, 5, lambda: sp.uact.item(0, 2).text().startswith("✔"))
+    # confirm: "No" does not run it
+    sp.uact.selectRow(1)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+    sp._run_uact()
+    pump(app, 0.3)
+    assert not be.user_actions.running()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    sp._run_uact()
+    assert pump(app, 5, lambda: sp.uact_abort.isEnabled() and "running" in sp.uact.item(1, 2).text())
+    sp._abort_uact()
+    assert pump(app, 10, lambda: sp.uact.item(1, 2).text().startswith("■"))
+    assert "aborted" in sp.msg.text()
+    # order and removal
+    sp.uact.selectRow(1)
+    sp._move_uact(-1)
+    assert pump(app, 5, lambda: sp.uact.item(0, 0).text() == "slow")
+    sp.uact.selectRow(0)
+    sp._remove_uact()                                       # question answered Yes above
+    assert pump(app, 5, lambda: sp.uact.rowCount() == 1)
+    assert [a["name"] for a in be.list_user_actions()] == ["gates to zero"]

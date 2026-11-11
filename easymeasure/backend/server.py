@@ -57,7 +57,7 @@ _DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress"}
 #: events a client gets when it does not say otherwise (scripts, notebooks): the
 #: small status events only - no monitor values, sweep data or log lines
 DEFAULT_EVENTS = ("queue", "item_end", "sweep_start", "sweep_end", "sweep_paused",
-                  "sweep_resumed", "sweep_warning", "ppt", "changed", "settings")
+                  "sweep_resumed", "sweep_warning", "ppt", "changed", "settings", "user_action")
 PREAUTH_MAX_FRAME = 64 * 1024
 AUTH_TIMEOUT = 10.0
 # commands that never touch instrument I/O: served by their own small pool so that
@@ -70,7 +70,8 @@ CONTROL_COMMANDS = {
     "list_drivers", "list_resources", "get_setup", "save_setup", "channel_info",
     "validate_sweep", "queue_add", "run_script_now", "read_run_header", "shutdown",
     "list_clients", "remote_status", "remote_start", "remote_stop", "remote_set_user",
-    "remote_remove_user",
+    "remote_remove_user", "list_user_actions", "abort_user_action", "define_user_action",
+    "remove_user_action", "move_user_action",
 }
 
 

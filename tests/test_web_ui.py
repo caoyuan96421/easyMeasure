@@ -406,3 +406,47 @@ def test_web_live_plots_fit_without_scrolling(browser, gw, demo):
     demo.queue.wait_idle(30)
     assert not errors, errors
     page.context.close()
+
+
+def test_web_user_actions(browser, gw, demo):
+    """The Actions panel on the web: an admin defines, an operator runs (with the
+    confirmation), aborts; no manual-control box on the Instruments page any more."""
+    errors = []
+    page = open_page(browser, gw, "ada", errors)
+    page.click(".tab:has-text('Instruments')")
+    assert page.locator(".group", has_text="Manual control").count() == 0
+    grp = page.locator("fieldset.group:has(> legend:text-is('Actions'))")
+    grp.locator("button:text-is('Add…')").click()
+    dlg = page.locator("dialog.modal")
+    dlg.locator("input").nth(0).fill("gates to zero")
+    dlg.locator("input").nth(1).fill("Vx and Vy to 0 V")
+    dlg.locator("textarea").fill("set('Vx', 0\n")                  # syntax error: refused
+    dlg.locator("button.primary").click()
+    page.wait_for_selector("dialog.modal .modal-msg:has-text('syntax error')", timeout=5000)
+    dlg.locator("textarea").fill("set_many({'Vx': 0, 'Vy': 0}, ramp=False)")
+    dlg.locator("input[type=checkbox]").check()
+    dlg.locator("button.primary").click()
+    page.wait_for_selector("td:text-is('gates to zero')", timeout=5000)
+    assert demo.list_user_actions()[0]["confirm"] is True
+    page.context.close()
+    demo.channels.set("Vx", 0.3, ramp=False)
+    demo.define_user_action(name="slow", code="sleep(20)")
+    page = open_page(browser, gw, "olga", errors)                    # operator
+    page.click(".tab:has-text('Instruments')")
+    grp = page.locator("fieldset.group:has(> legend:text-is('Actions'))")
+    assert grp.locator("button:text-is('Add…')").is_disabled()       # defining is for admins
+    page.dblclick("td:text-is('gates to zero')")
+    page.click("dialog.modal button:text-is('Yes')")                 # it asks first
+    t0 = time.time()
+    while demo.channels.get("Vx") != 0 and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.channels.get("Vx") == 0
+    page.wait_for_selector("td:has-text('✔')", timeout=5000)
+    page.click("td:text-is('slow')")
+    grp.locator("button:text-is('▶ Run')").click()
+    page.wait_for_selector("td:text-is('running…')", timeout=5000)
+    grp.locator("button:text-is('■ Abort')").click()
+    page.wait_for_selector("td:has-text('■')", timeout=10000)
+    assert demo.list_user_actions()[1]["last"]["status"] == "aborted"
+    assert not errors, errors
+    page.context.close()

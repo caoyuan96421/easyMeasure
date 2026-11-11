@@ -1,4 +1,5 @@
-"""Saving and loading of setups (instruments, aliases, composites, monitor list)."""
+"""Saving and loading of setups (instruments, aliases, composites, monitor list,
+user actions)."""
 
 from __future__ import annotations
 
@@ -19,8 +20,8 @@ log = get_logger("setup")
 FORMAT = "easyMeasure-setup-1"
 
 
-def capture(instruments, channels, monitor) -> dict:
-    return {
+def capture(instruments, channels, monitor, user_actions=None) -> dict:
+    out = {
         "format": FORMAT,
         "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
         "instruments": [
@@ -32,6 +33,9 @@ def capture(instruments, channels, monitor) -> dict:
         "composites": [c.to_dict() for c in channels.composites()],
         "monitor": monitor.config(),
     }
+    if user_actions is not None:
+        out["actions"] = [a.to_dict() for a in user_actions.actions()]
+    return out
 
 
 def atomic_write_json(path, obj: Any) -> None:
@@ -59,7 +63,7 @@ def read(path) -> dict:
 
 
 def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
-          connect: bool = True) -> List[str]:
+          connect: bool = True, user_actions=None) -> List[str]:
     """Apply a setup.  Returns a list of problems (never raises for single items)."""
     if not isinstance(setup, dict) or setup.get("format") != FORMAT:
         raise EasyMeasureError("not an easyMeasure setup")
@@ -67,6 +71,8 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
     if replace:
         monitor.clear()
         channels.clear()
+        if user_actions is not None:
+            user_actions.clear()
         for name in instruments.names():
             try:
                 instruments.remove(name)
@@ -108,6 +114,14 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
             monitor.add(m["channel"], float(m.get("interval", 1.0)))
         except Exception as exc:
             problems.append("monitor %s: %s" % (m.get("channel"), exc))
+    if user_actions is not None:
+        from .user_actions import UserAction
+        for d in setup.get("actions", []):
+            try:
+                user_actions.define(UserAction.from_dict(d), replace=True)
+            except Exception as exc:
+                problems.append("action %s: %s" % (d.get("name") if isinstance(d, dict) else d,
+                                                   exc))
     for p in problems:
         log.warning("setup: %s", p)
     return problems

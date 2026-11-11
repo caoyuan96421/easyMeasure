@@ -16,6 +16,18 @@ function parseValue(text) {
   return t;
 }
 
+const ACTION_HELP = "get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · set_raw('inst.ch', v) · " +
+  "sleep(s) · wait_until(f, timeout) · action('inst.action') · user_action('other action') · print(…) · " +
+  "state (a dict kept between runs) · np, math. Limits and ramp rates apply; Abort stops at the next line, sleep or ramp step.";
+
+function uactStatus(a) {
+  if (a.running) return "running…";
+  const l = a.last;
+  if (!l) return "";
+  const mark = { finished: "✔", aborted: "■", error: "✘" }[l.status] || "";
+  return `${mark} ${new Date((l.ended || 0) * 1000).toLocaleTimeString()} (${fmt(l.elapsed || 0, 3)} s)`;
+}
+
 const COMP_TYPES = { multi: "Multivariate write", read: "Composite read", map: "Simple mapping" };
 const FORMULA_HELP = "Formulas: + - * / **, abs, sqrt, exp, log, sin …, min/max, a if cond else b, " +
   "piecewise(cond1, v1, cond2, v2, …, default), interp(x, xs, ys)";
@@ -195,12 +207,11 @@ export class SetupPanel {
     ], { onActivate: () => this._editComp(this.comp.current()), empty: "no composites" });
 
     // manual control
-    this.mChan = h("input", { placeholder: "channel", list: "em-all-channels", class: "w-chan" });
-    this.mList = h("datalist", { id: "em-all-channels" });
-    this.mValue = h("input", { placeholder: "value (number, text, or JSON list)" });
-    this.mRamp = h("input", { type: "checkbox", checked: true });
-    this.mResult = h("span", { class: "msg" });
-    this.mValue.addEventListener("keydown", (e) => { if (e.key === "Enter") this._manualSet(); });
+    // user actions: named snippets of code that control any channel
+    this.uact = new Table([
+      { key: "name", label: "Action" }, { key: "description", label: "Description" },
+      { key: "lastText", label: "Last run" },
+    ], { onActivate: () => this._runUact(this.uact.current()), empty: "no actions - Add… one: a few lines of get / set / sleep" });
 
     this.el = h("div", { class: "panel setup" },
       bar(btn("Save setup…", () => this._saveSetup(), { cmd: "get_setup", title: "download the setup (instruments, aliases, composites, monitor) as JSON" }),
@@ -226,9 +237,14 @@ export class SetupPanel {
           btn("Add…", () => this._editComp(null), { cmd: "define_composite" }),
           btn("Edit…", () => this._editComp(this.comp.current()), { cmd: "define_composite" }),
           btn("Remove", () => this._remove("remove_composite", this.comp.current()), { cmd: "remove_composite" })))),
-      group("Manual control", bar(this.mChan, this.mList, this.mValue, h("label", { class: "check" }, this.mRamp, " ramp"),
-        btn("Get", () => this._manualGet(), { cmd: "read_channel" }), btn("Set", () => this._manualSet(), { cmd: "write_channel" })),
-        this.mResult));
+      group("Actions", this.uact.el, bar(
+        btn("▶ Run", () => this._runUact(this.uact.current()), { cmd: "run_user_action", title: "run the selected action now (double click works too)" }),
+        this.uactAbort = btn("■ Abort", () => this._abortUact(), { cmd: "abort_user_action", title: "stop the running action(s) at the next line, sleep or ramp step" }),
+        btn("Add…", () => this._editUact(null), { cmd: "define_user_action" }),
+        btn("Edit…", () => this._editUact(this.uact.current()), { cmd: "define_user_action" }),
+        btn("Remove", () => this._removeUact(), { cmd: "remove_user_action" }),
+        btn("↑", () => this._moveUact(-1), { cmd: "move_user_action", title: "move up" }),
+        btn("↓", () => this._moveUact(1), { cmd: "move_user_action", title: "move down" }))));
     this.model.on("state", (st) => this._state(st));
     this.conn.on("connected", () => this._loadDrivers());
   }
@@ -246,8 +262,11 @@ export class SetupPanel {
     this.comp.set(this.model.composites().map((c) => ({ ...c, typeLabel: COMP_TYPES[c.type] || c.type,
       summary: compSummary(c), chans: compChannels(c).join(", "), lastText: compLast(c.last) })),
     { rowTitle: (r) => r.description || null });
-    const names = this.model.readableChannels().concat(this.model.rawChannels());
-    this.mList.replaceChildren(...names.map((n) => h("option", { value: n })));
+    const acts = this.model.userActions();
+    this.uact.set(acts.map((a) => ({ ...a, lastText: uactStatus(a) })), {
+      rowClass: (r) => (r.running ? "busy" : r.last && r.last.status === "error" ? "err" : ""),
+      rowTitle: (r) => [r.description, r.last && r.last.error ? "last run: " + r.last.error : ""].filter(Boolean).join("\n") || null });
+    if (this.uactAbort) this.uactAbort.disabled = !acts.some((a) => a.running) || !this.conn.can("abort_user_action");
   }
 
   _selInst() {
@@ -424,30 +443,63 @@ export class SetupPanel {
     await this._do(cmd, { name: row.name }, `${row.name} removed`).catch(() => {});
   }
 
-  // ---- manual ----------------------------------------------------------------------
-  async _manualGet() {
-    const n = this.mChan.value.trim();
-    if (!n) return;
+  // ---- user actions ----------------------------------------------------------------
+  async _runUact(a) {
+    if (!a) { this.say("select an action", true); return; }
+    if (!this.conn.can("run_user_action")) return;
+    if (a.confirm && !(await confirmDialog("Run action", `Run ${a.name}?${a.description ? "\n\n" + a.description : ""}`))) return;
+    this.say(`running ${a.name} …`);
     try {
-      const v = await this.conn.request("read_channel", { name: n });
-      this._noteValue(n, v);
-      this.mResult.textContent = `${n} = ${fmt(v, 8)}`;
-      this.mResult.className = "msg";
-    } catch (e) { this.mResult.textContent = `✘ ${e.message}`; this.mResult.className = "msg err"; }
+      const r = await this.conn.request("run_user_action", { name: a.name }, { timeout: 7 * 24 * 3600 * 1000 });
+      if (r.status === "finished") this.say(`✔ ${a.name} done (${fmt(r.elapsed, 3)} s)`);
+      else this.say(`${a.name}: ${r.status}${r.error ? ": " + r.error : ""}`, true);
+    } catch (e) { this.say(`${a.name}: ${e.message}`, true); }
+    this.model.scheduleRefresh();
   }
 
-  async _manualSet() {
-    const n = this.mChan.value.trim();
-    if (!n) return;
+  async _abortUact() {
+    const a = this.uact.current();
     try {
-      const value = parseValue(this.mValue.value);
-      this.mResult.textContent = `setting ${n} …`;
-      const v = await this.conn.request("write_channel", { name: n, value, ramp: this.mRamp.checked }, { timeout: 3600000 });
-      this._noteValue(n, v);
-      this.mResult.textContent = `${n} = ${fmt(v, 8)}`;
-      this.mResult.className = "msg";
-      this.model.scheduleRefresh();
-    } catch (e) { this.mResult.textContent = `✘ ${e.message}`; this.mResult.className = "msg err"; }
+      const r = await this.conn.request("abort_user_action", a && a.running ? { name: a.name } : {});
+      this.say(`aborting ${(r || []).join(", ")}`);
+    } catch (e) { this.say(e.message, true); }
+  }
+
+  async _editUact(a) {
+    if (!this.conn.can("define_user_action")) return;
+    const existing = !!a;
+    a = a || {};
+    const chans = this.model.readableChannels().concat(this.model.configChannels(true));
+    const v = await formDialog(existing ? `Action ${a.name}` : "Add action", [
+      { key: "name", label: "Name", value: a.name || "" },
+      { key: "description", label: "Description", value: a.description || "" },
+      { key: "confirm", label: "ask before running", type: "checkbox", value: !!a.confirm },
+      { key: "code", label: "Code", type: "textarea", rows: 10, value: a.code || "",
+        placeholder: "e.g.\nset_many({'VL': 0, 'VR': 0})\nset('B', 0)  # ramps at the alias rate\nprint('gates and field at 0')",
+        help: ACTION_HELP + "\nChannels: " + chans.join(", ") },
+    ], { wide: true, validate: async (v) => {
+      const d = { name: v.name.trim(), code: v.code, description: v.description.trim(), confirm: v.confirm };
+      if (!d.name || !d.code.trim()) throw new Error("an action needs a name and code");
+      const args = existing ? { ...d, replace: a.name === d.name, rename_from: a.name } : d;
+      await this.conn.request("define_user_action", args);     // refused: the dialog stays open
+      return d;
+    } });
+    if (v) { this.say(`action ${v.name} saved`); this.model.scheduleRefresh(); }
+  }
+
+  async _removeUact() {
+    const a = this.uact.current();
+    if (!a) { this.say("select an action", true); return; }
+    if (!(await confirmDialog("Remove action", `Remove the action ${a.name}?`))) return;
+    await this._do("remove_user_action", { name: a.name }, `action ${a.name} removed`).catch(() => {});
+  }
+
+  async _moveUact(step) {
+    const a = this.uact.current();
+    if (!a) return;
+    const names = this.model.userActions().map((x) => x.name);
+    const pos = Math.max(0, Math.min(names.length - 1, names.indexOf(a.name) + step));
+    await this._do("move_user_action", { name: a.name, position: pos }, "").catch(() => {});
   }
 
   // ---- setup files -----------------------------------------------------------------

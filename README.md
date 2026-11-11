@@ -257,6 +257,33 @@ The editors (desktop and web) have a type selector, a variables table and a
 Earlier one-variable composites (`targets` as formulas of `x`) still load, as a
 multivariate write whose variable has the composite's name.
 
+### User actions (`backend/user_actions.py`)
+Named snippets of Python that control any channel, kept in the setup (they are
+saved, loaded and autosaved with it). Examples are "gates to zero" or "ramp the
+magnet down":
+```python
+set_many({'VL': 0, 'VR': 0})      # limits and ramp rates apply as always
+set('B', 0)
+print('gates and field at 0')
+```
+The code uses the same functions as scripts: `get`, `set`, `set_many`,
+`set_raw`, `sleep`, `wait_until`, `action`, `instrument`, `print` and `state`.
+It can also call `user_action('other')` to run another action; an action that
+calls itself is refused.
+
+The **Actions** panel (Instruments tab, desktop and web) lists your actions and
+lets you add, edit, reorder, remove, run and abort them. Running one is
+immediate, not through the queue, and a paused sweep does not hold it back.
+**Abort** (or abort all) stops it at the next line, sleep or ramp step. Tick
+*ask before running* for actions that should be confirmed first. The table shows
+each action's last run (finished / aborted / error, time, duration).
+
+Sweeps cannot be started from an action; queue them instead. Defining actions
+needs the admin role remotely, because it is writing code. Running and aborting
+them is an operator right. Backend commands: `define_user_action`,
+`remove_user_action`, `move_user_action`, `run_user_action`, `abort_user_action`,
+`list_user_actions`.
+
 ### Sweeps (`backend/sweep.py`)
 ```json
 {"name": "map",
@@ -386,8 +413,8 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   such as its built-in emulator — or type any address; **Refresh** scans again,
   *ask \*IDN?* identifies GPIB / USB / LAN instruments while scanning), inspect raw channels (with their allowed values and the *last
   value* read or set — nothing is read just to fill the table), define aliases and
-  composites, manual get/set, save/load setups, *Driver wizard…* for new
-  command-based instruments.
+  composites and **Actions** (below), save/load setups, *Driver wizard…* for new
+  command-based instruments. Setting channels by hand is the **Manual** panel.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
   file, validate against the backend, queue. Each dimension is laid out in the order
   of one point (numbered steps: actions, set swept channels, pre-sample delay, record,
@@ -809,7 +836,7 @@ account key is kept in `<home>/remote/tls/acme/`.
 | role | may |
 |---|---|
 | `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
-| `operator` | + set channels and config channels (alias limits and ramp rates always apply), run actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
+| `operator` | + set channels and config channels (alias limits and ramp rates always apply), run instrument actions and user actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
 | `admin` | + scripts and sweep hook code (Python on the backend computer = full control), Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
 
 Operators cannot run code: sweeps with pre/post hook code are refused for them, and

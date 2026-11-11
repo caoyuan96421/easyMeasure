@@ -1,5 +1,5 @@
-"""Instruments & channels: instruments, raw channels, aliases, composites,
-manual get/set and setup save/load."""
+"""Instruments & channels: instruments, raw channels, aliases, composites, user
+actions and setup save/load.  (Setting channels by hand is the Manual panel.)"""
 
 from __future__ import annotations
 
@@ -551,6 +551,83 @@ class CompositeDialog(QDialog):
         self.accept()
 
 
+ACTION_HELP = """\
+get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · set_raw('inst.ch', v)
+sleep(s) · wait_until(f, timeout) · action('inst.action') · user_action('other action')
+instrument(name).raw_query(…) · print(…) / log(…) · state (a dict kept between runs) · np, math
+Limits and ramp rates of aliases and composites apply; Abort stops at the next line,
+sleep or ramp step."""
+
+
+class UserActionDialog(QDialog):
+    """Name, description and code of a user action."""
+
+    def __init__(self, act: Optional[dict], channels, existing, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Action" if act is None else "Action %s" % act["name"])
+        a = act or {}
+        self.original = a.get("name")
+        self.existing = set(existing)
+        self.name = QLineEdit(a.get("name", ""))
+        self.description = QLineEdit(a.get("description", ""))
+        self.confirm = QCheckBox("ask before running")
+        self.confirm.setChecked(bool(a.get("confirm")))
+        from ..display import register_font
+        self.code = QPlainTextEdit(a.get("code", ""))
+        register_font(self.code, 1.0, monospace=True)
+        self.code.setTabStopDistance(4 * self.code.fontMetrics().horizontalAdvance(" "))
+        self.code.setPlaceholderText("e.g.\nset_many({'VL': 0, 'VR': 0})\nset('B', 0)  "
+                                     "# ramps at the alias rate\nprint('gates and field at 0')")
+        self.code.setMinimumHeight(180)
+        self.insert = QComboBox()
+        self.insert.addItem("insert channel name…")
+        self.insert.addItems(list(channels))
+        self.insert.activated.connect(self._insert)
+        help_ = QLabel(ACTION_HELP)
+        help_.setStyleSheet("color: gray")
+        help_.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        help_.setWordWrap(True)
+        form = QFormLayout(self)
+        form.addRow("Name", self.name)
+        form.addRow("Description", self.description)
+        form.addRow("", self.confirm)
+        form.addRow("Code", self.code)
+        form.addRow("", self.insert)
+        form.addRow(help_)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+        self.resize(620, 480)
+        self.result_value = None
+
+    def _insert(self, i: int) -> None:
+        if i > 0:
+            self.code.insertPlainText(repr(self.insert.itemText(i)))
+            self.code.setFocus()
+        self.insert.setCurrentIndex(0)
+
+    def _ok(self) -> None:
+        name = self.name.text().strip()
+        code = self.code.toPlainText()
+        if not name or not code.strip():
+            QMessageBox.warning(self, "Action", "An action needs a name and code.")
+            return
+        if name != self.original and name in self.existing:
+            QMessageBox.warning(self, "Action", "There is already an action %s." % name)
+            return
+        try:
+            compile(code, "<action>", "exec")
+        except SyntaxError as exc:
+            QMessageBox.warning(self, "Action", "Syntax error in line %s: %s"
+                                % (exc.lineno, exc.msg))
+            return
+        self.result_value = {"name": name, "code": code,
+                             "description": self.description.text().strip(),
+                             "confirm": self.confirm.isChecked()}
+        self.accept()
+
+
 def _table(headers):
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
@@ -675,28 +752,42 @@ class SetupPanel(QWidget):
         cl = QVBoxLayout(cbox)
         cl.addWidget(self.comp)
         cl.addLayout(cb)
-        # manual control
-        self.m_chan = QComboBox()
-        self.m_chan.setEditable(True)
-        self.m_chan.setMinimumContentsLength(10)
-        self.m_value = QLineEdit()
-        self.m_value.setPlaceholderText("value (number, text, or JSON list)")
-        self.m_ramp = QCheckBox("ramp")
-        self.m_ramp.setChecked(True)
-        get_b = QPushButton("Get")
-        set_b = QPushButton("Set")
-        get_b.clicked.connect(self._manual_get)
-        set_b.clicked.connect(self._manual_set)
-        self.m_result = shrinkable_label(QLabel(""))
-        self.m_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.m_value.setMinimumWidth(80)
-        mbox = QGroupBox("Manual control")
-        mv = QVBoxLayout(mbox)
-        ml = FlowLayout()
-        for w in (self.m_chan, self.m_value, self.m_ramp, get_b, set_b):
-            ml.addWidget(w)
-        mv.addLayout(ml)
-        mv.addWidget(self.m_result)
+        # user actions: named snippets of code that control any channel
+        self.uact = _table(["Action", "Description", "Last run"])
+        self.uact.setToolTip("your own actions: short Python snippets using get / set / "
+                             "set_many / sleep … - ▶ Run (or Enter) runs the selected one")
+        self.uact_run = QPushButton("▶ Run")
+        self.uact_run.setToolTip("run the selected action now")
+        self.uact_run.clicked.connect(self._run_uact)
+        self.uact_abort = QPushButton("■ Abort")
+        self.uact_abort.setToolTip("stop the running action(s) at the next line, sleep or "
+                                   "ramp step")
+        self.uact_abort.clicked.connect(self._abort_uact)
+        ub = FlowLayout()
+        ub.addWidget(self.uact_run)
+        ub.addWidget(self.uact_abort)
+        for text, fn, tip in (("Add…", lambda: self._edit_uact(None), "define a new action"),
+                              ("Edit…", self._edit_uact_sel, "change the selected action"),
+                              ("Remove", self._remove_uact, "delete the selected action"),
+                              ("↑", lambda: self._move_uact(-1), "move up"),
+                              ("↓", lambda: self._move_uact(1), "move down")):
+            b_ = QPushButton(text)
+            b_.setToolTip(tip)
+            b_.clicked.connect(fn)
+            if text in ("↑", "↓"):
+                b_.setFixedWidth(30)
+            ub.addWidget(b_)
+        ub.addStretch(1)
+        ubox = QGroupBox("Actions")
+        ul = QVBoxLayout(ubox)
+        ul.addWidget(self.uact)
+        ul.addLayout(ub)
+        self.uact.cellDoubleClicked.connect(lambda r, c: self._edit_uact_sel())
+        from PySide6.QtGui import QShortcut, QKeySequence
+        for key in (Qt.Key_Return, Qt.Key_Enter):
+            sc = QShortcut(QKeySequence(key), self.uact)
+            sc.setContext(Qt.WidgetShortcut)
+            sc.activated.connect(self._run_uact)
         # setup files
         sv = QPushButton("Save setup…")
         ld = QPushButton("Load setup…")
@@ -714,15 +805,18 @@ class SetupPanel(QWidget):
         bottom = QSplitter(Qt.Horizontal)
         bottom.addWidget(abox)
         bottom.addWidget(cbox)
-        for t in (self.inst, self.raw, self.alias, self.comp):
+        for t in (self.inst, self.raw, self.alias, self.comp, self.uact):
             t.setMinimumWidth(120)
         split = QSplitter(Qt.Vertical)
         split.addWidget(top)
         split.addWidget(bottom)
+        split.addWidget(ubox)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 3)
+        split.setStretchFactor(2, 2)
         lay = QVBoxLayout(self)
         lay.addLayout(fb)
         lay.addWidget(split, 1)
-        lay.addWidget(mbox)
         self.inst.itemSelectionChanged.connect(self._show_raw)
         self.alias.cellDoubleClicked.connect(lambda r, c: self._edit_alias_sel())
         self.comp.cellDoubleClicked.connect(lambda r, c: self._edit_comp_sel())
@@ -796,13 +890,7 @@ class SetupPanel(QWidget):
                 if c_.get("description"):
                     it.setToolTip(c_["description"])
                 self.comp.setItem(r, c, it)
-        names = self.model.readable_channels() + self.model.raw_channels()
-        cur = self.m_chan.currentText()
-        self.m_chan.blockSignals(True)
-        self.m_chan.clear()
-        self.m_chan.addItems(names)
-        self.m_chan.setEditText(cur)
-        self.m_chan.blockSignals(False)
+        self._show_uacts()
 
     def _show_raw(self):
         name = self._sel_name(self.inst)
@@ -854,9 +942,15 @@ class SetupPanel(QWidget):
 
     def _raw_get(self):
         inst, c = self._raw_spec()
-        if c is not None:
-            self.m_chan.setEditText("%s.%s" % (inst, c["name"]))
-            self._manual_get()
+        if c is None:
+            return
+        ref = "%s.%s" % (inst, c["name"])
+        self.msg.setText("reading %s…" % ref)
+
+        def ok(v):
+            self.msg.setText("%s = %s" % (ref, _short(v)))
+            self._note_value(ref, v)
+        self.conn.request("read_channel", {"name": ref}, on_ok=ok, on_err=self._err(ref))
 
     def _raw_set(self):
         inst, c = self._raw_spec()
@@ -876,9 +970,7 @@ class SetupPanel(QWidget):
             else:
                 txt, ok = QInputDialog.getText(self, "Set %s" % ref, label, text=_short(current))
             if ok and txt.strip():
-                self.m_chan.setEditText(ref)
-                self.m_value.setText(txt.strip())
-                self._manual_set()
+                self._write(ref, txt.strip())
         self.conn.request("read_channel", {"name": ref},
                           on_ok=lambda v: (self._note_value(ref, v), ask(v)),
                           on_err=lambda e: ask(""))
@@ -1035,35 +1127,122 @@ class SetupPanel(QWidget):
                     it.setToolTip("read or set at %s" % time.strftime("%H:%M:%S"))
                     self.raw.setItem(r, 6, it)
 
-    def _manual_get(self):
-        name = self.m_chan.currentText().strip()
-        if not name:
-            return
-        self.m_result.setText("reading %s…" % name)
-
-        def ok(v):
-            self.m_result.setText("%s = %s" % (name, _short(v)))
-            self._note_value(name, v)
-        self.conn.request("read_channel", {"name": name}, on_ok=ok,
-                          on_err=lambda e: self.m_result.setText("<span style='color:#d55'>✘ %s</span>" % e))
-
-    def _manual_set(self):
-        name = self.m_chan.currentText().strip()
-        txt = self.m_value.text().strip()
-        if not name or not txt:
-            return
+    def _write(self, ref: str, txt: str) -> None:
+        """Set a configuration channel from the text the user typed."""
         try:
             value = json.loads(txt)
         except ValueError:
             value = txt
         if isinstance(value, list):
             value = np.asarray(value, dtype=float)
-        self.m_result.setText("setting %s…" % name)
-        self.conn.request("write_channel", {"name": name, "value": value, "ramp": self.m_ramp.isChecked()},
-                          on_ok=lambda v: (self.m_result.setText("%s ← %s" % (name, _short(v))),
-                                           self._note_value(name, v),
+        self.msg.setText("setting %s…" % ref)
+        self.conn.request("write_channel", {"name": ref, "value": value},
+                          on_ok=lambda v: (self.msg.setText("%s ← %s" % (ref, _short(v))),
+                                           self._note_value(ref, v),
                                            self.model.schedule_refresh()),
-                          on_err=lambda e: self.m_result.setText("<span style='color:#d55'>✘ %s</span>" % e))
+                          on_err=self._err(ref))
+
+    # ------------------------------------------------------------ user actions --
+    def _uact_sel(self) -> Optional[dict]:
+        name = self._sel_name(self.uact)
+        return next((a for a in self.model.user_actions() if a["name"] == name), None)
+
+    def _show_uacts(self) -> None:
+        acts = self.model.user_actions()
+        sel = self._sel_name(self.uact)
+        self.uact.setRowCount(len(acts))
+        for r, a in enumerate(acts):
+            last = a.get("last") or {}
+            if a.get("running"):
+                status, color = "running…", "#e39a1b"
+            elif last:
+                status = "%s %s (%.3g s)" % ({"finished": "✔", "aborted": "■", "error": "✘"}.get(
+                    last.get("status"), ""), time.strftime("%H:%M:%S", time.localtime(
+                        last.get("ended") or 0)), last.get("elapsed") or 0)
+                color = {"error": "#d44", "aborted": "#c80"}.get(last.get("status"), "")
+            else:
+                status, color = "", ""
+            for c, v in enumerate((a["name"], a.get("description", ""), status)):
+                it = QTableWidgetItem(v)
+                tip = a.get("description") or a["name"]
+                if last.get("error"):
+                    tip += "\nlast run: " + last["error"]
+                it.setToolTip(tip)
+                if c == 2 and color:
+                    it.setForeground(QColor(color))
+                self.uact.setItem(r, c, it)
+            if a["name"] == sel:
+                self.uact.selectRow(r)
+        if acts and self.uact.currentRow() < 0:
+            self.uact.selectRow(0)
+        running = any(a.get("running") for a in acts)
+        self.uact_abort.setEnabled(running)
+        self.uact_run.setEnabled(bool(acts))
+
+    def _run_uact(self, a: Optional[dict] = None) -> None:
+        a = a or self._uact_sel()
+        if a is None:
+            return
+        if a.get("confirm") and QMessageBox.question(
+                self, "Run action", "Run %s?%s" % (a["name"], ("\n\n" + a["description"])
+                                                   if a.get("description") else "")) \
+                != QMessageBox.Yes:
+            return
+        name = a["name"]
+        self.msg.setText("running %s…" % name)
+
+        def done(r):
+            st = r.get("status") if isinstance(r, dict) else "finished"
+            if st == "finished":
+                self.msg.setText("✔ %s done (%.3g s)" % (name, r.get("elapsed") or 0))
+            else:
+                self._err(name)("%s%s" % (st, (": " + r["error"]) if r.get("error") else ""))
+            self.model.schedule_refresh()
+        self.conn.request("run_user_action", {"name": name}, on_ok=done,
+                          on_err=self._err(name), timeout=7 * 24 * 3600)
+        self.model.schedule_refresh()
+
+    def _abort_uact(self) -> None:
+        a = self._uact_sel()
+        name = a["name"] if a is not None and a.get("running") else None
+        self.conn.request("abort_user_action", {"name": name} if name else {},
+                          on_ok=lambda r: self.msg.setText("aborting %s" % ", ".join(r or [])),
+                          on_err=self._err("abort"))
+
+    def _edit_uact_sel(self) -> None:
+        a = self._uact_sel()
+        if a is not None:
+            self._edit_uact(a)
+
+    def _edit_uact(self, a: Optional[dict]) -> None:
+        names = self.model.readable_channels() + self.model.config_channels(writable=True)
+        dlg = UserActionDialog(a, names, [x["name"] for x in self.model.user_actions()],
+                               parent=self)
+        if dlg.exec() and dlg.result_value:
+            v = dict(dlg.result_value)
+            if a is not None:
+                v.update(replace=a["name"] == v["name"], rename_from=a["name"])
+            self.conn.request("define_user_action", v,
+                              on_ok=self._done("action %s saved" % v["name"]),
+                              on_err=self._err("action"))
+
+    def _remove_uact(self) -> None:
+        a = self._uact_sel()
+        if a is None or QMessageBox.question(self, "Remove action", "Remove the action %s?"
+                                             % a["name"]) != QMessageBox.Yes:
+            return
+        self.conn.request("remove_user_action", {"name": a["name"]},
+                          on_ok=self._done("action %s removed" % a["name"]),
+                          on_err=self._err("remove"))
+
+    def _move_uact(self, step: int) -> None:
+        a = self._uact_sel()
+        if a is None:
+            return
+        names = [x["name"] for x in self.model.user_actions()]
+        pos = max(0, min(len(names) - 1, names.index(a["name"]) + step))
+        self.conn.request("move_user_action", {"name": a["name"], "position": pos},
+                          on_ok=self._done(""), on_err=self._err("move"))
 
     # ------------------------------------------------------------------ setups --
     def _save_setup(self):

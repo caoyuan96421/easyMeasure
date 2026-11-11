@@ -44,7 +44,7 @@ class BackendModel(QObject):
             self.queueChanged.emit(st["queue"])
 
     def _on_event(self, kind: str, data) -> None:
-        if kind in ("changed", "settings"):
+        if kind in ("changed", "settings", "user_action"):
             self.schedule_refresh()
         elif kind == "queue" and isinstance(data, dict):
             self.state["queue"] = data
@@ -98,6 +98,10 @@ class BackendModel(QObject):
 
     def instruments(self) -> List[dict]:
         return list(self.state.get("instruments", []))
+
+    def user_actions(self) -> List[dict]:
+        """The user-defined actions (name, code, description, confirm, running, last)."""
+        return list(self.state.get("actions", []))
 
     def writable_channels(self, numeric_only: bool = False) -> List[str]:
         out = []

@@ -32,6 +32,7 @@ from .resources import ResourceManager, normalize_address
 from .runqueue import RunQueue
 from .scripting import ScriptRunner
 from .storage import DataSet, DataStore, export_hdf5, read_header
+from .user_actions import UserAction, UserActions
 from .sweep import RunControl, SweepRunner, compute_setpoints, normalize_definition, validate_against
 
 log = get_logger("backend")
@@ -62,6 +63,8 @@ class Backend:
         "channel_info",
         "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
         "set_many", "list_channels",
+        "define_user_action", "remove_user_action", "move_user_action", "run_user_action",
+        "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
         "validate_sweep", "queue_add", "queue_remove", "queue_move", "queue_clear",
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
@@ -108,6 +111,7 @@ class Backend:
         self.last_dataset: Optional[DataSet] = None
         self._run_lock = threading.Lock()
         self.queue = RunQueue(self._execute_sweep_item, self.scripts.run, self.control, self.emit)
+        self.user_actions = UserActions(self._action_runner, self.emit)
         self.ring.add_listener(self._on_log)
         self.monitor.start()
         self.started = time.time()
@@ -161,6 +165,7 @@ class Backend:
             "instruments": self.instruments.describe(),
             "channels": self.channels.describe(),
             "monitor": self.monitor.status(),
+            "actions": self.user_actions.describe(),
             "queue": self.queue.describe(),
             "current_run": self.current_run(),
             "resources": self.resources.list(),
@@ -681,6 +686,42 @@ class Backend:
 
     def abort_all(self) -> None:
         self.queue.abort_all()
+        self.user_actions.abort()
+
+    # ----------------------------------------------------------- user actions --
+    def _action_runner(self, control) -> ScriptRunner:
+        r = ScriptRunner(self.channels, self.instruments, control)   # no run_sweep: queue it
+        r.state = self.scripts.state            # the same ``state`` dict as queued scripts
+        return r
+
+    def list_user_actions(self) -> list:
+        return self.user_actions.describe()
+
+    def define_user_action(self, name: str, code: str, description: str = "",
+                           confirm: bool = False, replace: bool = False,
+                           rename_from: Optional[str] = None) -> dict:
+        """Define (or with *replace* change; with *rename_from* rename) a user action:
+        a named Python snippet using the script API (see backend/user_actions.py)."""
+        a = UserAction(name, code, description, confirm)
+        self.user_actions.define(a, replace=replace, rename_from=rename_from)
+        self._changed("actions")
+        return a.to_dict()
+
+    def remove_user_action(self, name: str) -> None:
+        self.user_actions.remove(name)
+        self._changed("actions")
+
+    def move_user_action(self, name: str, position: int) -> None:
+        self.user_actions.move(name, position)
+        self._changed("actions")
+
+    def run_user_action(self, name: str) -> dict:
+        """Run a user action now (not through the queue) and wait for its end:
+        {name, status: finished / aborted / error, error, elapsed}."""
+        return self.user_actions.run(name)
+
+    def abort_user_action(self, name: Optional[str] = None) -> list:
+        return self.user_actions.abort(name)
 
     def run_script_now(self, code: str, name: str = "script") -> int:
         """Queue a script at the front and start the queue."""
@@ -689,7 +730,7 @@ class Backend:
 
     # ------------------------------------------------------------------ setup --
     def get_setup(self) -> dict:
-        return setup_io.capture(self.instruments, self.channels, self.monitor)
+        return setup_io.capture(self.instruments, self.channels, self.monitor, self.user_actions)
 
     def save_setup(self, path: Optional[str] = None) -> dict:
         s = self.get_setup()
@@ -706,7 +747,8 @@ class Backend:
                 raise ChannelError("give a setup dict or a path")
             setup = setup_io.read(path)
         problems = setup_io.apply(setup, self.instruments, self.channels, self.monitor,
-                                  replace=replace, connect=connect)
+                                  replace=replace, connect=connect,
+                                  user_actions=self.user_actions)
         self._changed("setup")
         return problems
 

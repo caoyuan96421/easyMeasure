@@ -125,6 +125,7 @@ table.grid td { padding: 2px 6px; border-bottom: 1px solid var(--border); white-
 table.grid tr:hover td { background: color-mix(in srgb, var(--sel) 45%, transparent); }
 table.grid tr.sel td { background: var(--sel); }
 table.grid tr.err td { color: var(--err); }
+table.grid tr.busy td { color: var(--warn); }
 table.grid tr.empty td { color: var(--muted); font-style: italic; }
 table.grid.edit td { padding: 1px 2px; max-width: none; }
 table.grid.edit input { width: 100%; }

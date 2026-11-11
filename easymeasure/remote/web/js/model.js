@@ -32,7 +32,7 @@ export class Model {
   }
 
   _event(kind, data) {
-    if (kind === "changed" || kind === "settings") this.scheduleRefresh();
+    if (kind === "changed" || kind === "settings" || kind === "user_action") this.scheduleRefresh();
     else if (kind === "queue" && data) { this.state.queue = data; this.emit("queue", data); }
     else if (kind === "sweep_warning") this.emit("message", "warning", String(data && data.message));
     else if (kind === "ppt") this.emit("message", "info", `slide added to ${data && data.path}`);
@@ -48,6 +48,8 @@ export class Model {
       .map((c) => ({ name: c.name, variables: c.variables.map((v) => v.name) }));
   }
   instruments() { return this.state.instruments || []; }
+  /** user-defined actions: {name, code, description, confirm, running, last} */
+  userActions() { return this.state.actions || []; }
   settings() { return this.state.settings || {}; }
 
   writableChannels(numericOnly = false) {
