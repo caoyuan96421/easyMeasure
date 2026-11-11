@@ -598,7 +598,8 @@ class Backend:
 
     def _execute_sweep_item(self, definition: dict, item: dict) -> dict:
         d = normalize_definition(definition)
-        validate_against(d, self.channels)  # re-check limits right before running
+        # re-check limits right before running (abortable: a big map takes a moment)
+        validate_against(d, self.channels, abort_check=self.control.check)
         with self._run_lock:
             run, path = self.store.new_path(d["name"])
             runner = SweepRunner(d, self.channels, self.control, path, run, self.emit,

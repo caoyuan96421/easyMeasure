@@ -395,6 +395,15 @@ class DataSet:
             self.events.append(obj)
         elif ftype == FOOTER:
             self.footer = obj
+            self.fill_missing()
+
+    def fill_missing(self) -> None:
+        """Give every recorded channel an array, NaN where nothing was recorded: a
+        channel whose every point was skipped (or never reached) still appears."""
+        with self.lock:
+            for name, k in self.dim_of.items():
+                if name not in self.data:
+                    self._alloc(name, k, np.nan)
 
     def apply_phase(self, phase: str, values: dict) -> None:
         if phase == "axes":

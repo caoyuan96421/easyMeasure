@@ -156,7 +156,7 @@ def test_read_error_policies(demo):
     item, ds = run(demo, d)
     assert item["status"] == "finished"
     assert ds.errors["bad"] == 4
-    assert "bad" not in ds.data and not np.isnan(ds.data["I"]).any()
+    assert np.isnan(ds.data["bad"]).all() and not np.isnan(ds.data["I"]).any()   # all-NaN, present
     d["on_read_error"] = "abort"
     item, ds = run(demo, d)
     assert item["status"] == "error"

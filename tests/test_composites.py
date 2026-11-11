@@ -420,7 +420,7 @@ def test_out_of_range_actions(demo):
         {"points": 5, "sweep": [{"channel": "eps", "start": -0.4, "stop": 0.4}], "record": ["Vx"]},
         {"points": 6, "sweep": [{"channel": "U", "start": 0.0, "stop": 0.5}], "record": []}]}
     r = be.validate_sweep(d)
-    assert "composite gates: %d points out of range, will be skipped" % out.sum() in r["warnings"]
+    assert "composite gates: %d of 30 points out of range, will be skipped" % out.sum() in r["warnings"]
     be.set_many({"eps": 0.0, "U": 0.0})
     be.queue_add({"kind": "sweep", "definition": d}, start=True)
     assert be.queue.wait_idle(60)

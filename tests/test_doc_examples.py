@@ -122,7 +122,7 @@ def test_nd_map_skips_the_corners(graphene):
     vtg = (n + 0.15 - dd / 0.0452) / 1.8
     expected = int(((np.abs(vbg) > 10) | (np.abs(vtg) > 10)).sum())
     assert expected > 0
-    assert "composite nD: %d points out of range, will be skipped" % expected in r["warnings"]
+    assert "composite nD: %d of 3131 points out of range, will be skipped" % expected in r["warnings"]
 
 
 def test_landau_minima_and_unpolled_magnet(graphene):

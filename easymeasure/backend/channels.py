@@ -46,6 +46,7 @@ from .logsys import get_logger
 log = get_logger("channels")
 
 RAMP_INTERVAL = 0.05  # seconds between ramp steps
+PATH_SAMPLES = 257    # samples of a composite path, all limit-checked before a ramp
 TRUST_LAST_S = 2.0    # a value we set less than this long ago is not read back
 
 AbortCheck = Optional[Callable[[], None]]
@@ -561,6 +562,91 @@ class ChannelManager:
                     exc, c.name, ", which skips such points in sweeps" if mode == "skip" else ""),
                     c.name, mode) from None
 
+    def grid_out_of_range(self, values: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        """Fast check of many combinations at once, for sweep validation: *values*
+        maps variables of **one** multivariate composite to equally shaped arrays.
+        Returns a boolean array, True where a target of the composite would be out
+        of its range (or not finite), i.e. where ``check_many`` raises
+        :class:`OutOfRange`; never True for ``out_of_range="clamp"``.
+
+        Returns ``None`` when the fast check does not apply (targets that are not
+        plain scalar aliases, a variable outside its own range, a formula that does
+        not evaluate element-wise …): the caller then checks the combinations one
+        by one, which also gives the exact error message."""
+        with self._lock:
+            groups = {self.group_of(n) for n in values}
+            if len(groups) != 1 or None in groups:
+                return None
+            c = self._composites[groups.pop()]
+            arrs = {n: np.asarray(v, dtype=float) for n, v in values.items()}
+            shape = next(iter(arrs.values())).shape
+            if any(a.shape != shape for a in arrs.values()):
+                return None
+            env = {}
+            for n in c.channels():
+                if n in arrs:
+                    a = arrs[n]
+                    var = c.var[n]
+                    if not np.isfinite(a).all():
+                        return None
+                    try:
+                        self._check_limits(n, a, var.min, var.max)
+                    except LimitError:
+                        return None
+                    env[n] = a
+                else:
+                    x = self._last.get(n)
+                    env[n] = None if x is None else float(x)
+            bad = np.zeros(shape, dtype=bool)
+            for t, deps in c.deps.items():
+                if not set(deps) & set(arrs):
+                    continue
+                if any(env[d] is None for d in deps):
+                    continue                  # partial: needs a variable never set
+                a = self._aliases.get(t)
+                if a is None or a.read_only:
+                    return None
+                try:
+                    spec = self._alias_spec(a)
+                except Exception:
+                    return None
+                if spec.shape != () or spec.dtype == "str" or not spec.writable:
+                    return None
+                try:
+                    tv = c.exprs[t].evaluate({d: env[d] for d in deps})
+                    tv = np.broadcast_to(np.asarray(tv, dtype=float), shape)
+                except Exception:
+                    return None
+                # element-wise? compare a few combinations with the scalar evaluation
+                flat = [0, tv.size - 1, tv.size // 2, tv.size // 3]
+                for j in set(f for f in flat if 0 <= f < tv.size):
+                    ij = np.unravel_index(j, shape)
+                    try:
+                        one = float(c.exprs[t].evaluate(
+                            {d: (env[d][ij] if isinstance(env[d], np.ndarray) else env[d])
+                             for d in deps}))
+                    except Exception:
+                        return None
+                    if not (np.isclose(one, tv[ij], rtol=1e-9, atol=1e-12) or
+                            (np.isnan(one) and np.isnan(tv[ij]))):
+                        return None
+                if c.out_of_range == "clamp":
+                    bad |= ~np.isfinite(tv)
+                    continue
+                with np.errstate(invalid="ignore"):
+                    out = ~np.isfinite(tv)
+                    if a.min is not None:
+                        out |= tv < a.min - 1e-12 * max(1.0, abs(a.min))
+                    if a.max is not None:
+                        out |= tv > a.max + 1e-12 * max(1.0, abs(a.max))
+                bad |= out
+            return bad
+
+    def out_of_range_mode(self, composite: str) -> Optional[str]:
+        """The ``out_of_range`` action of a multivariate composite (None otherwise)."""
+        c = self._composites.get(composite)
+        return getattr(c, "out_of_range", None) if c is not None and c.type == "multi" else None
+
     def check_point(self, values: Dict[str, Any]) -> Optional[str]:
         """For a sweep point: ``None`` if *values* can be set, the reason if a
         composite with ``out_of_range="skip"`` puts a target out of range (the point
@@ -625,6 +711,12 @@ class ChannelManager:
 
     @staticmethod
     def _check_limits(name, arr, lo, hi) -> None:
+        if isinstance(arr, float):            # the common case, without numpy
+            if lo is not None and arr < lo - 1e-12 * max(1.0, abs(lo)):
+                raise LimitError("%s: value %s below minimum %g" % (name, _fmt(arr), lo))
+            if hi is not None and arr > hi + 1e-12 * max(1.0, abs(hi)):
+                raise LimitError("%s: value %s above maximum %g" % (name, _fmt(arr), hi))
+            return
         a = np.asarray(arr, dtype=float)
         if lo is not None and np.any(a < lo - 1e-12 * max(1.0, abs(lo))):
             raise LimitError("%s: value %s below minimum %g" % (name, _fmt(a), lo))
@@ -1018,7 +1110,19 @@ class ChannelManager:
                 if u >= 1.0:
                     return plan
                 return self._plan({n: as_value(x0[n] + (x1[n] - x0[n]) * u) for n in start})
-            self._ramp(items, path, 257, abort_check, rated)
+            # a non-linear relation can leave the allowed range between two allowed
+            # points (e.g. across points a sweep skips): then the hardware moves on a
+            # straight line instead, which stays inside the limits of every channel
+            try:
+                for u in np.linspace(0.0, 1.0, PATH_SAMPLES)[1:-1]:
+                    for n, v in path(float(u)).items():
+                        self._check_node_fast(n, v)
+            except (LimitError, ExpressionError) as exc:
+                log.debug("%s: the relation leaves the range on the way (%s); straight line",
+                          ", ".join(start), exc)
+                on_path = False
+        if on_path:
+            self._ramp(items, path, PATH_SAMPLES, abort_check, rated)
         else:
             tv = {n: np.asarray(plan[n], dtype=float) for n in leaves}
             self._ramp(items, lambda u: {n: starts[n] + (tv[n] - starts[n]) * u for n in leaves},

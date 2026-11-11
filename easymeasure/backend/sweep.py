@@ -100,7 +100,9 @@ log = get_logger("sweep")
 MAX_POINTS_PER_DIM = 10_000_000
 MAX_TOTAL_POINTS = 100_000_000
 MAX_SETPOINT_ELEMENTS = 20_000_000
-#: combinations of composite variables checked one by one in validation
+#: combinations of composite variables checked in advance by validation: all at once
+#: (vectorised) when the composite drives aliases directly, else one by one
+MAX_COMBINATIONS_VECTOR = 5_000_000
 MAX_COMBINATIONS_CHECKED = 250_000
 #: per-point hooks of a dimension, in the order they run
 POINT_HOOKS = ("pre_sweep", "post_sweep", "pre_record", "post_record")
@@ -319,7 +321,8 @@ def composite_dims(d: dict, channels) -> Dict[str, Dict[int, List[str]]]:
     return out
 
 
-def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
+def validate_against(d: dict, channels, after_pre: bool = False,
+                     abort_check=None) -> List[str]:
     """Check channel existence/direction and limits for every setpoint.
 
     Returns a list of warnings; raises :class:`SweepDefinitionError` on errors.
@@ -335,7 +338,8 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
     setpoints = compute_setpoints(d)
     deferred = set() if after_pre else _pre_configured(d, channels)
     comps = composite_dims(d, channels)
-    skipped: Dict[str, int] = {}          # composite -> combinations it will skip
+    skipped: Dict[str, int] = {}          # composite -> points of the sweep it will skip
+    total_points = int(np.prod([dim["points"] for dim in d["dimensions"]]))
 
     def problem(name: str, text: str) -> None:
         insts = _instruments_of(channels, name) & deferred
@@ -382,7 +386,9 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
                     except OutOfRange as exc:
                         if exc.mode != "skip":
                             raise
-                        skipped[exc.composite] = skipped.get(exc.composite, 0) + 1
+                        # every point of the other dimensions with this value is lost
+                        skipped[exc.composite] = skipped.get(exc.composite, 0) + \
+                            total_points // dim["points"]
             except LimitError as exc:
                 errors.append(str(exc))
             except ChannelError as exc:
@@ -411,6 +417,33 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
         ks = sorted(by_dim)
         sizes = [d["dimensions"][k]["points"] for k in ks]
         total = int(np.prod(sizes))
+        lost_per = total_points // total     # sweep points per combination
+        mask = None
+        if total <= MAX_COMBINATIONS_VECTOR and hasattr(channels, "grid_out_of_range"):
+            grids = {}
+            for j, k in enumerate(ks):
+                sh = [1] * len(ks)
+                sh[j] = sizes[j]
+                for n in by_dim[k]:
+                    a = np.asarray(setpoints[k][n], dtype=float)
+                    if a.ndim != 1:
+                        grids = None
+                        break
+                    grids[n] = np.broadcast_to(a.reshape(sh), sizes)
+                if grids is None:
+                    break
+            if grids:
+                try:
+                    mask = channels.grid_out_of_range(grids)
+                except Exception:
+                    mask = None
+            if mask is not None and mask.any() and channels.out_of_range_mode(g) != "skip":
+                mask = None                  # one by one, for the exact error
+        if mask is not None:
+            n_bad = int(mask.sum())
+            if n_bad:
+                skipped[g] = skipped.get(g, 0) + n_bad * lost_per
+            continue
         if total > MAX_COMBINATIONS_CHECKED:
             warnings.append("composite %s: %d combinations of %s are too many to check in "
                             "advance; each is checked when it is reached" % (g, total,
@@ -418,6 +451,8 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
             continue
         try:
             for flat in range(total):
+                if abort_check is not None and flat % 1000 == 0:
+                    abort_check()
                 idx = np.unravel_index(flat, sizes)
                 values = {n: float(setpoints[k][n][i]) for k, i in zip(ks, idx)
                           for n in by_dim[k]}
@@ -426,14 +461,15 @@ def validate_against(d: dict, channels, after_pre: bool = False) -> List[str]:
                 except OutOfRange as exc:
                     if exc.mode != "skip":
                         raise
-                    skipped[g] = skipped.get(g, 0) + 1
+                    # every point of the other dimensions with this combination is lost
+                    skipped[g] = skipped.get(g, 0) + lost_per
         except LimitError as exc:
             errors.append(str(exc))
         except ChannelError as exc:
             problem(names[0], str(exc))
     for g, n in sorted(skipped.items()):
-        warnings.append("composite %s: %d point%s out of range, will be skipped"
-                        % (g, n, "" if n == 1 else "s"))
+        warnings.append("composite %s: %d of %d points out of range, will be skipped"
+                        % (g, n, total_points))
     for ph in (("post",) if after_pre else ("pre", "post")):
         # a constant may depend on an earlier one of the same phase (mode first, then
         # the compliance of that mode): those are only checked when they are applied
@@ -688,8 +724,14 @@ class SweepRunner:
 
     def _record(self, names: List[str]) -> tuple:
         values, errors = {}, {}
+        # composite variables of an outer dimension, set with the inner ones: their
+        # value is the setpoint about to be set, not the one the hardware still has
+        pending = {n: v for g in self._pending.values() for n, v in g.items()}
         for name in names:
             self.control.check()
+            if name in pending:
+                values[name] = pending[name]
+                continue
             try:
                 v = self._read(name)
                 values[name] = v
@@ -841,7 +883,8 @@ class SweepRunner:
             if _pre_configured(self.d, self.channels):
                 # the pre-sweep constants changed instrument settings (and maybe their
                 # channel lists): make sure the sweep still makes sense before point 1
-                validate_against(self.d, self.channels, after_pre=True)
+                validate_against(self.d, self.channels, after_pre=True,
+                                 abort_check=self.control.check)
             self._value_axes()
             self._loop(len(self.shape) - 1, ())
             self.status = "finished"
@@ -893,6 +936,7 @@ class SweepRunner:
             footer["terminated_at"] = self._ended_at
         self._journal(FOOTER, footer, sync=True)
         self.dataset.footer = footer
+        self.dataset.fill_missing()
         self._close_journal()
         self._emit("sweep_end", {"run": self.run_number, "status": self.status,
                                  "error": self.error, "path": str(self.path), "footer": footer})

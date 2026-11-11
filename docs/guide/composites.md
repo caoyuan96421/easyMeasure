@@ -100,7 +100,22 @@ Variables of one composite are always set together:
   moves the gates with the old `n` left over from the previous line, and every
   combination the hardware sees is one of the sweep's points, checked in advance.
 
-Validation checks every combination the sweep will set.
+Validation checks every combination the sweep will set (all at once, so even a
+1000 × 1000 map takes a fraction of a second) and says how many points of the sweep
+will be skipped.
+
+A few details:
+
+* A skipped point runs its **pre-sweep** point action (it comes first), but nothing
+  after it: no channel is set, no delay, no recording.
+* An outer-dimension variable recorded in its own dimension is recorded as its
+  setpoint.
+* With a non-linear formula, the allowed region can have holes: between two
+  allowed points the formula may need a gate beyond its limit. The ramp between
+  them then moves each gate on a straight line in gate voltage instead of following
+  the formula. That line is always inside the limits, and nobody measures during a
+  ramp.
+* A sweep in which every point is skipped still finishes, with all-NaN data.
 
 ### Formulas
 
