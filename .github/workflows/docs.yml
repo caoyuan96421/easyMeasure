@@ -27,7 +27,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: System libraries for Qt (the command-line help of the GUI imports it)
-        # retried: the runners' package mirrors are sometimes briefly unreachable
+        # retried: the runners' package mirrors are sometimes unreachable; without
+        # them only the GUI's help text on the command-line page is missing
+        continue-on-error: true
+        timeout-minutes: 12
         run: |
           for i in 1 2 3 4 5 6; do
             sudo apt-get update && sudo apt-get install -y --no-install-recommends \
