@@ -287,3 +287,39 @@ def test_idle_non_reading_client_is_never_dropped(server, demo, monkeypatch):
     finally:
         s.close()
         demo.monitor_remove("spectrum")
+
+
+def test_stop_ramps_from_another_client(server, demo):
+    """A slow ramp started by one client is listed (ramp_state, event "ramps") and
+    stopped by another; the write returns where the channel got to.  stop_ramps
+    is a control command: served while the write still blocks a worker."""
+    demo.define_alias(name="Vg", target="src.V1", min=-2, max=2, ramp_rate=0.2, unit="V",
+                      replace=True)
+    demo.write_channel(name="Vg", value=0.0, ramp=False)
+    events = []
+    c1, c2 = client_for(server, "gui-1"), client_for(server, "gui-2")
+    c2.on_event = lambda k, d: events.append(d) if k == "ramps" else None
+    res = {}
+    try:
+        th = threading.Thread(target=lambda: res.update(v=c1.call("write_channel", name="Vg",
+                                                                   value=2.0, _timeout=60)))
+        th.start()
+        t0 = time.time()
+        while not c2.call("ramp_state")["active"] and time.time() - t0 < 5:
+            time.sleep(0.05)
+        act = c2.call("ramp_state")["active"]
+        assert [r["channels"] for r in act] == [["Vg"]] and act[0]["targets"] == {"Vg": 2.0}
+        time.sleep(0.5)
+        assert c2.call("stop_ramps") == ["Vg"]
+        th.join(5)
+        assert not th.is_alive() and 0.05 < res["v"] < 0.5
+        assert demo.read_channel(name="Vg") == pytest.approx(res["v"], abs=1e-9)
+        assert c2.call("ramp_state")["active"] == []
+        t0 = time.time()
+        while len(events) < 2 and time.time() - t0 < 5:
+            time.sleep(0.05)
+        assert events[0]["active"][0]["channels"] == ["Vg"] and events[-1]["active"] == []
+        assert c2.call("stop_ramps") == []
+    finally:
+        c1.close()
+        c2.close()

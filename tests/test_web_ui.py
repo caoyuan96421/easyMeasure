@@ -458,3 +458,48 @@ def test_web_user_actions(browser, gw, demo):
     assert demo.list_user_actions()[1]["last"]["status"] == "aborted"
     assert not errors, errors
     page.context.close()
+
+
+def test_web_stop_ramps_button(browser, gw, demo):
+    """The web manual panel's "Stop ramps": dark until a ramp runs (started from any
+    window), stops it, goes dark again."""
+    import threading
+    demo.define_alias(name="Vg", target="src.V1", min=-2, max=2, ramp_rate=0.2, unit="V", replace=True)
+    demo.write_channel(name="Vg", value=0.0, ramp=False)
+    errors = []
+    page = open_page(browser, gw, "olga", errors)            # an operator may stop ramps
+    stop = page.locator("button.stop-ramps")
+    stop.wait_for(timeout=10000)
+    assert stop.is_disabled()
+    th = threading.Thread(target=lambda: demo.write_channel(name="Vg", value=1.5))
+    th.start()
+    page.wait_for_function("!document.querySelector('button.stop-ramps').disabled", timeout=10000)
+    assert "Vg" in stop.text_content() and "active" in stop.get_attribute("class")
+    time.sleep(0.3)
+    stop.click()
+    th.join(5)
+    assert not th.is_alive() and 0.02 < demo.channels.get("Vg") < 0.6
+    page.wait_for_function("document.querySelector('button.stop-ramps').disabled", timeout=10000)
+    # started from this page
+    row = page.locator(".man-row", has_text="Vg").first
+    inp = row.locator("input.man-num")
+    inp.fill("-1")
+    inp.press("Enter")
+    page.wait_for_function("!document.querySelector('button.stop-ramps').disabled", timeout=10000)
+    stop.click()
+    page.wait_for_function("document.querySelector('button.stop-ramps').disabled", timeout=10000)
+    assert -1.0 < demo.channels.get("Vg") < 0.6
+    # a viewer sees the ramp but may not stop it
+    v = open_page(browser, gw, "vic", errors)
+    vstop = v.locator("button.stop-ramps")
+    vstop.wait_for(timeout=10000)
+    th = threading.Thread(target=lambda: demo.write_channel(name="Vg", value=1.0))
+    th.start()
+    v.wait_for_function("document.querySelector('button.stop-ramps').classList.contains('active')",
+                        timeout=10000)
+    assert vstop.is_disabled() and "not allowed" in vstop.get_attribute("title")
+    demo.stop_ramps()
+    th.join(5)
+    v.context.close()
+    assert not errors, errors
+    page.context.close()

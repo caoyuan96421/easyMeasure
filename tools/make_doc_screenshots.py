@@ -335,6 +335,16 @@ def quick_start(be, w):
     mp.rows["Vbg"].editor.setValue(0.0)
     pump(1.5)
     be.monitor_remove("Rxx")
+    # Stop ramps lights up while a ramp runs
+    mp.rows["Vbg"].editor.setValue(-8.0)
+    pump(3, lambda: mp.stop_ramps.isEnabled())
+    pump(0.4)
+    save(w, "qs-stop-ramps", [mp.stop_ramps, mp.rows["Vbg"].editor], ["1", "2"], crop=w.manual)
+    mp.stop_ramps.click()
+    pump(3, lambda: not mp.stop_ramps.isEnabled() and not mp._pending.get("Vbg"))
+    mp.rows["Vbg"].editor.setValue(0.0)
+    pump(3, lambda: not mp._pending.get("Vbg"))
+    pump(0.5)
 
     # the first sweep
     ed = tab(w, "Sweep")

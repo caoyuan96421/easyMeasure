@@ -14,6 +14,7 @@ class BackendModel(QObject):
 
     stateChanged = Signal(dict)
     queueChanged = Signal(dict)
+    rampsChanged = Signal(list)       # ramps of direct writes now running (stop_ramps)
     message = Signal(str, str)        # (level, text) for the status bar
 
     def __init__(self, conn: BackendConnection, parent=None):
@@ -42,6 +43,7 @@ class BackendModel(QObject):
         self.stateChanged.emit(st)
         if "queue" in st:
             self.queueChanged.emit(st["queue"])
+        self.rampsChanged.emit(list(st.get("ramps") or []))
 
     def _on_event(self, kind: str, data) -> None:
         if kind in ("changed", "settings", "user_action"):
@@ -49,6 +51,9 @@ class BackendModel(QObject):
         elif kind == "queue" and isinstance(data, dict):
             self.state["queue"] = data
             self.queueChanged.emit(data)
+        elif kind == "ramps" and isinstance(data, dict):
+            self.state["ramps"] = list(data.get("active") or [])
+            self.rampsChanged.emit(self.state["ramps"])
         elif kind == "sweep_warning":
             self.message.emit("warning", str(data.get("message")))
         elif kind == "ppt":

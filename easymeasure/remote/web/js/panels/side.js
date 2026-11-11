@@ -364,8 +364,31 @@ export class ManualPanel {
       title: "also list the instrument settings (configuration channels: modes, ranges, time constants …)" });
     this.host = h("div", { class: "man-rows" });
     this.status = h("div", { class: "msg muted" });
-    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.settings, " settings"), h("label", { class: "check" }, this.ramp, " ramp")), this.host, this.status);
+    // lit only while a ramp of a direct write runs (from any window); no data-cmd: the
+    // permission is applied here together with that
+    this.stopBtn = h("button", { class: "stop-ramps", text: "■ Stop ramps", title: "no ramp is running", disabled: true,
+      on: { click: () => this._stopRamps() } });
+    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.settings, " settings"),
+      h("label", { class: "check" }, this.ramp, " ramp"), this.stopBtn), this.host, this.status);
     app.model.on("state", (st) => this._state(st));
+    app.model.on("ramps", (act) => this.showRamps(act));
+  }
+
+  /** Light "Stop ramps" while ramps of direct writes run. */
+  showRamps(active) {
+    const names = [...new Set((active || []).flatMap((r) => r.channels || []))].sort();
+    const allowed = !this.conn.can || this.conn.can("stop_ramps");
+    this.stopBtn.disabled = !names.length || !allowed;
+    this.stopBtn.classList.toggle("active", names.length > 0);
+    this.stopBtn.textContent = !names.length ? "■ Stop ramps" : names.length <= 3 ? `■ Stop ramps (${names.join(", ")})` : `■ Stop ramps (${names.length})`;
+    this.stopBtn.title = !names.length ? "no ramp is running" : !allowed ? "not allowed for your role" : `stop the ramps of ${names.join(", ")} where they are now`;
+  }
+
+  async _stopRamps() {
+    try {
+      const names = await this.conn.request("stop_ramps");
+      this.say(names && names.length ? `stopped: ${names.join(", ")}` : "no ramp was running");
+    } catch (e) { this.say(`✘ stop ramps: ${e.message}`); }
   }
 
   say(t) { this.status.textContent = t; }

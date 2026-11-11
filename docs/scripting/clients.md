@@ -22,7 +22,10 @@ c.close()
 ```
 
 `call(cmd, **args)` blocks until the backend answers. The default timeout is 120 s;
-pass `_timeout=` for long ramps. A refused command raises
+pass `_timeout=` for long ramps. A ramp of `write_channel` / `set_many` can be stopped
+from any client (or the **Stop ramps** button of the Manual panel) with
+`c.call("stop_ramps")`; the write then returns the value reached. `ramp_state` lists
+the ramps running now, and the event `ramps` announces every change. A refused command raises
 `easymeasure.common.errors.RemoteError` with the backend's message:
 
 ```python

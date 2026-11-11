@@ -61,6 +61,13 @@ Each channel has a spin box, and a slider when it has a minimum and a maximum.
 * Writes are **protected and ramped**: alias limits and ramp rates apply. While a ramp
   runs, further changes to that channel are coalesced, so only the latest value is
   sent after it. The *ramp* box switches ramping off (jumps).
+* **■ Stop ramps** lights up (red, with the channel names) while a ramp is running,
+  whether it was started here, in another window, the web page or a Python client.
+  It stops every such ramp where it is: the channel keeps the value it had reached,
+  and the panel shows it. Ramps inside a sweep, a script or a user action are not
+  affected; **Abort** stops those.
+
+    ![Stop ramps (1), lit while Vbg (2) ramps](../images/qs-stop-ramps.png)
 * Right click → **Set from expression…**: a function of the present value `x`,
   e.g. `x + 0.01` or `x/2`.
 * **Read back** (↻) reads the present value.

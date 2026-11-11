@@ -20,7 +20,8 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from ..common import paths
-from ..common.errors import ChannelError, DriverError, EasyMeasureError, SweepDefinitionError
+from ..common.errors import (ChannelError, DriverError, EasyMeasureError, RampStopped,
+                             SweepDefinitionError)
 from . import setup_io
 from .channels import Alias, ChannelManager
 from .composites import composite_from_dict
@@ -62,7 +63,7 @@ class Backend:
         "read_channel", "write_channel", "query_channel", "raw_query", "raw_write",
         "channel_info",
         "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
-        "set_many", "list_channels",
+        "set_many", "list_channels", "stop_ramps", "ramp_state",
         "define_user_action", "remove_user_action", "move_user_action", "run_user_action",
         "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
@@ -104,6 +105,7 @@ class Backend:
         self.control = RunControl()
         self.monitor = Monitor(self.channels)
         self.monitor.listeners.append(lambda m: self.emit("monitor", m))
+        self.channels.ramp_listeners.append(lambda act: self.emit("ramps", {"active": act}))
         self.scripts = ScriptRunner(self.channels, self.instruments, self.control,
                                     run_sweep=self._script_run_sweep)
         self.store = DataStore(Path(self.settings["data_dir"]))
@@ -162,7 +164,8 @@ class Backend:
     def get_state(self) -> dict:
         """Everything a front end shows, in one dict: ``uptime``, ``settings``,
         ``instruments``, ``channels`` (aliases, composites, virtual channels), ``monitor``,
-        ``actions`` (user actions), ``queue``, ``current_run`` and ``resources``."""
+        ``actions`` (user actions), ``queue``, ``current_run``, ``resources`` and
+        ``ramps`` (ramps of direct writes now running, see ``ramp_state``)."""
         return {
             "uptime": time.time() - self.started,
             "settings": self.get_settings(),
@@ -173,6 +176,7 @@ class Backend:
             "queue": self.queue.describe(),
             "current_run": self.current_run(),
             "resources": self.resources.list(),
+            "ramps": self.channels.active_ramps(),
         }
 
     def get_settings(self) -> dict:
@@ -460,7 +464,29 @@ class Backend:
         apply and, with *ramp*, the value is approached at the alias' ramp rate.
         Measurement channels of instruments cannot be set raw (use an alias or
         ``set_raw`` in a script).  Returns the value that was set."""
-        return self.channels.set(name, value, ramp=ramp)
+        with self.channels.stoppable_ramps("write_channel %s" % name):
+            try:
+                return self.channels.set(name, value, ramp=ramp)
+            except RampStopped:
+                v = self.channels.get(name)
+                log.info("ramp of %s stopped at %s", name, v)
+                return v
+
+    def stop_ramps(self) -> list:
+        """Stop the ramps of direct writes (``write_channel``, ``set_many``: the Manual
+        panel, clients) that are running now.  Every channel stays where its ramp had
+        got to; the write returns that value.  Sweeps, scripts and user actions are
+        not affected (use ``abort``).  Returns the channels that were ramping."""
+        stopped = self.channels.stop_ramps()
+        if stopped:
+            log.info("ramps stopped: %s", ", ".join(stopped))
+        return stopped
+
+    def ramp_state(self) -> dict:
+        """``{"active": [...]}``: the ramps of direct writes now running (channels that
+        move, the values asked for, since when).  The event ``ramps`` sends the same
+        whenever it changes."""
+        return {"active": self.channels.active_ramps()}
 
     def query_channel(self, ref: str, value: Any) -> Any:
         """Write + read back in one transaction (limits of aliases on *ref* apply)."""
@@ -543,7 +569,17 @@ class Backend:
 
     def set_many(self, values: dict, ramp: bool = True) -> dict:
         """Set several channels together (e.g. all variables of a composite)."""
-        plan = self.channels.set_many(values, ramp=bool(ramp))
+        with self.channels.stoppable_ramps("set_many %s" % ", ".join(values)):
+            try:
+                plan = self.channels.set_many(values, ramp=bool(ramp))
+            except RampStopped:
+                plan = {}
+                for n in values:
+                    try:
+                        plan[n] = self.channels.get(n)
+                    except Exception:
+                        plan[n] = None
+                log.info("ramp of %s stopped", ", ".join(values))
         self._changed("channels")
         return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in plan.items()}
 

@@ -725,6 +725,40 @@ def test_actions_and_config_in_gui(app, gui):
     assert not any(n.startswith("dmm.") for n in w.model.writable_channels())
 
 
+def test_manual_stop_ramps_button(app, gui):
+    """"Stop ramps" is dark until a ramp runs (also one started elsewhere), stops it
+    where it is, and goes dark again; an instant write never lights it."""
+    import threading
+    w, be, _, _ = gui
+    mp = w.manual
+    assert pump(app, 5, lambda: "Vg" in mp.rows)
+    be.define_alias(name="Vg", target="src.V1", min=-2, max=2, ramp_rate=0.2, unit="V", replace=True)
+    be.write_channel(name="Vg", value=0.0, ramp=False)
+    pump(app, 0.5)
+    assert not mp.stop_ramps.isEnabled()
+    mp.rows["Vg"].editor.setValue(1.5)                     # from this window
+    assert pump(app, 5, lambda: mp.stop_ramps.isEnabled())
+    assert "Vg" in mp.stop_ramps.text()
+    pump(app, 0.5)
+    mp.stop_ramps.click()
+    assert pump(app, 5, lambda: not mp.stop_ramps.isEnabled() and not mp._pending.get("Vg"))
+    v = be.channels.last_value("Vg")
+    assert 0.05 < v < 0.6                                   # stopped on the way to 1.5
+    # a ramp started by another client lights it too
+    th = threading.Thread(target=lambda: be.write_channel(name="Vg", value=-1.0))
+    th.start()
+    assert pump(app, 5, lambda: mp.stop_ramps.isEnabled())
+    mp.stop_ramps.click()
+    th.join(5)
+    assert pump(app, 5, lambda: not mp.stop_ramps.isEnabled())
+    # instant writes never light it
+    mp.ramp.setChecked(False)
+    mp.request_set("Vg", 0.0)
+    assert pump(app, 5, lambda: not mp._pending.get("Vg"))
+    assert not mp.stop_ramps.isEnabled()
+    mp.ramp.setChecked(True)
+
+
 def test_manual_expression_updates_focused_spinbox(app, gui, monkeypatch):
     """Regression: after 'Set from expression' the (still focused) spin box must show
     the new value."""

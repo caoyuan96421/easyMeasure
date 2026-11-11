@@ -20,6 +20,7 @@ export class Model {
         this.state = st;
         this.emit("state", st);
         if (st.queue) this.emit("queue", st.queue);
+        this.emit("ramps", st.ramps || []);
       }
     } catch (e) {
       this.emit("message", "error", "get_state: " + e.message);
@@ -34,6 +35,7 @@ export class Model {
   _event(kind, data) {
     if (kind === "changed" || kind === "settings" || kind === "user_action") this.scheduleRefresh();
     else if (kind === "queue" && data) { this.state.queue = data; this.emit("queue", data); }
+    else if (kind === "ramps" && data) { this.state.ramps = data.active || []; this.emit("ramps", this.state.ramps); }
     else if (kind === "sweep_warning") this.emit("message", "warning", String(data && data.message));
     else if (kind === "ppt") this.emit("message", "info", `slide added to ${data && data.path}`);
   }

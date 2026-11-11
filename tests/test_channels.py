@@ -242,3 +242,57 @@ def test_actions_and_config_channels(demo):
     assert be.queue.wait_idle(20)
     assert be.queue_state()["history"][-1]["status"] == "finished"
     assert be.instruments.get("chaos").driver.actions_done == n + 1
+
+
+def test_stop_ramps_of_direct_writes(demo):
+    """stop_ramps stops the ramps of direct writes (aliases and composites) where they
+    are, lists them while they run, never lists an instant write, and leaves the
+    ramps of sweeps to abort."""
+    import threading
+    be = demo
+    seen = []
+    be.add_listener(lambda k, d: seen.append(d["active"]) if k == "ramps" else None)
+    be.define_alias(name="Vx", target="src.V3", min=-1, max=1, ramp_rate=0.2, unit="V", replace=True)
+    be.define_alias(name="Vy", target="src.V4", min=-1, max=1, ramp_rate=0.2, unit="V", replace=True)
+    be.write_channel(name="Vx", value=0.0, ramp=False)
+    be.write_channel(name="Vy", value=0.0, ramp=False)
+    assert seen == [] and be.ramp_state() == {"active": []}
+
+    def stop_after(fn, wait=0.6):
+        out = {}
+        th = threading.Thread(target=lambda: out.update(r=fn()))
+        th.start()
+        t0 = time.time()
+        while not be.ramp_state()["active"] and time.time() - t0 < 5:
+            time.sleep(0.02)
+        time.sleep(wait)
+        stopped = be.stop_ramps()
+        th.join(5)
+        assert not th.is_alive()
+        return stopped, out["r"]
+
+    stopped, v = stop_after(lambda: be.write_channel(name="Vx", value=1.0))
+    assert stopped == ["Vx"] and 0.05 < v < 0.4
+    assert be.channels.get("Vx") == pytest.approx(v)
+    assert seen[0][0]["channels"] == ["Vx"] and seen[-1] == []
+    # a composite: both gates stop together, the variables stay on the relation
+    be.define_composite(type="multi", name="G", targets={"Vx": "a + b", "Vy": "a - b"},
+                        variables=[{"name": "a", "min": -1, "max": 1}, {"name": "b", "min": -1, "max": 1}])
+    be.set_many(values={"a": 0, "b": 0}, ramp=False)
+    stopped, plan = stop_after(lambda: be.set_many(values={"a": 0.5, "b": 0.3}))
+    assert stopped == ["Vx", "Vy"]
+    a, b = be.channels.last_value("a"), be.channels.last_value("b")
+    assert 0 < a < 0.5 and 0 < b < 0.3
+    assert be.channels.get("Vx") == pytest.approx(a + b, abs=1e-6)
+    assert be.channels.get("Vy") == pytest.approx(a - b, abs=1e-6)
+    # a sweep's ramps are not stopped by it (abort is for those)
+    be.write_channel(name="Vx", value=0.0, ramp=False)
+    be.remove_composite(name="G")
+    be.queue_add({"kind": "sweep", "definition": {"name": "s", "dimensions": [
+        {"points": 2, "sweep": [{"channel": "Vx", "start": 0, "stop": 0.3}], "record": []}]}},
+        start=True)
+    time.sleep(0.5)
+    assert be.ramp_state()["active"] == [] and be.stop_ramps() == []
+    assert be.queue.wait_idle(20)
+    assert be.queue_state()["history"][-1]["status"] == "finished"
+    assert be.channels.get("Vx") == pytest.approx(0.3)

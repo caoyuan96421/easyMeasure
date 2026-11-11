@@ -57,14 +57,15 @@ _DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress"}
 #: events a client gets when it does not say otherwise (scripts, notebooks): the
 #: small status events only - no monitor values, sweep data or log lines
 DEFAULT_EVENTS = ("queue", "item_end", "sweep_start", "sweep_end", "sweep_paused",
-                  "sweep_resumed", "sweep_warning", "ppt", "changed", "settings", "user_action")
+                  "sweep_resumed", "sweep_warning", "ppt", "changed", "settings", "user_action",
+                  "ramps")
 PREAUTH_MAX_FRAME = 64 * 1024
 AUTH_TIMEOUT = 10.0
 # commands that never touch instrument I/O: served by their own small pool so that
 # requests stuck on a hung instrument can never delay ping / pause / abort / status
 CONTROL_COMMANDS = {
     "ping", "get_state", "get_settings", "set_settings", "queue_state", "current_run",
-    "pause", "resume", "abort", "abort_all", "queue_start", "queue_stop", "queue_clear",
+    "pause", "resume", "abort", "abort_all", "stop_ramps", "ramp_state", "queue_start", "queue_stop", "queue_clear",
     "queue_remove", "queue_move", "queue_options", "recent_logs", "monitor_list",
     "monitor_history", "monitor_remove", "list_channels", "list_instruments", "list_runs",
     "list_drivers", "list_resources", "get_setup", "save_setup", "channel_info",

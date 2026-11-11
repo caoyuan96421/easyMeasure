@@ -66,6 +66,11 @@ class AbortRequested(EasyMeasureError):
     """Raised inside running sweeps/scripts when the user aborts."""
 
 
+class RampStopped(EasyMeasureError):
+    """A ramp started by a direct write was stopped (``stop_ramps``); the channel
+    stays where the ramp had got to."""
+
+
 class SkipPoint(BaseException):
     """Raised by ``skip_point()`` in a sweep's per-point action: the rest of this
     point is skipped and its recorded data stay NaN.  A BaseException, so that a

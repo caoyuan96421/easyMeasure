@@ -29,7 +29,7 @@ from typing import Dict, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QSizePolicy, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMenu, QScrollArea, QSlider,
                                QToolButton, QVBoxLayout, QWidget)
 
@@ -306,10 +306,17 @@ class ManualPanel(QWidget):
         self.settings.setToolTip("also list the instrument settings (configuration channels: "
                                  "modes, ranges, time constants ...)")
         self.settings.toggled.connect(lambda _: self._state(self.model.state))
+        self.stop_ramps = QToolButton()
+        self.stop_ramps.setText("■ Stop ramps")
+        self.stop_ramps.setEnabled(False)          # lit only while a ramp is running
+        self.stop_ramps.setToolTip("no ramp is running")
+        self.stop_ramps.clicked.connect(self._stop_ramps)
         top = QHBoxLayout()
         top.addWidget(self.filter, 1)
         top.addWidget(self.settings)
         top.addWidget(self.ramp)
+        # own row, full width: prominent when lit, and never makes the panel wider
+        self.stop_ramps.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.host = QWidget()
         self.grid = QGridLayout(self.host)
         self.grid.setContentsMargins(2, 2, 2, 2)
@@ -324,9 +331,34 @@ class ManualPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.addLayout(top)
+        lay.addWidget(self.stop_ramps)
         lay.addWidget(scroll, 1)
         lay.addWidget(self.status)
         model.stateChanged.connect(self._state)
+        model.rampsChanged.connect(self.show_ramps)
+
+    # ---- ramps ------------------------------------------------------------------------
+    def show_ramps(self, active: list) -> None:
+        """Light "Stop ramps" while ramps of direct writes run (from any window)."""
+        names = sorted({c for r in active or [] for c in r.get("channels", [])})
+        self.stop_ramps.setEnabled(bool(names))
+        if names:
+            self.stop_ramps.setText("■ Stop ramps (%s)" % ", ".join(names) if len(names) <= 3
+                                    else "■ Stop ramps (%d)" % len(names))
+            self.stop_ramps.setToolTip("stop the ramps of %s where they are now"
+                                       % ", ".join(names))
+            self.stop_ramps.setStyleSheet("QToolButton { background: #c0392b; color: white; "
+                                          "font-weight: bold; padding: 1px 6px; border-radius: 3px }")
+        else:
+            self.stop_ramps.setText("■ Stop ramps")
+            self.stop_ramps.setToolTip("no ramp is running")
+            self.stop_ramps.setStyleSheet("")
+
+    def _stop_ramps(self) -> None:
+        self.conn.request("stop_ramps", {},
+                          on_ok=lambda names: self.message("stopped: %s" % ", ".join(names or [])
+                                                           if names else "no ramp was running"),
+                          on_err=lambda e: self.message("✘ stop ramps: %s" % e))
 
     # ---- building ---------------------------------------------------------------------
     def _channels(self):

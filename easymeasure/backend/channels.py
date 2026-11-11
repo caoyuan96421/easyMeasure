@@ -30,6 +30,9 @@ Special read-only channels ``@time`` (unix time) are always available.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import itertools
 import math
 import threading
 import time
@@ -38,7 +41,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..common.errors import ChannelError, ExpressionError, LimitError, OutOfRange
+from ..common.errors import ChannelError, ExpressionError, LimitError, OutOfRange, RampStopped
 from .composites import CompositeBase, as_value, find_cycle
 from .instrument import ChannelSpec, InstrumentManager
 from .logsys import get_logger
@@ -47,6 +50,25 @@ log = get_logger("channels")
 
 RAMP_INTERVAL = 0.05  # seconds between ramp steps
 PATH_SAMPLES = 257    # samples of a composite path, all limit-checked before a ramp
+
+#: the stop token of the direct write running in this thread (see ``stoppable_ramps``)
+_RAMP_TOKEN: contextvars.ContextVar = contextvars.ContextVar("ramp_token", default=None)
+_RAMP_IDS = itertools.count(1)
+
+
+class RampToken:
+    """Lets ``stop_ramps()`` stop the ramps of one direct write from another thread."""
+
+    def __init__(self, source: str = ""):
+        self.source = source
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
 TRUST_LAST_S = 2.0    # a value we set less than this long ago is not read back
 
 AbortCheck = Optional[Callable[[], None]]
@@ -141,6 +163,11 @@ class ChannelManager:
         self._set_locks: Dict[str, threading.RLock] = {}
         self._reading = threading.local()       # per thread: composite reads in progress
         self.listeners: List[Callable[[str, Any], None]] = []
+        #: ramps of direct writes in progress: id -> {channels, token, since}
+        self.ramps: Dict[int, dict] = {}
+        self._ramps_lock = threading.Lock()
+        #: called with the list of active ramps whenever it changes
+        self.ramp_listeners: List[Callable[[List[dict]], None]] = []
 
     # -- definition --------------------------------------------------------------
     def add_alias(self, alias: Alias, replace: bool = False) -> None:
@@ -642,6 +669,45 @@ class ChannelManager:
                 bad |= out
             return bad
 
+    # -- stoppable ramps of direct writes ----------------------------------------------
+    @contextlib.contextmanager
+    def stoppable_ramps(self, source: str = ""):
+        """Writes inside this block (in this thread) can have their ramps stopped by
+        :meth:`stop_ramps`; while a ramp runs it is listed in :meth:`active_ramps`.
+        Used for direct writes (Manual panel, clients); sweeps, scripts and user
+        actions have their own abort."""
+        tok = RampToken(source)
+        reset = _RAMP_TOKEN.set(tok)
+        try:
+            yield tok
+        finally:
+            _RAMP_TOKEN.reset(reset)
+
+    def active_ramps(self) -> List[dict]:
+        """The ramps of direct writes now running: ``[{id, channels, targets, since,
+        source}]`` (*channels* the aliases that move, *targets* what was asked)."""
+        with self._ramps_lock:
+            return [{"id": i, "channels": list(r["channels"]), "targets": dict(r["targets"]),
+                     "since": r["since"], "source": r["token"].source}
+                    for i, r in sorted(self.ramps.items())]
+
+    def stop_ramps(self) -> List[str]:
+        """Stop every running ramp of a direct write; each channel stays where its
+        ramp had got to.  Returns the channels that were ramping."""
+        with self._ramps_lock:
+            regs = list(self.ramps.values())
+        for r in regs:
+            r["token"].stop()
+        return sorted({c for r in regs for c in r["channels"]})
+
+    def _ramps_changed(self) -> None:
+        act = self.active_ramps()
+        for cb in list(self.ramp_listeners):
+            try:
+                cb(act)
+            except Exception:
+                pass
+
     def out_of_range_mode(self, composite: str) -> Optional[str]:
         """The ``out_of_range`` action of a multivariate composite (None otherwise)."""
         c = self._composites.get(composite)
@@ -1125,8 +1191,15 @@ class ChannelManager:
             self._ramp(items, path, PATH_SAMPLES, abort_check, rated)
         else:
             tv = {n: np.asarray(plan[n], dtype=float) for n in leaves}
-            self._ramp(items, lambda u: {n: starts[n] + (tv[n] - starts[n]) * u for n in leaves},
-                       2, abort_check, {n: r for n, r in rated.items() if n in starts})
+            try:
+                self._ramp(items, lambda u: {n: starts[n] + (tv[n] - starts[n]) * u for n in leaves},
+                           2, abort_check, {n: r for n, r in rated.items() if n in starts})
+            except RampStopped:
+                # stopped off the relation: the composite channels have no value now
+                for n in plan:
+                    if n not in self._aliases:
+                        self._last.pop(n, None)
+                raise
         self._remember(plan, skip=leaves)
 
     def _remember(self, values: Dict[str, Any], skip=()) -> None:
@@ -1221,12 +1294,34 @@ class ChannelManager:
             return float(us[j - 1] + (us[j] - us[j - 1]) * min(max(f, 0.0), 1.0))
 
         leaf_names = {a.name for a, _ in items}
+        tok = _RAMP_TOKEN.get()
+        rid = None
+        if tok is not None and (ct_a[-1] > RAMP_INTERVAL or cs_a[-1] > 1.0):  # worth listing
+            rid = next(_RAMP_IDS)
+            with self._ramps_lock:
+                self.ramps[rid] = {"channels": sorted(leaf_names), "token": tok,
+                                   "since": time.time(),
+                                   "targets": {n: _jsonable(v) for n, v in samples[-1].items()}}
+            self._ramps_changed()
+        try:
+            self._ramp_loop(items, path, samples, us, ct_a, cs_a, invert, leaf_names,
+                            abort_check, tok)
+        finally:
+            if rid is not None:
+                with self._ramps_lock:
+                    self.ramps.pop(rid, None)
+                self._ramps_changed()
+
+    def _ramp_loop(self, items, path, samples, us, ct_a, cs_a, invert, leaf_names,
+                   abort_check, tok) -> None:
         t0 = time.monotonic()
         k = 0
         last_u = 0.0
         while True:
             if abort_check is not None:
                 abort_check()
+            if tok is not None and tok.stopped:
+                raise RampStopped("ramp of %s stopped" % ", ".join(sorted(leaf_names)))
             k += 1
             elapsed = time.monotonic() - t0
             allowed_t = min(k * RAMP_INTERVAL, elapsed + RAMP_INTERVAL)
@@ -1243,6 +1338,11 @@ class ChannelManager:
                 return
             last_u = u
             time.sleep(RAMP_INTERVAL)
+
+
+def _jsonable(v):
+    a = np.asarray(v, dtype=float)
+    return float(a) if a.ndim == 0 else a.tolist()
 
 
 def _scalar_reading(name: str, v) -> float:

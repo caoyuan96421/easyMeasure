@@ -33,10 +33,10 @@ VIEW = {
     "read_channel", "channel_info", "list_channels", "monitor_list", "monitor_history",
     "validate_sweep", "queue_state", "current_run", "run_snapshot", "list_runs", "load_run",
     "read_run_header", "get_setup", "save_setup", "recent_logs", "list_clients",
-    "list_user_actions",
+    "list_user_actions", "ramp_state",
 }
 OPERATE = {
-    "write_channel", "set_many", "query_channel", "run_action", "monitor_add", "monitor_remove",
+    "write_channel", "set_many", "stop_ramps", "query_channel", "run_action", "monitor_add", "monitor_remove",
     "queue_add", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
     "queue_options", "pause", "resume", "abort", "abort_all", "make_ppt",
     "connect_instrument", "disconnect_instrument", "reconnect_instrument",
