@@ -6,8 +6,11 @@ piecewise functions work: ``piecewise(x < 0, -x, x)``, ``a if c else b``,
 
 ``multi`` – multivariate write
     Variables ``x, y, …`` (each with its own name, min, max, unit and ramp rate)
-    are channels of their own.  Every *target* (an alias, a mapping, or a
-    variable of another multivariate composite) is a formula of the variables::
+    are channels of their own, named after the composite: the variables ``eps``
+    and ``U`` of ``gates`` are the channels ``gates.eps`` and ``gates.U`` (in the
+    Manual panel, sweeps, scripts and other formulas).  Its own formulas use the
+    short names.  Every *target* (an alias, a mapping, or a variable of another
+    multivariate composite) is a formula of the variables::
 
         {"type": "multi", "name": "gates",
          "variables": [{"name": "eps", "min": -1, "max": 1, "unit": "V", "ramp_rate": 0.1},
@@ -71,6 +74,16 @@ def ok_name(name: str) -> bool:
         and all(c.isalnum() or c == "_" for c in name)
 
 
+def ok_ref(name: str) -> bool:
+    """A channel name a composite can refer to: ``Vg`` or a variable ``MEMS.Vd``."""
+    parts = str(name).split(".")
+    return 1 <= len(parts) <= 2 and all(ok_name(p) for p in parts)
+
+
+#: names a variable cannot have: ``x.real`` and the like mean something in formulas
+_ATTR_NAMES = {"real", "imag", "shape", "size", "ndim", "T"}
+
+
 def _opt_float(v, what: str) -> Optional[float]:
     if v is None or v == "":
         return None
@@ -112,6 +125,9 @@ class Variable:
 
     def __post_init__(self):
         _check_channel_name(self.name, "variable")
+        if self.name in _ATTR_NAMES:
+            raise ChannelError("variable name %r is taken: in formulas, x.%s means something "
+                               "else" % (self.name, self.name))
         for k in ("min", "max", "ramp_rate"):
             setattr(self, k, _opt_float(getattr(self, k), "%s %s" % (self.name, k)))
         if self.min is not None and self.max is not None and self.min > self.max:
@@ -185,7 +201,10 @@ class MultiComposite(CompositeBase):
         names = [v.name for v in self.variables]
         if len(set(names)) != len(names):
             raise ChannelError("composite %s: variable names repeat" % name)
-        self.var = {v.name: v for v in self.variables}
+        #: short name -> channel name (``Vd`` -> ``MEMS.Vd``)
+        self.full = {v.name: "%s.%s" % (name, v.name) for v in self.variables}
+        #: channel name -> variable
+        self.var = {self.full[v.name]: v for v in self.variables}
         if not targets:
             raise ChannelError("composite %s has no targets" % name)
         self.targets: Dict[str, str] = {}
@@ -194,10 +213,10 @@ class MultiComposite(CompositeBase):
         self.ext: Dict[str, List[str]] = {}
         for t, e in targets.items():
             t = str(t).strip()
-            if t in self.var:
+            if t in self.var or t in self.full:
                 raise ChannelError("composite %s: %s is one of its own variables, not a target"
                                    % (name, t))
-            if not ok_name(t):
+            if not ok_ref(t):
                 raise ChannelError("composite %s: target %r must be an alias, mapping or "
                                    "variable name" % (name, t))
             try:
@@ -206,13 +225,18 @@ class MultiComposite(CompositeBase):
                 raise ExpressionError("composite %s, target %s: %s" % (name, t, exc)) from None
             self.targets[t] = ex.source
             self.exprs[t] = ex
-            self.deps[t] = [n for n in ex.free_names if n in self.var]
+            # its formulas use the short names of its variables
+            self.deps[t] = [self.full[n] for n in ex.free_names if n in self.full]
             # other names must be parameters (checked against them when it is added)
-            self.ext[t] = [n for n in ex.free_names if n not in self.var]
+            self.ext[t] = [n for n in ex.free_names if n not in self.full]
         self.penv = {}
 
     def channels(self) -> List[str]:
-        return [v.name for v in self.variables]
+        return [self.full[v.name] for v in self.variables]
+
+    def short(self, channel: str) -> str:
+        """``MEMS.Vd`` -> ``Vd``."""
+        return self.var[channel].name
 
     def externals(self) -> List[str]:
         return sorted({n for ns in self.ext.values() for n in ns})
@@ -221,7 +245,7 @@ class MultiComposite(CompositeBase):
         """The names target *t*'s formula needs: its variables from *values*, the
         parameters from ``penv``."""
         out = {n: self.penv[n] for n in self.ext.get(t, ()) if n in self.penv}
-        out.update({d: values[d] for d in self.deps[t]})
+        out.update({self.var[d].name: values[d] for d in self.deps[t]})
         return out
 
     def edges(self) -> List[Tuple[str, str]]:
@@ -229,7 +253,7 @@ class MultiComposite(CompositeBase):
 
     def unused(self) -> List[str]:
         used = {v for ds in self.deps.values() for v in ds}
-        return [v.name for v in self.variables if v.name not in used]
+        return [c for c in self.channels() if c not in used]
 
     def to_dict(self) -> dict:
         return {"type": "multi", "name": self.name,
@@ -283,7 +307,7 @@ class MapComposite(CompositeBase):
         _check_channel_name(name, "channel")
         self.name = name
         self.target = str(target or "").strip()
-        if not ok_name(self.target):
+        if not ok_ref(self.target):
             raise ChannelError("mapping %s: target must be an alias, mapping or variable" % name)
         if self.target == name:
             raise ChannelError("mapping %s maps onto itself" % name)
@@ -382,27 +406,10 @@ class MapComposite(CompositeBase):
 
 
 def composite_from_dict(d: dict) -> Tuple[CompositeBase, List[str]]:
-    """Build a composite from its dictionary; returns ``(composite, notes)``.
-
-    A dictionary without ``type`` but with ``targets`` (the earlier one-variable
-    composite, formulas of ``x``) becomes a multivariate composite whose single
-    variable has the composite's name; its read-back formula is dropped (a note
-    says so: define a ``read`` composite for it)."""
+    """Build a composite from its dictionary; returns ``(composite, notes)``."""
     d = dict(d or {})
     kind = d.get("type")
     notes: List[str] = []
-    if kind is None and "targets" in d:
-        name = d.get("name", "")
-        var = {"name": name, "min": d.get("min"), "max": d.get("max"),
-               "unit": d.get("unit", ""), "ramp_rate": d.get("ramp_rate")}
-        try:
-            targets = {t: rename(str(e), {"x": name}) for t, e in (d.get("targets") or {}).items()}
-        except SyntaxError as exc:
-            raise ExpressionError("composite %s: %s" % (name, exc)) from None
-        if d.get("read"):
-            notes.append("composite %s: its read formula %r is no longer part of it; define a "
-                         "'read' composite for it" % (name, d["read"]))
-        return MultiComposite(name, [var], targets, d.get("description", "")), notes
     if kind == "multi":
         return MultiComposite(d.get("name", ""), d.get("variables") or [], d.get("targets") or {},
                               d.get("description", ""),

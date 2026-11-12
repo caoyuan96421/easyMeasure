@@ -8,7 +8,8 @@ from easymeasure.backend.composites import MultiComposite, Variable
 
 
 def one(name, targets, **var):
-    """A multivariate composite with one variable called like the composite."""
+    """A multivariate composite with one variable called like the composite (its channel
+    is ``name.name``)."""
     return MultiComposite(name, [Variable(name, **var)], targets)
 from easymeasure.common.errors import ChannelError, ExpressionError, LimitError
 
@@ -85,15 +86,15 @@ def test_abortable_ramp(demo):
 
 def test_composite(demo):
     ch = demo.channels
-    ch.set("detuning", 0.3)
+    ch.set("dot.detuning", 0.3)
     assert ch.get("Vx") == pytest.approx(0.3)
     assert ch.get("Vy") == pytest.approx(-0.3)
-    assert ch.get("detuning") == pytest.approx(0.3)
+    assert ch.get("dot.detuning") == pytest.approx(0.3)
     with pytest.raises(LimitError):
-        ch.set("detuning", 0.95)                 # composite limit
+        ch.set("dot.detuning", 0.95)                 # composite limit
     ch.add_composite(one("big", {"Vx": "2*big", "Vy": "big"}))
     with pytest.raises(LimitError):
-        ch.set("big", 0.8)                       # Vx target 1.6 > 1: refused before writing
+        ch.set("big.big", 0.8)                       # Vx target 1.6 > 1: refused before writing
     assert ch.get("Vy") == pytest.approx(-0.3)    # nothing was written
     with pytest.raises(ExpressionError):
         ch.add_composite(one("bad", {"Vx": "y*2"}))  # y: no variable, no parameter
@@ -108,9 +109,9 @@ def test_composite_ramp_respects_target_rates(demo):
     ch.add_alias(Alias("A1", "src.V3", min=-1, max=1, ramp_rate=1.0), replace=True)
     ch.add_alias(Alias("A2", "src.V4", min=-1, max=1, ramp_rate=0.5), replace=True)
     ch.add_composite(one("pair", {"A1": "pair", "A2": "pair"}))
-    ch.set("pair", 0.0, ramp=False)
+    ch.set("pair.pair", 0.0, ramp=False)
     t0 = time.monotonic()
-    ch.set("pair", 0.25)     # A2 limits: 0.25 / 0.5 = 0.5 s
+    ch.set("pair.pair", 0.25)     # A2 limits: 0.25 / 0.5 = 0.5 s
     assert time.monotonic() - t0 > 0.4
     assert ch.get("A2") == pytest.approx(0.25)
 
@@ -183,13 +184,13 @@ def test_review_composite_nonlinear_path_respects_rates(demo):
     ch.add_alias(Alias("VL", "src.V3", min=-1, max=1, ramp_rate=2.0), replace=True)
     ch.add_composite(one("q", {"VL": "q**2"}, min=-1, max=1))
     ch.set("VL", 1.0, ramp=False)
-    ch.set("q", -1.0, ramp=False)
+    ch.set("q.q", -1.0, ramp=False)
     src = demo.instruments.get("src")
     seen = []
     orig = src.write
     src.write = lambda c, v: (seen.append((time.monotonic(), v)), orig(c, v))
     t = time.monotonic()
-    ch.set("q", 1.0)          # VL goes 1 -> 0 -> 1: 2 V of travel at 2 V/s
+    ch.set("q.q", 1.0)          # VL goes 1 -> 0 -> 1: 2 V of travel at 2 V/s
     dt = time.monotonic() - t
     src.write = orig
     assert dt > 0.8
@@ -201,7 +202,7 @@ def test_review_composite_nonlinear_path_respects_rates(demo):
     ch.set("VS", 0.0, ramp=False)
     seen.clear()
     src.write = lambda c, v: (seen.append(v), orig(c, v))
-    ch.set("s", 0.9)
+    ch.set("s.s", 0.9)
     src.write = orig
     assert len(seen) >= 9 and max(abs(b - a) for a, b in zip([0.0] + seen, seen)) <= 0.1 + 1e-9
 
@@ -278,10 +279,10 @@ def test_stop_ramps_of_direct_writes(demo):
     # a composite: both gates stop together, the variables stay on the relation
     be.define_composite(type="multi", name="G", targets={"Vx": "a + b", "Vy": "a - b"},
                         variables=[{"name": "a", "min": -1, "max": 1}, {"name": "b", "min": -1, "max": 1}])
-    be.set_many(values={"a": 0, "b": 0}, ramp=False)
-    stopped, plan = stop_after(lambda: be.set_many(values={"a": 0.5, "b": 0.3}))
+    be.set_many(values={"G.a": 0, "G.b": 0}, ramp=False)
+    stopped, plan = stop_after(lambda: be.set_many(values={"G.a": 0.5, "G.b": 0.3}))
     assert stopped == ["Vx", "Vy"]
-    a, b = be.channels.last_value("a"), be.channels.last_value("b")
+    a, b = be.channels.last_value("G.a"), be.channels.last_value("G.b")
     assert 0 < a < 0.5 and 0 < b < 0.3
     assert be.channels.get("Vx") == pytest.approx(a + b, abs=1e-6)
     assert be.channels.get("Vy") == pytest.approx(a - b, abs=1e-6)

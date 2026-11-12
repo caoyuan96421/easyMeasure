@@ -8,11 +8,11 @@ for radius in (0.5, 1.0, 1.5):
     ds = run_sweep({
         "name": "circle_r%g" % radius,
         "dimensions": [{"points": len(theta),
-                        "sweep": [{"channel": "n", "values": n_values.tolist()},
-                                  {"channel": "D", "values": d_values.tolist()}],
+                        "sweep": [{"channel": "nD.n", "values": n_values.tolist()},
+                                  {"channel": "nD.D", "values": d_values.tolist()}],
                         "record": ["Rxx", "Vbg", "Vtg"]}],
         "metadata": {"radius": radius},
     })
     log("radius %g: %s, Rxx from %.0f to %.0f Ω" % (
         radius, ds.status, np.nanmin(ds.data["Rxx"]), np.nanmax(ds.data["Rxx"])))
-set_many({"n": 0, "D": 0})
+set_many({"nD.n": 0, "nD.D": 0})

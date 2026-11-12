@@ -5,7 +5,7 @@
       "points": 101,
       "sweep": [
         {
-          "channel": "n",
+          "channel": "nD.n",
           "start": -4,
           "stop": 4
         }
@@ -19,7 +19,7 @@
       "points": 31,
       "sweep": [
         {
-          "channel": "D",
+          "channel": "nD.D",
           "start": -0.45,
           "stop": 0.45
         }

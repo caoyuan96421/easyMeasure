@@ -67,7 +67,7 @@ def test_custom_sweep_paths(graphene):
     v = sp("graphene_dense_dirac")["Vbg"]
     assert np.diff(v)[80] < np.diff(v)[0] / 8 and abs(v[80] - 0.3) < 1e-9
     c = sp("graphene_circle")
-    np.testing.assert_allclose(np.hypot(c["n"], c["D"] / 0.2), 1.0)
+    np.testing.assert_allclose(np.hypot(c["nD.n"], c["nD.D"] / 0.2), 1.0)
     h = sp("graphene_hysteresis")["Vbg"]
     assert h[0] == pytest.approx(0) and h.max() == pytest.approx(5) and h.min() == pytest.approx(-5)
     assert h[-1] == pytest.approx(0, abs=1e-9)
@@ -85,13 +85,13 @@ def test_threshold_sweep_stops_itself(graphene):
 
 
 def test_gap_opens_with_displacement_field(graphene):
-    graphene.set_many(values={"n": 0.0, "D": 0.0})
+    graphene.set_many(values={"nD.n": 0.0, "nD.D": 0.0})
     r0 = graphene.read_channel(name="Rxx")
-    graphene.write_channel(name="D", value=0.3)
+    graphene.write_channel(name="nD.D", value=0.3)
     r3 = graphene.read_channel(name="Rxx")
     assert graphene.read_channel(name="Vbg") == pytest.approx((0.15 + 0.3 / 0.0452) / 1.2)
     assert r3 > 10 * r0
-    graphene.write_channel(name="n", value=2.0)
+    graphene.write_channel(name="nD.n", value=2.0)
     assert graphene.read_channel(name="Rxx") < r3 / 10
 
 
@@ -99,10 +99,10 @@ def test_rxx_from_two_lockins(graphene):
     """Rxx = Vxx / I is right where the sample is insulating; Vxx / 10 nA is not,
     because the current through the 1 MΩ series resistor drops."""
     from easymeasure.drivers.simworld import WORLD
-    graphene.set_many(values={"n": 0.0, "D": 0.0})
+    graphene.set_many(values={"nD.n": 0.0, "nD.D": 0.0})
     i0 = graphene.read_channel(name="I")
     assert i0 == pytest.approx(0.01 / (1e6 + 3 * 4.6e3 + 2e3), rel=0.03)
-    graphene.set_many(values={"n": 0.0, "D": 0.3})
+    graphene.set_many(values={"nD.n": 0.0, "nD.D": 0.3})
     vbg, vtg = graphene.read_channel(name="Vbg"), graphene.read_channel(name="Vtg")
     true = np.mean([WORLD.graphene(vbg, vtg, 0.0)["Rxx"] for _ in range(20)])
     rxx = np.mean([graphene.read_channel(name="Rxx") for _ in range(5)])

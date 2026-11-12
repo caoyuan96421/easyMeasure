@@ -159,10 +159,10 @@ def test_storage_failure_does_not_stop_measurement(demo, monkeypatch):
 def test_setup_save_load_roundtrip(demo, tmp_path):
     p = tmp_path / "s.json"
     demo.save_setup(str(p))
-    demo.remove_composite("detuning")
+    demo.remove_composite("dot")
     demo.load_setup(path=str(p))
     names = {c["name"] for c in demo.list_channels()["composites"]}
-    assert "detuning" in names
+    assert "dot" in names
     assert (demo.home / "autosave_setup.json").exists()
 
 

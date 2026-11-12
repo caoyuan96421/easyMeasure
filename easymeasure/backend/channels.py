@@ -37,7 +37,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -303,6 +303,24 @@ class ChannelManager:
         log.info("parameter %s = %s", p.name, p.formula or p.value)
         return w
 
+    def check_parameter(self, p: Parameter, replace: bool = False) -> Tuple[float, List[str]]:
+        """What :meth:`add_parameter` would say, without defining it: ``(value,
+        warnings)``; raises like it."""
+        with self._lock:
+            if p.name in self._params and not replace:
+                raise ChannelError("parameter %r already exists" % p.name)
+            cand = dict(self._params)
+            cand[p.name] = p
+            for n in cand:
+                if n in self._aliases or n in self._owner or n in self._composites:
+                    raise ChannelError("parameter name %r is already a channel or composite" % n)
+            vals = compute_parameters(cand, self._is_live_channel)
+            try:
+                warnings = self._validate(self._composites, pvals=vals)
+            finally:
+                self._validate(self._composites)          # bind the present values again
+            return vals[p.name], warnings
+
     def set_parameter(self, name: str, value: float) -> float:
         """Set the value of a value parameter (formulas follow)."""
         with self._lock:
@@ -358,9 +376,16 @@ class ChannelManager:
                     raise ChannelError("channel %s is defined by both %s and %s"
                                        % (ch, owner[ch].name, c.name))
                 owner[ch] = c
+        try:
+            insts = set(self.instruments.names())
+        except Exception:
+            insts = set()
         for c in comps.values():
             if c.name in self._aliases:
                 raise ChannelError("composite name %r is an alias" % c.name)
+            if c.type == "multi" and c.name in insts:
+                # its variables would read like the instrument's channels (name.channel)
+                raise ChannelError("composite name %r is the name of an instrument" % c.name)
             if c.name in owner and owner[c.name] is not c:
                 raise ChannelError("composite name %r is a channel of %s"
                                    % (c.name, owner[c.name].name))
@@ -509,7 +534,7 @@ class ChannelManager:
         return out
 
     def instruments_behind(self, name: str) -> set:
-        if "." in name:
+        if "." in name and name not in self._owner:          # instrument.channel
             return {name.split(".", 1)[0]}
         return {self._aliases[a].target.split(".", 1)[0] for a in self.aliases_behind(name)}
 

@@ -300,7 +300,7 @@ def _pre_configured(d: dict, channels) -> set:
     out = set()
     for c in d["pre"]["constants"]:
         ch = c["channel"]
-        if "." in ch:            # raw constants can only be configuration channels
+        if "." in ch and not channels.is_composite(ch):   # raw: only configuration channels
             out.add(ch.split(".", 1)[0])
     return out
 
@@ -492,7 +492,7 @@ def validate_against(d: dict, channels, after_pre: bool = False,
                                     "the settings of that instrument)")
                 else:
                     errors.append(text)
-            if "." in ch:
+            if "." in ch and not channels.is_composite(ch):
                 changed.add(ch.split(".", 1)[0])
         for r in d[ph]["record"]:
             if not channels.exists(r):

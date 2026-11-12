@@ -674,7 +674,7 @@ class ManualPanel(QWidget):
             self.message("")
 
     def _group_header(self, comp: str, variables, r: int) -> None:
-        lab = QLabel("<b>%s</b>  (%s)" % (comp, ", ".join(variables)))
+        lab = QLabel("<b>%s</b>  (%s)" % (comp, ", ".join(v.split(".", 1)[-1] for v in variables)))
         lab.setToolTip("variables of the multivariate composite %s" % comp)
         hold = QCheckBox("hold")
         hold.setToolTip("collect edits of these variables and send them with Set all")

@@ -230,8 +230,10 @@ class MainWindow(QMainWindow):
         self.live = LiveDataView(self.conn)
         self.left_tabs = QTabWidget()
         self._scrolled = {}
-        for w, name in ((self.setup_panel, "Instruments && channels"), (self.editor, "Sweep editor"),
-                        (self.queue_panel, "Queue")):
+        # the setup panel fits itself to the window (splitters and tabs, no scrolling)
+        self.setup_panel.setMinimumSize(60, 45)
+        self.left_tabs.addTab(self.setup_panel, "Instruments && channels")
+        for w, name in ((self.editor, "Sweep editor"), (self.queue_panel, "Queue")):
             self.left_tabs.addTab(self._scroll(w), name)
         self.data_tabs = QTabWidget()
         self.data_tabs.setTabsClosable(True)
@@ -391,6 +393,7 @@ class MainWindow(QMainWindow):
         self.conn.event.connect(self._on_event)
         self.model.message.connect(self._message)
         self.model.fault.connect(self._fault)
+        self.setup_panel.msg.shown.connect(self._message)
         self.model.queueChanged.connect(self._queue_changed)
         geo = self.qsettings.value("geometry")
         if geo is not None:
@@ -545,7 +548,18 @@ class MainWindow(QMainWindow):
         box.show()
 
     def _message(self, level, text):
-        self.statusBar().showMessage(("⚠ " if level in ("error", "warning") else "") + str(text), 8000)
+        """A message in the status bar: errors in red and kept until the next message,
+        the rest for 10 s; every message also goes to the Log."""
+        text = str(text)
+        colour = {"error": "#c0392b", "warning": "#b9770e"}.get(level)
+        bar = self.statusBar()
+        bar.setStyleSheet("QStatusBar { color: %s; }" % colour if colour else "")
+        mark = {"error": "✘ ", "warning": "⚠ "}.get(level, "")
+        bar.showMessage(mark + text, 0 if level == "error" else 10000)
+        try:
+            self.log_panel.add_local(level, text)
+        except AttributeError:
+            pass
 
     def _queue_changed(self, q):
         self.state_label.setText("queue: %s  " % q.get("state", "?"))

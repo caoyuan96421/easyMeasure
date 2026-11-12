@@ -226,13 +226,18 @@ class HookEditor(QGroupBox):
         self.add_btn = QPushButton("+ action")
         self.add_btn.setToolTip("append the selected action to this code")
         self.add_btn.clicked.connect(self._append_action)
+        from ..checks import code_checker
+        self.checker, self.check_btn, self.check_info = code_checker(self, self.code,
+                                                                     name + " action")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(self.code)
         row = FlowLayout()
         row.addWidget(self.action_box)
         row.addWidget(self.add_btn)
+        row.addWidget(self.check_btn)
         lay.addLayout(row)
+        lay.addWidget(self.check_info)
         self.set_actions([])
 
     def set_actions(self, actions: List[str]) -> None:
@@ -566,11 +571,16 @@ class PhaseEditor(QWidget):
         hbox = QGroupBox("Hook code")
         hl = QVBoxLayout(hbox)
         hl.addWidget(self.hook)
+        from ..checks import code_checker
+        self.checker, self.check_btn, self.check_info = code_checker(self, self.hook,
+                                                                     phase + "-sweep hook")
         ab = FlowLayout()
         ab.addWidget(QLabel("Action"))
         ab.addWidget(self.action_box)
         ab.addWidget(self.add_action_btn)
+        ab.addWidget(self.check_btn)
         hl.addLayout(ab)
+        hl.addWidget(self.check_info)
         top = QSplitter(Qt.Horizontal)
         top.addWidget(cbox)
         top.addWidget(rbox)

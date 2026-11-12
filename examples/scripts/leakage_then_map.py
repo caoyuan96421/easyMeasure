@@ -18,9 +18,9 @@ d_max = min(0.35, (1.2 * v_safe - 0.15) * 0.0452)
 ds = run_sweep({
     "name": "n_D_map_safe",
     "dimensions": [
-        {"points": 61, "sweep": [{"channel": "n", "start": -1, "stop": 1}],
+        {"points": 61, "sweep": [{"channel": "nD.n", "start": -1, "stop": 1}],
          "record": ["Rxx"], "snake": True},
-        {"points": 15, "sweep": [{"channel": "D", "start": -d_max, "stop": d_max}]}],
+        {"points": 15, "sweep": [{"channel": "nD.D", "start": -d_max, "stop": d_max}]}],
     "metadata": {"v_safe": v_safe},
 })
 log("map %s with |D| ≤ %.3f V/nm" % (ds.status, d_max))

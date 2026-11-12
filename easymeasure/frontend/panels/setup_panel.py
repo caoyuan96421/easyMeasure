@@ -8,18 +8,44 @@ import time
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QSettings, Qt, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...common.codec import to_jsonable
 
 from ..widgets import FlowLayout, shrinkable_label
 
 STATE_COLORS = {"connected": "#3a3", "error": "#d44", "hung": "#d4d", "disconnected": "#888"}
+
+
+class StatusMessages(QObject):
+    """Where the panel's messages go: ``setText`` like a label, but nothing is shown
+    in the panel - ``shown(level, text)`` carries it to the main window's status
+    bar (and the Log).  ``text()`` is the last message."""
+    shown = Signal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._text = ""
+
+    def setText(self, text: str) -> None:              # noqa: N802 - label-like
+        import re
+        import html as _html
+        plain = _html.unescape(re.sub(r"<br\s*/?>", "; ", str(text)))
+        plain = re.sub(r"<[^>]+>", "", plain).strip()
+        self._text = plain
+        if not plain:
+            return
+        level = "error" if plain.startswith("✘") else \
+            "warning" if plain.startswith("⚠") else "info"
+        self.shown.emit(level, plain.lstrip("✘⚠ ").strip())
+
+    def text(self) -> str:
+        return self._text
 
 
 def _opt_float(text: str) -> Optional[float]:
@@ -270,23 +296,25 @@ def _float_or_none(text: str):
 
 
 class ParameterDialog(QDialog):
-    """A parameter: a number, or a formula of other parameters."""
+    """A parameter: a number, or a formula of other parameters - told apart by what
+    is typed (``0.6`` is a value, ``Ct/Cb`` a formula)."""
 
-    def __init__(self, param: Optional[dict] = None, others=(), parent=None):
+    def __init__(self, param: Optional[dict] = None, others=(), parent=None, conn=None):
         super().__init__(parent)
         self.setWindowTitle("Parameter")
         p = param or {}
+        self.original = p.get("name")
         self.name = QLineEdit(p.get("name", ""))
-        self.kind = QComboBox()
-        self.kind.addItem("Value", "value")
-        self.kind.addItem("Formula of other parameters", "formula")
-        self.kind.setCurrentIndex(1 if p.get("formula") else 0)
-        self.value = QLineEdit(_fmt_opt(p.get("value")) if not p.get("formula") else "")
-        self.value.setPlaceholderText("a number, e.g. 0.6 or 1e6")
-        self.formula = QLineEdit(p.get("formula", ""))
+        self.definition = QLineEdit(p.get("formula") or _fmt_opt(p.get("value")))
         others = [o for o in others if o != p.get("name")]
-        self.formula.setPlaceholderText("e.g. Ct/Cb" if not others else
-                                        "uses " + ", ".join(others[:6]))
+        self.definition.setPlaceholderText(
+            "a number (0.6, 1e6) or a formula of other parameters%s" % (
+                (" (" + ", ".join(others[:6]) + ")") if others else ""))
+        self.definition.setToolTip("a number is the value; anything else is a formula of "
+                                   "other parameters, e.g. Ct/Cb or 2*pi*f0")
+        self.kind = QLabel("")
+        self.kind.setStyleSheet("color: #888")
+        self.definition.textChanged.connect(self._kind)
         self.unit = QLineEdit(p.get("unit", ""))
         self.description = QLineEdit(p.get("description", ""))
         self.help = QLabel("A constant of the setup. Composite channels and actions may use "
@@ -294,52 +322,71 @@ class ParameterDialog(QDialog):
                            "channels).")
         self.help.setWordWrap(True)
         self.help.setStyleSheet("color: #888")
+        self.info = QLabel("")
         form = QFormLayout(self)
         form.addRow("Name", self.name)
-        form.addRow("Defined by", self.kind)
-        self.value_lab, self.formula_lab = QLabel("Value"), QLabel("Formula")
-        form.addRow(self.value_lab, self.value)
-        form.addRow(self.formula_lab, self.formula)
+        form.addRow("Value or formula", self.definition)
+        form.addRow("", self.kind)
         form.addRow("Unit", self.unit)
         form.addRow("Description", self.description)
         form.addRow(self.help)
+        form.addRow(self.info)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        from ..checks import BackendCheck
+        self.checker = BackendCheck(conn, self.info, self._request, self._ok_text,
+                                    self._accept)
+        self.check_btn = self.checker.button(bb, "check the name and the formula (known "
+                                                 "parameters, no channels, no circles)")
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
-        self.kind.currentIndexChanged.connect(self._kind)
         self._kind()
         self.result_value = None
 
-    def _kind(self):
-        f = self.kind.currentData() == "formula"
-        for w in (self.value, self.value_lab):
-            w.setVisible(not f)
-        for w in (self.formula, self.formula_lab):
-            w.setVisible(f)
+    def is_formula(self) -> bool:
+        return _float_or_none(self.definition.text()) is None
+
+    def _kind(self) -> None:
+        t = self.definition.text().strip()
+        self.kind.setText("" if not t else "→ a formula of other parameters"
+                          if self.is_formula() else "→ a value")
 
     def value_dict(self) -> dict:
         d = {"name": self.name.text().strip(), "unit": self.unit.text().strip(),
              "description": self.description.text().strip()}
-        if self.kind.currentData() == "formula":
-            d["formula"] = self.formula.text().strip()
+        t = self.definition.text().strip()
+        if self.is_formula():
+            d["formula"] = t
         else:
-            d["value"] = _float_or_none(self.value.text())
+            d["value"] = _float_or_none(t)
         return d
 
-    def _ok(self):
+    def _request(self):
         d = self.value_dict()
         if not d["name"]:
-            QMessageBox.warning(self, "Parameter", "a name is needed")
-            return
-        if "value" in d and d["value"] is None:
-            QMessageBox.warning(self, "Parameter", "the value must be a number")
-            return
-        if "formula" in d and not d["formula"]:
-            QMessageBox.warning(self, "Parameter", "the formula is empty")
-            return
-        self.result_value = d
+            raise ValueError("a name is needed")
+        if not self.definition.text().strip():
+            raise ValueError("type a number or a formula")
+        if "formula" in d:
+            from ...common.exprs import Expression
+            try:
+                Expression(d["formula"])
+            except Exception as exc:
+                raise ValueError(str(exc)) from None
+        return "check_parameter", dict(d, replace=bool(self.original) and
+                                       self.original == d["name"])
+
+    @staticmethod
+    def _ok_text(r) -> str:
+        return "✔ %s = %s" % (r.get("name"), _short(r.get("current"))) + \
+            ("  (= %s)" % r["formula"] if r.get("formula") else "")
+
+    def _accept(self) -> None:
+        self.result_value = self.value_dict()
         self.accept()
+
+    def _ok(self):
+        self.checker.check(then_accept=True)
 
 
 class AliasDialog(QDialog):
@@ -422,9 +469,11 @@ def composite_summary(c: dict) -> str:
 
 
 def composite_channels(c: dict):
+    """The channels a composite provides, by their full names (``nD.n``)."""
     t = c.get("type", "multi")
     if t == "multi":
-        return [v["name"] for v in c.get("variables") or []]
+        return ["%s.%s" % (c.get("name"), v["name"] if isinstance(v, dict) else v)
+                for v in c.get("variables") or []]
     return [c["name"]]
 
 
@@ -555,11 +604,12 @@ class CompositeDialog(QDialog):
         form.addRow("Description", self.description)
         form.addRow(self.info)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.check_btn = bb.addButton("Check", QDialogButtonBox.ActionRole)
-        self.check_btn.setToolTip("check the definition with the backend (references, "
-                                  "dependency loops, the inverse of a mapping) without saving")
-        self.check_btn.clicked.connect(self.check)
-        self.check_btn.setEnabled(conn is not None)
+        from ..checks import BackendCheck
+        self.checker = BackendCheck(conn, self.info, self._request, self._ok_text,
+                                    self._accept)
+        self.check_btn = self.checker.button(
+            bb, "check the definition with the backend (formulas, references, dependency "
+                "loops, the inverse of a mapping) without saving; OK checks too")
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
@@ -621,34 +671,26 @@ class CompositeDialog(QDialog):
                      tolerance=_opt_float(self.m_tol.text()))
         return d
 
-    def _show(self, text: str, color: str) -> None:
-        self.info.setStyleSheet("color: %s" % color)
-        self.info.setText(text)
+    def _request(self):
+        d = self.value()                          # ValueError: shown, not sent
+        if not d["name"]:
+            raise ValueError("a name is needed")
+        replace = bool(self.original_name) and self.original_name == d["name"]
+        return "check_composite", dict(d, replace=replace)
+
+    @staticmethod
+    def _ok_text(r) -> str:
+        return "✔ defines %s" % ", ".join(r.get("channels") or [])
 
     def check(self) -> None:
-        try:
-            d = self.value()
-        except ValueError as exc:
-            self._show("✘ %s" % exc, "#d44")
-            return
-        replace = bool(self.original_name) and self.original_name == d["name"]
+        self.checker.check()
 
-        def ok(r):
-            txt = "✔ defines %s" % ", ".join(r.get("channels") or [])
-            for w in r.get("warnings") or []:
-                txt += "\n⚠ " + w
-            self._show(txt, "#a60" if r.get("warnings") else "#2a2")
-        self._show("checking …", "gray")
-        self.conn.request("check_composite", dict(d, replace=replace), on_ok=ok,
-                          on_err=lambda e: self._show("✘ %s" % e, "#d44"))
+    def _accept(self) -> None:
+        self.result_value = self.value()
+        self.accept()
 
     def _ok(self):
-        try:
-            self.result_value = self.value()
-        except ValueError as exc:
-            QMessageBox.warning(self, "Composite", str(exc))
-            return
-        self.accept()
+        self.checker.check(then_accept=True)
 
 
 ACTION_HELP = """\
@@ -662,7 +704,7 @@ sleep or ramp step."""
 class UserActionDialog(QDialog):
     """Name, description and code of a user action."""
 
-    def __init__(self, act: Optional[dict], channels, existing, parent=None):
+    def __init__(self, act: Optional[dict], channels, existing, parent=None, conn=None):
         super().__init__(parent)
         self.setWindowTitle("Action" if act is None else "Action %s" % act["name"])
         a = act or {}
@@ -694,11 +736,18 @@ class UserActionDialog(QDialog):
         form.addRow("Code", self.code)
         form.addRow("", self.insert)
         form.addRow(help_)
+        self.info = QLabel("")
+        form.addRow(self.info)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        from ..checks import BackendCheck
+        self.checker = BackendCheck(conn, self.info, self._request,
+                                    lambda r: "✔ the code is valid Python", self._accept)
+        self.check_btn = self.checker.button(bb, "check the name and the code (syntax, and "
+                                                 "that the quoted channels exist)")
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
-        self.resize(620, 480)
+        self.resize(620, 500)
         self.result_value = None
 
     def _insert(self, i: int) -> None:
@@ -707,25 +756,30 @@ class UserActionDialog(QDialog):
             self.code.setFocus()
         self.insert.setCurrentIndex(0)
 
-    def _ok(self) -> None:
-        name = self.name.text().strip()
-        code = self.code.toPlainText()
-        if not name or not code.strip():
-            QMessageBox.warning(self, "Action", "An action needs a name and code.")
-            return
-        if name != self.original and name in self.existing:
-            QMessageBox.warning(self, "Action", "There is already an action %s." % name)
-            return
+    def value(self) -> dict:
+        return {"name": self.name.text().strip(), "code": self.code.toPlainText(),
+                "description": self.description.text().strip(),
+                "confirm": self.confirm.isChecked()}
+
+    def _request(self):
+        v = self.value()
+        if not v["name"] or not v["code"].strip():
+            raise ValueError("an action needs a name and code")
+        if v["name"] != self.original and v["name"] in self.existing:
+            raise ValueError("there is already an action %s" % v["name"])
         try:
-            compile(code, "<action>", "exec")
+            compile(v["code"], "<action>", "exec")
         except SyntaxError as exc:
-            QMessageBox.warning(self, "Action", "Syntax error in line %s: %s"
-                                % (exc.lineno, exc.msg))
-            return
-        self.result_value = {"name": name, "code": code,
-                             "description": self.description.text().strip(),
-                             "confirm": self.confirm.isChecked()}
+            raise ValueError("syntax error in line %s: %s" % (exc.lineno, exc.msg)) from None
+        return "check_user_action", dict(v, replace=bool(self.original) and
+                                         self.original == v["name"])
+
+    def _accept(self) -> None:
+        self.result_value = self.value()
         self.accept()
+
+    def _ok(self) -> None:
+        self.checker.check(then_accept=True)
 
 
 def _table(headers):
@@ -817,7 +871,8 @@ class SetupPanel(QWidget):
         self.act.itemDoubleClicked.connect(lambda _: self._run_action())
         self.act_run = QPushButton("▶ Run action")
         self.act_run.clicked.connect(self._run_action)
-        rbox = QGroupBox("Instrument channels && actions")
+        rbox = QGroupBox("Channels (hardware)")
+        rbox.setToolTip("the selected instrument's own channels and actions")
         rl = QVBoxLayout(rbox)
         rl.addWidget(self.raw, 3)
         rl.addLayout(rb)
@@ -835,12 +890,14 @@ class SetupPanel(QWidget):
             b.clicked.connect(fn)
             ab.addWidget(b)
         ab.addStretch(1)
-        abox = QGroupBox("Aliases")
+        abox = QWidget()
         al = QVBoxLayout(abox)
         al.addWidget(self.alias)
         al.addLayout(ab)
-        # composites
-        self.comp = _table(["Composite", "Type", "Definition", "Channels", "Last set"])
+        # composites: a row per composite, its variables in rows below it
+        self.comp = _table(["Name", "Type", "Definition", "Last set"])
+        self.comp.setToolTip("composite channels; the variables of a multivariate composite are "
+                             "listed below it, by the names they have everywhere (name.variable)")
         cb = FlowLayout()
         for text, fn in (("Add…", lambda: self._edit_comp(None)), ("Edit…", self._edit_comp_sel),
                          ("Remove", self._remove_comp)):
@@ -848,7 +905,7 @@ class SetupPanel(QWidget):
             b.clicked.connect(fn)
             cb.addWidget(b)
         cb.addStretch(1)
-        cbox = QGroupBox("Composites")
+        cbox = QWidget()
         cl = QVBoxLayout(cbox)
         cl.addWidget(self.comp)
         cl.addLayout(cb)
@@ -878,7 +935,7 @@ class SetupPanel(QWidget):
                 b_.setFixedWidth(30)
             ub.addWidget(b_)
         ub.addStretch(1)
-        ubox = QGroupBox("Actions")
+        ubox = QWidget()
         ul = QVBoxLayout(ubox)
         ul.addWidget(self.uact)
         ul.addLayout(ub)
@@ -899,7 +956,7 @@ class SetupPanel(QWidget):
             b.clicked.connect(fn)
             pb.addWidget(b)
         pb.addStretch(1)
-        pbox = QGroupBox("Parameters")
+        pbox = QWidget()
         pl = QVBoxLayout(pbox)
         pl.addWidget(self.param)
         pl.addLayout(pb)
@@ -918,30 +975,37 @@ class SetupPanel(QWidget):
         self.act_merge.triggered.connect(lambda: self.merge_setup())
         #: the actions of the Setup menu, in order
         self.setup_actions = [self.act_save, self.act_load, self.act_merge]
-        self.msg = shrinkable_label(QLabel(""))
-        fb = QHBoxLayout()
-        fb.addWidget(self.msg, 1)
+        # messages go to the main window's status bar (and the Log), not into the panel
+        self.msg = StatusMessages(self)
 
         top = QSplitter(Qt.Horizontal)
         top.addWidget(ibox)
         top.addWidget(rbox)
-        bottom = QSplitter(Qt.Horizontal)
-        bottom.addWidget(abox)
-        bottom.addWidget(cbox)
         for t in (self.inst, self.raw, self.alias, self.comp, self.uact, self.param):
             t.setMinimumWidth(120)
-        last = QSplitter(Qt.Horizontal)
-        last.addWidget(pbox)
-        last.addWidget(ubox)
+            t.setMinimumHeight(60)
+        # the rest: tabs the user may reorder (the order is remembered), not close
+        self.lower = QTabWidget()
+        self.lower.setMovable(True)
+        self.lower.setTabsClosable(False)
+        self.pages = {"aliases": (abox, "Channels (aliased)"),
+                      "composites": (cbox, "Channels (composite)"),
+                      "actions": (ubox, "User Actions"),
+                      "parameters": (pbox, "Parameters")}
+        for key in self._tab_order():
+            w, title = self.pages[key]
+            w.setProperty("page", key)
+            self.lower.addTab(w, title)
+        self.lower.tabBar().tabMoved.connect(lambda *_: self._save_tab_order())
         split = QSplitter(Qt.Vertical)
         split.addWidget(top)
-        split.addWidget(bottom)
-        split.addWidget(last)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 3)
-        split.setStretchFactor(2, 2)
+        split.addWidget(self.lower)
+        split.setChildrenCollapsible(False)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        self.split = split
         lay = QVBoxLayout(self)
-        lay.addLayout(fb)
+        lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(split, 1)
         self.inst.itemSelectionChanged.connect(self._show_raw)
         self.alias.cellDoubleClicked.connect(lambda r, c: self._edit_alias_sel())
@@ -949,6 +1013,34 @@ class SetupPanel(QWidget):
         self.inst.cellDoubleClicked.connect(lambda r, c: self._edit_inst())
         model.stateChanged.connect(self._state)
         conn.connected.connect(lambda _: self._load_drivers())
+
+    # ------------------------------------------------------------------- tabs --
+    TAB_KEY = "setup/lower_tabs"
+
+    def _tab_order(self) -> list:
+        default = ["aliases", "composites", "actions", "parameters"]
+        try:
+            saved = QSettings().value(self.TAB_KEY)
+        except Exception:
+            saved = None
+        if isinstance(saved, str):
+            saved = saved.split(",")
+        if not isinstance(saved, (list, tuple)):
+            return default
+        order = [k for k in saved if k in default]
+        return order + [k for k in default if k not in order]
+
+    def _save_tab_order(self) -> None:
+        order = [self.lower.widget(i).property("page") for i in range(self.lower.count())]
+        try:
+            QSettings().setValue(self.TAB_KEY, ",".join(order))
+        except Exception:
+            pass
+
+    def show_page(self, key: str) -> None:
+        """Bring a tab of the lower part to the front: aliases, composites, actions,
+        parameters."""
+        self.lower.setCurrentWidget(self.pages[key][0])
 
     # ---------------------------------------------------------------- helpers --
     def _err(self, prefix):
@@ -1001,23 +1093,58 @@ class SetupPanel(QWidget):
                     it.setForeground(QColor("#d44"))
                     it.setToolTip(a["error"])
                 self.alias.setItem(r, c, it)
-        cs = self.model.composites()
-        self.comp.setRowCount(len(cs))
-        for r, c_ in enumerate(cs):
-            last = c_.get("last")
-            if isinstance(last, dict):
-                last = ", ".join("%s = %s" % (k, "—" if v is None else _short(v))
-                                 for k, v in last.items())
-            vals = (c_["name"], dict(COMP_TYPES).get(c_.get("type"), c_.get("type")),
-                    composite_summary(c_), ", ".join(composite_channels(c_)),
-                    "" if last is None else _short(last))
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(str(v))
-                if c_.get("description"):
-                    it.setToolTip(c_["description"])
-                self.comp.setItem(r, c, it)
+        self._show_composites()
         self._show_params()
         self._show_uacts()
+
+    def _show_composites(self):
+        """A row per composite; a multivariate one is followed by a row per variable,
+        named as it is everywhere else (``nD.n``), with its range and last value."""
+        cs = self.model.composites()
+        sel = self._sel_comp()
+        rows = []
+        for c_ in cs:
+            t = c_.get("type", "multi")
+            last = c_.get("last")
+            rows.append((c_["name"], (c_["name"], dict(COMP_TYPES).get(t, t),
+                                      composite_summary(c_),
+                                      "" if t == "multi" or last is None else _short(last)),
+                         c_.get("description", ""), False))
+            if t == "multi":
+                lasts = last if isinstance(last, dict) else {}
+                for v in c_.get("variables") or []:
+                    v = v if isinstance(v, dict) else {"name": v}
+                    full = "%s.%s" % (c_["name"], v["name"])
+                    lv = lasts.get(full, lasts.get(v["name"]))
+                    rng = ""
+                    if v.get("min") is not None or v.get("max") is not None:
+                        rng = "%s … %s" % (_var_cell(v.get("min")) or "−∞",
+                                           _var_cell(v.get("max")) or "∞")
+                    defn = " ".join(x for x in (rng, v.get("unit") or "",
+                                                ("ramp %s/s" % _var_cell(v["ramp_rate"]))
+                                                if v.get("ramp_rate") else "") if x)
+                    rows.append((c_["name"], ("    ↳ " + full, "variable", defn,
+                                              "—" if lv is None else _short(lv)),
+                                 v.get("description", ""), True))
+        self.comp.setRowCount(len(rows))
+        grey = QColor("#888")
+        for r, (owner, vals, desc, is_var) in enumerate(rows):
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                it.setData(Qt.UserRole, owner)
+                if desc:
+                    it.setToolTip(desc)
+                if is_var and c in (1, 2):
+                    it.setForeground(grey)
+                self.comp.setItem(r, c, it)
+            if owner == sel and not is_var:
+                self.comp.selectRow(r)
+
+    def _sel_comp(self):
+        """The composite of the selected row (also when a variable row is selected)."""
+        r = self.comp.currentRow()
+        it = self.comp.item(r, 0) if r >= 0 else None
+        return it.data(Qt.UserRole) if it is not None else None
 
     def _show_params(self):
         ps = self.model.parameters()
@@ -1230,7 +1357,8 @@ class SetupPanel(QWidget):
             self._edit_param(p)
 
     def _edit_param(self, p):
-        dlg = ParameterDialog(p, [x["name"] for x in self.model.parameters()], parent=self)
+        dlg = ParameterDialog(p, [x["name"] for x in self.model.parameters()], parent=self,
+                              conn=self.conn)
         if dlg.exec() and dlg.result_value:
             v = dlg.result_value
             args = dict(v, replace=bool(p) and p["name"] == v["name"])
@@ -1250,7 +1378,7 @@ class SetupPanel(QWidget):
 
     # -------------------------------------------------------------- composites --
     def _edit_comp_sel(self):
-        name = self._sel_name(self.comp)
+        name = self._sel_comp()
         c = next((c for c in self.model.composites() if c["name"] == name), None)
         if c:
             self._edit_comp(c)
@@ -1279,7 +1407,7 @@ class SetupPanel(QWidget):
                 define()
 
     def _remove_comp(self):
-        name = self._sel_name(self.comp)
+        name = self._sel_comp()
         if name:
             self.conn.request("remove_composite", {"name": name},
                               on_ok=self._done("composite %s removed" % name),
@@ -1389,7 +1517,7 @@ class SetupPanel(QWidget):
     def _edit_uact(self, a: Optional[dict]) -> None:
         names = self.model.readable_channels() + self.model.config_channels(writable=True)
         dlg = UserActionDialog(a, names, [x["name"] for x in self.model.user_actions()],
-                               parent=self)
+                               parent=self, conn=self.conn)
         if dlg.exec() and dlg.result_value:
             v = dict(dlg.result_value)
             if a is not None:

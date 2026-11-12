@@ -57,7 +57,7 @@ SWEEP = {"name": "gui", "dimensions": [
     {"points": 15, "sweep": [{"channel": "Vg", "start": -0.3, "stop": 0.3}],
      "record": ["I", "spectrum", "XY"]},
     {"points": 4, "sweep": [{"channel": "Vb", "start": -0.2, "stop": 0.2}], "record": ["T"]},
-    {"points": 2, "sweep": [{"channel": "detuning", "start": 0, "stop": 0.1}], "record": []}],
+    {"points": 2, "sweep": [{"channel": "dot.detuning", "start": 0, "stop": 0.1}], "record": []}],
     "pre": {"constants": [{"channel": "src.output", "value": "ON"}], "record": ["T"],
             "hook": "log('x')"},
     "post": {"constants": [{"channel": "Vg", "value": 0.0}]}, "metadata": {"comment": "c"}}
@@ -656,10 +656,11 @@ def test_manual_panel(app, gui):
     mp = w.manual
     assert pump(app, 5, lambda: "Vg" in mp.rows)
     # aliases/composites that can be written (no read-only ones) + instrument settings
-    assert "detuning" in mp.rows and "I" not in mp.rows
+    assert "dot.detuning" in mp.rows and "I" not in mp.rows
     assert "dmm.nplc" in mp.rows and mp.rows["dmm.nplc"].kind == "config"
     mp.settings.setChecked(False)
-    assert not any("." in n for n in mp.rows)
+    assert not any(r.kind == "config" for r in mp.rows.values())
+    assert "dot.detuning" in mp.rows                       # a variable, not a setting
     mp.settings.setChecked(True)
     assert "dmm.nplc" in mp.rows
     vg = mp.rows["Vg"]
@@ -739,12 +740,25 @@ def test_parameters_and_actions_in_the_gui(app, gui):
     assert pump(app, 5, lambda: sp.param.rowCount() == 2 and "half" in mp.params)
     assert [sp.param.item(r, 0).text() for r in range(2)] == ["Cb", "half"]
     assert sp.param.item(1, 2).text() == "Cb/2" and sp.param.item(0, 4).text() == "half"
-    # the dialog: value or formula
-    dlg = ParameterDialog({"name": "half", "formula": "Cb/2"}, ["Cb", "half"])
-    assert dlg.kind.currentData() == "formula" and not dlg.value.isVisibleTo(dlg)
-    dlg.kind.setCurrentIndex(0)
-    dlg.value.setText("0.25")
+    # the dialog: one field, a number is a value, anything else a formula
+    dlg = ParameterDialog({"name": "half", "formula": "Cb/2"}, ["Cb", "half"], parent=w,
+                          conn=w.conn)
+    assert dlg.definition.text() == "Cb/2" and dlg.is_formula() and "formula" in dlg.kind.text()
+    dlg.definition.setText("0.25")
+    assert not dlg.is_formula() and "value" in dlg.kind.text()
     assert dlg.value_dict() == {"name": "half", "unit": "", "description": "", "value": 0.25}
+    # Check asks the backend; OK checks first and only closes when it passes
+    dlg.definition.setText("Cb * nope")
+    dlg.check_btn.click()
+    assert pump(app, 5, lambda: "✘" in dlg.info.text() and "nope" in dlg.info.text())
+    dlg.definition.setText("half + 1")                   # a circle
+    dlg._ok()
+    assert pump(app, 5, lambda: "✘" in dlg.info.text()) and dlg.result_value is None
+    dlg.definition.setText("Cb / 3")
+    dlg._ok()
+    assert pump(app, 5, lambda: dlg.result_value is not None)
+    assert dlg.result_value["formula"] == "Cb / 3" and "✔ half = 0.2" in dlg.info.text()
+    assert be.channels.parameter_values()["half"] == pytest.approx(0.3)   # nothing saved
     # Manual: the formula parameter is shown, not editable; the value one is set there
     assert isinstance(mp.params["half"]["editor"], QLabel)
     assert "0.3" in mp.params["half"]["editor"].text()
@@ -1132,10 +1146,14 @@ def test_composite_editor_and_manual_groups(app, gui):
     from easymeasure.frontend.panels.setup_panel import CompositeDialog
     sp, m = w.setup_panel, w.model
     # the demo's three kinds in the table
-    assert pump(app, 5, lambda: sp.comp.rowCount() == 3)
-    types = {sp.comp.item(r, 0).text(): sp.comp.item(r, 1).text() for r in range(3)}
-    assert types == {"detuning": "Multivariate write", "Vdiff": "Composite read",
-                     "Tset_C": "Simple mapping"}
+    assert pump(app, 5, lambda: sp.comp.rowCount() == 4)
+    types = {sp.comp.item(r, 0).text().strip(): sp.comp.item(r, 1).text() for r in range(4)}
+    assert types == {"dot": "Multivariate write", "↳ dot.detuning": "variable",
+                     "Vdiff": "Composite read", "Tset_C": "Simple mapping"}
+    # a variable row belongs to its composite: Edit… edits the composite
+    r = next(r for r in range(4) if "dot.detuning" in sp.comp.item(r, 0).text())
+    sp.comp.selectRow(r)
+    assert sp._sel_comp() == "dot"
     # a multivariate write, built in the dialog
     dlg = CompositeDialog(m, w.conn, None, parent=w)
     dlg.name.setText("gates")
@@ -1152,7 +1170,7 @@ def test_composite_editor_and_manual_groups(app, gui):
     assert v["type"] == "multi" and [x["name"] for x in v["variables"]] == ["eps", "U"]
     assert v["variables"][1]["ramp_rate"] == 1 and v["targets"]["Vy"] == "U - eps"
     dlg.check()
-    assert pump(app, 5, lambda: "✔ defines eps, U" in dlg.info.text())
+    assert pump(app, 5, lambda: "✔ defines gates.eps, gates.U" in dlg.info.text())
     assert "gates" not in [c["name"] for c in be.list_channels()["composites"]]
     be.define_composite(**v)
     # a mapping whose formulas are not inverse: Check reports where
@@ -1177,12 +1195,12 @@ def test_composite_editor_and_manual_groups(app, gui):
     # the manual panel: the variables, grouped under their composite
     mp = w.manual
     m.schedule_refresh()
-    assert pump(app, 5, lambda: "eps" in mp.rows and "gates" in mp.groups)
-    assert mp.rows["eps"].kind == "variable" and "Tset_C" in mp.rows and "Vdiff" not in mp.rows
-    assert "detuning" not in mp.groups                    # one variable: no group needed
+    assert pump(app, 5, lambda: "gates.eps" in mp.rows and "gates" in mp.groups)
+    assert mp.rows["gates.eps"].kind == "variable" and "Tset_C" in mp.rows and "Vdiff" not in mp.rows
+    assert "dot" not in mp.groups                    # one variable: no group needed
     g = mp.groups["gates"]
     # never set: NaN, sliders greyed out, hold forced on, Set all waits for values
-    eps, U = mp.rows["eps"], mp.rows["U"]
+    eps, U = mp.rows["gates.eps"], mp.rows["gates.U"]
     assert eps.editor.is_nan() and "NaN" in eps.editor.text() and U.editor.is_nan()
     assert not eps.slider.isEnabled() and not U.slider.isEnabled()
     assert g["hold"].isChecked() and not g["hold"].isEnabled()
@@ -1193,38 +1211,38 @@ def test_composite_editor_and_manual_groups(app, gui):
     eps.editor.lineEdit().selectAll()
     QTest.keyClicks(eps.editor.lineEdit(), "0")
     QTest.keyClick(eps.editor, Qt.Key_Return)
-    assert mp._held["gates"] == {"eps": 0.0} and not eps.editor.is_nan()
+    assert mp._held["gates"] == {"gates.eps": 0.0} and not eps.editor.is_nan()
     assert eps.slider.isEnabled() and U.editor.is_nan() and not g["set"].isEnabled()
     eps.editor.setValue(0.1)
     U.editor.setValue(0.2)
-    assert mp._held["gates"] == {"eps": 0.1, "U": 0.2}
+    assert mp._held["gates"] == {"gates.eps": 0.1, "gates.U": 0.2}
     assert g["set"].isEnabled() and not U.editor.is_nan() and "0.2" in U.editor.text()
-    assert math.isnan(be.channels.get("eps"))             # nothing sent yet
+    assert math.isnan(be.channels.get("gates.eps"))             # nothing sent yet
     mp.set_group("gates")
-    assert pump(app, 10, lambda: not mp._pending.get("eps") and
-                be.channels.last_value("U") == pytest.approx(0.2))
+    assert pump(app, 10, lambda: not mp._pending.get("gates.eps") and
+                be.channels.last_value("gates.U") == pytest.approx(0.2))
     assert be.channels.get("Vx") == pytest.approx(0.3) and be.channels.get("Vy") == \
         pytest.approx(0.1)
     # set: hold is released and free again
     assert pump(app, 5, lambda: not g["hold"].isChecked() and g["hold"].isEnabled())
     assert not g["note"].isVisibleTo(mp) and eps.slider.isEnabled()
-    mp.rows["eps"].editor.setValue(0.0)                   # now one alone is fine
+    mp.rows["gates.eps"].editor.setValue(0.0)                   # now one alone is fine
     assert pump(app, 10, lambda: abs(be.channels.get("Vx") - 0.2) < 1e-9)
     # the variables are indented under their group; "Set all to zero"
     from easymeasure.frontend.panels.manual_panel import GROUP_INDENT
-    assert mp.rows["eps"].label.indent() == GROUP_INDENT and mp.rows["Vg"].label.indent() <= 0
+    assert mp.rows["gates.eps"].label.indent() == GROUP_INDENT and mp.rows["Vg"].label.indent() <= 0
     g["zero"].click()
-    assert pump(app, 10, lambda: not mp._pending.get("U") and
-                be.channels.last_value("U") == pytest.approx(0.0))
+    assert pump(app, 10, lambda: not mp._pending.get("gates.U") and
+                be.channels.last_value("gates.U") == pytest.approx(0.0))
     assert be.channels.get("Vx") == pytest.approx(0.0) and be.channels.get("Vy") == \
         pytest.approx(0.0)
     mp.filter.setText("gates")
-    assert g["label"].isVisibleTo(mp) and mp.rows["U"].label.isVisibleTo(mp)
+    assert g["label"].isVisibleTo(mp) and mp.rows["gates.U"].label.isVisibleTo(mp)
     assert not mp.rows["Vg"].label.isVisibleTo(mp)
     mp.filter.clear()
     # the sweep editor offers the variables and the mapping, records the read
     wr, rd = w.editor._channel_lists()
-    assert {"eps", "U", "Tset_C", "detuning"} <= set(wr) and "Vdiff" not in wr
+    assert {"gates.eps", "gates.U", "Tset_C", "dot.detuning"} <= set(wr) and "Vdiff" not in wr
     assert "Vdiff" in rd
 
 
@@ -1481,3 +1499,54 @@ def test_setup_and_sweep_menus(app, gui):
     assert not w.setup_panel.act_load.isEnabled() and not w.editor.act_run.isEnabled()
     w.set_locked(False)
     assert w.setup_panel.act_load.isEnabled() and w.editor.act_run.isEnabled()
+
+
+def test_check_buttons_on_code_and_formula_fields(app, gui):
+    """Every code / formula field has Check; OK (Add, Run) checks first."""
+    from easymeasure.frontend.panels.setup_panel import CompositeDialog, UserActionDialog
+    w, be, _, _ = gui
+    # a user action: quoted channels that do not exist are a warning, not a refusal
+    dlg = UserActionDialog(None, [], [], parent=w, conn=w.conn)
+    dlg.name.setText("probe")
+    dlg.code.setPlainText("set('Vg', 0)\nx = get('nope')")
+    dlg.check_btn.click()
+    assert pump(app, 5, lambda: "⚠" in dlg.info.text() and "nope" in dlg.info.text())
+    dlg._ok()
+    assert pump(app, 5, lambda: dlg.result_value is not None)
+    dlg = UserActionDialog(None, [], [], parent=w, conn=w.conn)
+    dlg.name.setText("bad")
+    dlg.code.setPlainText("for i in range(3)\n  pass")
+    dlg._ok()
+    pump(app, 0.3)
+    assert dlg.result_value is None and "✘" in dlg.info.text()
+    # a composite: OK with a bad formula stays open
+    dlg = CompositeDialog(w.model, w.conn, None, parent=w)
+    dlg.name.setText("r")
+    dlg.type.setCurrentIndex(1)
+    dlg.expression.setText("Vx + nonexistent")
+    dlg._ok()
+    assert pump(app, 5, lambda: "✘" in dlg.info.text()) and dlg.result_value is None
+    dlg.expression.setText("Vx * 2")
+    dlg._ok()
+    assert pump(app, 5, lambda: dlg.result_value is not None)
+    # a point action in the sweep editor
+    ed = w.editor
+    dim = ed.dims[0]
+    dim.hook_checks["post_record"].setChecked(True)
+    hk = dim.hooks["post_record"]
+    hk.code.setPlainText("if get('Vg') > 1:\n    end_sweep()\nset('missing', 1)")
+    hk.check_btn.click()
+    assert pump(app, 5, lambda: "⚠" in hk.check_info.text() and "missing" in hk.check_info.text())
+    hk.code.setPlainText("if True\n  pass")
+    hk.check_btn.click()
+    assert pump(app, 5, lambda: "✘" in hk.check_info.text())
+    # the script editor: Add checks first
+    qp = w.queue_panel
+    n = len(be.queue_state()["queued"])
+    qp.script.setPlainText("x = (")
+    qp._add_script(False)
+    pump(app, 0.5)
+    assert "✘" in qp.script_info.text() and len(be.queue_state()["queued"]) == n
+    qp.script.setPlainText("log('hi')")
+    qp._add_script(False)
+    assert pump(app, 5, lambda: len(be.queue_state()["queued"]) == n + 1)

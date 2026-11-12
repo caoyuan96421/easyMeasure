@@ -134,17 +134,24 @@ class QueuePanel(QWidget):
         self.script_open.clicked.connect(self._open_script)
         self.script_save.clicked.connect(self._save_script)
         self.script_add, self.script_now = b1, b2
+        from ..checks import code_checker
+        self.checker, self.script_check, self.script_info = code_checker(self, self.script,
+                                                                         "script")
+        self._send_now = False
+        self.checker.accept = lambda: self._send_script(self._send_now)
         sb = FlowLayout()
         sb.addWidget(self.script_open)
         sb.addWidget(self.script_save)
         sb.addWidget(QLabel("Name"))
         sb.addWidget(self.script_name)
+        sb.addWidget(self.script_check)
         sb.addWidget(b1)
         sb.addWidget(b2)
         sbox = QGroupBox("Script")
         sl = QVBoxLayout(sbox)
         sl.addWidget(self.script)
         sl.addLayout(sb)
+        sl.addWidget(self.script_info)
         self.msg = shrinkable_label(QLabel(""))
         split = QSplitter(Qt.Vertical)
         split.addWidget(qbox)
@@ -206,13 +213,13 @@ class QueuePanel(QWidget):
                 self.msg.setText("✘ %s" % exc)
 
     def _add_script(self, now: bool):
+        """Check the script, then queue it (or run it now) if it passes."""
+        self._send_now = now
+        self.checker.check(then_accept=True)
+
+    def _send_script(self, now: bool):
         code = self.script.toPlainText()
         name = self.script_name.text() or "script"
-        try:
-            compile(code, name, "exec")
-        except SyntaxError as exc:
-            self.msg.setText("✘ syntax error line %s: %s" % (exc.lineno, exc.msg))
-            return
         if now:
             self.conn.request("run_script_now", {"code": code, "name": name},
                               on_ok=lambda i: self.msg.setText("script #%s started" % i),

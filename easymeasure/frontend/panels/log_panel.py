@@ -63,6 +63,12 @@ class LogPanel(QWidget):
         if self._accept(e):
             self._buf.append(e)
 
+    def add_local(self, level: str, text: str) -> None:
+        """A message of this GUI (not of the backend), e.g. 'alias Vg saved'."""
+        lv = {"error": "ERROR", "warning": "WARNING"}.get(level, "INFO")
+        self._add({"t": time.time(), "level": lv, "levelno": LEVELS.get(lv, 20),
+                   "name": "gui", "msg": text})
+
     def _on_event(self, kind, data):
         if kind == "log" and isinstance(data, dict):
             self._add(data)

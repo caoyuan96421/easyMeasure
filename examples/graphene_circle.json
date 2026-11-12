@@ -5,13 +5,13 @@
       "points": 73,
       "sweep": [
         {
-          "channel": "n",
+          "channel": "nD.n",
           "start": 0,
           "stop": 0,
           "mapping": "1.0*cos(2*pi*t)"
         },
         {
-          "channel": "D",
+          "channel": "nD.D",
           "start": 0,
           "stop": 0,
           "mapping": "0.2*sin(2*pi*t)"

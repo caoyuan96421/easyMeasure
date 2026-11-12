@@ -33,7 +33,7 @@ VIEW = {
     "read_channel", "channel_info", "list_channels", "monitor_list", "monitor_history",
     "validate_sweep", "queue_state", "current_run", "run_snapshot", "list_runs", "load_run",
     "read_run_header", "get_setup", "save_setup", "recent_logs", "list_clients",
-    "list_user_actions", "ramp_state", "list_parameters",
+    "list_user_actions", "ramp_state", "list_parameters", "check_code",
 }
 OPERATE = {
     "write_channel", "set_many", "stop_ramps", "set_parameter", "query_channel", "run_action", "monitor_add", "monitor_remove",
@@ -46,7 +46,7 @@ OPERATE = {
 ADMIN = {
     "set_settings", "rescan_drivers", "discover_resources", "add_instrument",
     "remove_instrument", "update_instrument", "raw_query", "raw_write", "define_alias",
-    "remove_alias", "define_parameter", "remove_parameter", "define_composite", "check_composite", "remove_composite", "load_setup", "run_script_now",
+    "remove_alias", "define_parameter", "remove_parameter", "define_composite", "check_composite", "check_parameter", "check_user_action", "remove_composite", "load_setup", "run_script_now",
     "define_user_action", "remove_user_action", "move_user_action",
     "shutdown",
     # the Driver Wizard writes driver code (init scripts are Python)

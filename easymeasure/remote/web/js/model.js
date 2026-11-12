@@ -49,10 +49,11 @@ export class Model {
   composites() { return ((this.state.channels || {}).composites) || []; }
   /** channels the composites define: kind "variable" (of a multivariate write), "map", "read" */
   virtualChannels() { return ((this.state.channels || {}).virtual) || []; }
-  /** multivariate composites with several variables (set together with set_many) */
+  /** multivariate composites with several variables (set together with set_many); the
+   *  variables by their channel names (nD.n) */
   compositeGroups() {
     return this.composites().filter((c) => c.type === "multi" && (c.variables || []).length > 1)
-      .map((c) => ({ name: c.name, variables: c.variables.map((v) => v.name) }));
+      .map((c) => ({ name: c.name, variables: c.variables.map((v) => `${c.name}.${v.name}`) }));
   }
   instruments() { return this.state.instruments || []; }
   /** user-defined actions: {name, code, description, confirm, running, last} */

@@ -71,7 +71,7 @@ def test_3d_sweep_with_vectors_images_and_phases(demo):
          "record": ["I", "XY", "image", "awg_rms"]},
         {"points": 3, "sweep": [{"channel": "Vb", "values": [-0.1, 0.0, 0.1]}], "record": ["spectrum"],
          "snake": True},
-        {"points": 2, "sweep": [{"channel": "detuning", "start": 0, "stop": 0.2}], "record": ["T", "@time"],
+        {"points": 2, "sweep": [{"channel": "dot.detuning", "start": 0, "stop": 0.2}], "record": ["T", "@time"],
          "record_after_inner": True}],
         "pre": {"constants": [{"channel": "src.output", "value": "ON"}],
                 "record": ["src.output", "lockin.sensitivity", "B"],

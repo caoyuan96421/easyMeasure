@@ -60,12 +60,17 @@ def test_definition_rules(demo):
     with pytest.raises(ChannelError, match="already in use"):
         be.define_alias(name="a", target="src.V1")
     be.define_composite(type="multi", name="G", variables=["u"], targets={"Vx": "u"})
-    with pytest.raises(ChannelError, match="already a channel"):
-        be.define_parameter(name="u", value=1)
+    be.define_parameter(name="u", value=1)          # the variable is G.u: no conflict
+    be.remove_parameter(name="u")
     with pytest.raises(ChannelError, match="already a channel or composite"):
         be.define_parameter(name="G", value=1)
+    # a variable may share a parameter's name: in its composite's formulas it is the variable
+    be.define_composite(type="multi", name="H", variables=["a"], targets={"Vy": "a"})
+    be.set_many(values={"H.a": 0.3}, ramp=False)
+    assert be.read_channel(name="Vy") == pytest.approx(0.3)
+    be.remove_composite(name="H")
     with pytest.raises(ChannelError, match="is a parameter"):
-        be.define_composite(type="multi", name="H", variables=["a"], targets={"Vy": "a"})
+        be.define_composite(type="multi", name="a", variables=["x"], targets={"Vy": "x"})
     with pytest.raises(ChannelError, match="already exists"):
         be.define_parameter(name="a", value=5)
     # not writable, not sweepable; set only as a value parameter
@@ -97,18 +102,18 @@ def test_composites_use_parameters(demo):
     be.define_parameter(name="half_k", formula="k/2")
     be.define_composite(type="multi", name="G", variables=[{"name": "a", "min": -1, "max": 1}],
                         targets={"Vx": "a*half_k", "Vy": "-a/k"})
-    be.set_many(values={"a": 0.5}, ramp=False)
+    be.set_many(values={"G.a": 0.5}, ramp=False)
     assert be.read_channel(name="Vx") == pytest.approx(0.5) and be.read_channel(name="Vy") == \
         pytest.approx(-0.25)
     # a parameter change moves nothing; the next write uses it
     be.set_parameter(name="k", value=4.0)
     assert be.read_channel(name="Vx") == pytest.approx(0.5)
-    be.set_many(values={"a": 0.5}, ramp=False)
+    be.set_many(values={"G.a": 0.5}, ramp=False)
     assert be.read_channel(name="Vx") == pytest.approx(1.0) and be.read_channel(name="Vy") == \
         pytest.approx(-0.125)
     # sweep validation (vectorised) uses the parameters too
     d = {"name": "s", "dimensions": [
-        {"points": 5, "sweep": [{"channel": "a", "start": 0, "stop": 1}], "record": ["Vx", "k"]}]}
+        {"points": 5, "sweep": [{"channel": "G.a", "start": 0, "stop": 1}], "record": ["Vx", "k"]}]}
     r = be.validate_sweep(definition=d)
     assert r["ok"] and "composite G: 0 of" not in str(r["warnings"])
     be.set_parameter(name="k", value=8.0)                    # Vx = 4a: above 1 V for a > 0.25
@@ -290,7 +295,7 @@ def test_parameters_change_while_sweeps_run(demo):
     be.define_parameter(name="g2", formula="-g")
     be.define_composite(type="multi", name="G", variables=[{"name": "a", "min": -1, "max": 1}],
                         targets={"Vx": "a*g", "Vy": "a*g2"})
-    be.set_many(values={"a": 0}, ramp=False)
+    be.set_many(values={"G.a": 0}, ramp=False)
     h = be.instruments.get("src")
     seen, orig = [], h.write
 
@@ -313,7 +318,7 @@ def test_parameters_change_while_sweeps_run(demo):
     th.start()
     try:
         d = {"name": "wig", "dimensions": [
-            {"points": 200, "sweep": [{"channel": "a", "start": -1, "stop": 1}],
+            {"points": 200, "sweep": [{"channel": "G.a", "start": -1, "stop": 1}],
              "record": ["Vx", "Vy", "g"]}]}
         item, ds = _run(be, d, 120)
     finally:

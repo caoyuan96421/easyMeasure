@@ -178,8 +178,10 @@ class BackendModel(QObject):
         return None
 
     def composite_groups(self) -> List[dict]:
-        """Multivariate composites with more than one variable: ``{name, variables}``
-        (front ends offer setting them together)."""
-        return [{"name": c["name"], "variables": [v["name"] for v in c["variables"]]}
+        """Multivariate composites with more than one variable: ``{name, variables}``,
+        the variables by their channel names (``nD.n``); front ends offer setting them
+        together."""
+        return [{"name": c["name"],
+                 "variables": ["%s.%s" % (c["name"], v["name"]) for v in c["variables"]]}
                 for c in self.composites() if c.get("type") == "multi"
                 and len(c.get("variables") or []) > 1]

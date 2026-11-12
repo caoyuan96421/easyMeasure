@@ -65,6 +65,7 @@ class Backend:
         "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
         "set_many", "list_channels", "stop_ramps", "ramp_state",
         "define_parameter", "remove_parameter", "set_parameter", "list_parameters",
+        "check_parameter", "check_code", "check_user_action",
         "define_user_action", "remove_user_action", "move_user_action", "run_user_action",
         "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
@@ -396,6 +397,11 @@ class Backend:
         ``DAQ::Dev1``, ``SIM::…``, ``NONE``) and driver *options*.  With *connect* it is
         connected at once; a failed connection is reported in the returned description
         (``state``, ``last_error``) and retried on demand."""
+        clash = [c.name for c in self.channels.composites() if c.type == "multi" and
+                 c.name == name]
+        if clash:
+            raise ChannelError("%r is the name of a multivariate composite (its variables are "
+                               "%s.…): choose another instrument name" % (name, name))
         h = self.instruments.add(name, driver, address, options or {}, connect=connect)
         self._changed("instruments")
         return h.describe()
@@ -553,19 +559,65 @@ class Backend:
         self.channels.remove_alias(name)
         self._changed("channels")
 
-    def define_parameter(self, name: str, value=None, formula: str = "", unit: str = "",
-                         description: str = "", replace: bool = False) -> dict:
-        """Define a parameter: a named constant of the setup, with a ``value`` or a
-        ``formula`` of other parameters (no live channels, no circles).  Parameters
-        read like channels and may be used in composite formulas and actions.
-        Returns its definition with the present value (``current``) and warnings."""
+    @staticmethod
+    def _parameter(name, value=None, formula="", definition=None, unit="", description=""):
         from .parameters import Parameter
-        p = Parameter(name=name, value=value, formula=formula or "", unit=unit,
-                      description=description)
+        if definition is not None and str(definition).strip() != "":
+            text = str(definition).strip()
+            try:                                  # a number: a value, else a formula
+                value, formula = float(text), ""
+            except ValueError:
+                value, formula = None, text
+        return Parameter(name=name, value=value, formula=formula or "", unit=unit,
+                         description=description)
+
+    def define_parameter(self, name: str, value=None, formula: str = "", unit: str = "",
+                         description: str = "", replace: bool = False,
+                         definition: Optional[str] = None) -> dict:
+        """Define a parameter: a named constant of the setup, with a ``value`` or a
+        ``formula`` of other parameters (no live channels, no circles).  Or give
+        *definition*, the text the user typed: a number becomes the value, anything
+        else the formula.  Parameters read like channels and may be used in
+        composite formulas and actions.  Returns its definition with the present value
+        (``current``) and warnings."""
+        p = self._parameter(name, value, formula, definition, unit, description)
         warnings = self.channels.add_parameter(p, replace=replace)
         self._changed("channels")
         d = next(x for x in self.channels.describe_parameters() if x["name"] == p.name)
         return dict(d, warnings=warnings)
+
+    def check_parameter(self, name: str, value=None, formula: str = "", unit: str = "",
+                        description: str = "", replace: bool = False,
+                        definition: Optional[str] = None) -> dict:
+        """Check a parameter definition without defining it (the editors' Check
+        button): ``{name, value | formula, current, warnings}``; raises the error
+        :meth:`define_parameter` would."""
+        p = self._parameter(name, value, formula, definition, unit, description)
+        v, warnings = self.channels.check_parameter(p, replace=replace)
+        return dict(p.to_dict(), current=v, warnings=warnings)
+
+    def check_code(self, code: str, what: str = "code") -> dict:
+        """Check Python code (a script, a user action, a point action) without
+        running it: ``{ok, errors, warnings}`` - syntax errors, and quoted channels
+        that do not exist (``get('nope')``)."""
+        from .scripting import check_code
+        return check_code(code, self.channels, what)
+
+    def check_user_action(self, name: str, code: str, description: str = "",
+                          confirm: bool = False, replace: bool = False) -> dict:
+        """Check a user action without defining it: its name and code, like
+        :meth:`check_code` (``ok`` is False for a bad name too)."""
+        r = self.check_code(code, "action %s" % name)
+        try:
+            UserAction(name=name, code=code, description=description, confirm=confirm)
+        except Exception as exc:
+            r["ok"] = False
+            if not r["errors"]:
+                r["errors"].append(str(exc))
+        if not replace and name in {a["name"] for a in self.user_actions.describe()}:
+            r["ok"] = False
+            r["errors"].append("an action %r already exists" % name)
+        return r
 
     def set_parameter(self, name: str, value: float) -> float:
         """Set the value of a value parameter (the Parameters and Manual panels).

@@ -280,6 +280,12 @@ class _Validator(ast.NodeVisitor):
                 raise ExpressionError("%s.%s is not available in expressions" % (mod, node.attr))
             self.names.add(mod)
             return
+        dotted = _dotted(node)
+        if dotted is not None:
+            if dotted.startswith("_"):
+                raise ExpressionError("name %r not allowed" % dotted)
+            self.names.add(dotted)           # a variable of a composite: MEMS.Vd
+            return
         if node.attr not in _SAFE_ATTRS:
             raise ExpressionError("attribute %r not allowed" % node.attr)
         self.visit(node.value)
@@ -304,10 +310,33 @@ class _Validator(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _dotted(node) -> Optional[str]:
+    """``a.b`` written in a formula: the name of a variable of a multivariate composite
+    (``MEMS.Vd``), unless ``a`` is ``np``/``math`` or ``b`` an attribute of values
+    (``.real``, ``.imag``, ``.T`` ...)."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+            and node.value.id not in _MODULES and node.attr not in _SAFE_ATTRS:
+        return "%s.%s" % (node.value.id, node.attr)
+    return None
+
+
+def _mangle(name: str) -> str:
+    """The Python identifier a dotted name is evaluated under."""
+    return "__dot_" + name.encode("utf-8").hex() if "." in name else name
+
+
 class _Rewriter(ast.NodeTransformer):
-    """Route the operators that can explode (``**``, ``*``, ``<<``) through guards."""
+    """Route the operators that can explode (``**``, ``*``, ``<<``) through guards, and
+    turn dotted names into single variables."""
 
     _MAP = {ast.Pow: "_pow", ast.Mult: "_mul", ast.LShift: "_lshift", ast.Mod: "_mod"}
+
+    def visit_Attribute(self, node):
+        d = _dotted(node)
+        if d is not None:
+            return ast.copy_location(ast.Name(id=_mangle(d), ctx=ast.Load()), node)
+        self.generic_visit(node)
+        return node
 
     def visit_BinOp(self, node):
         self.generic_visit(node)
@@ -367,8 +396,9 @@ class Expression:
         ns = dict(_NS_BASE)
         if variables:
             for k, val in variables.items():
-                if not str(k).startswith("_"):
-                    ns[k] = val
+                k = str(k)
+                if not k.startswith("_"):
+                    ns[_mangle(k)] = val
         try:
             with np.errstate(all="ignore"):   # branches of piecewise / where may be invalid
                 return eval(self._code, ns)  # noqa: S307 - allow-listed AST, no builtins
@@ -391,10 +421,24 @@ def rename(source: str, mapping: Dict[str, str]) -> str:
     """*source* with the variables renamed (``x`` -> ``detuning``), via the syntax tree."""
     tree = ast.parse(source.strip(), mode="eval")
 
+    def ref(name, like):
+        if "." in name:
+            a, b = name.split(".", 1)
+            return ast.copy_location(ast.Attribute(value=ast.Name(id=a, ctx=ast.Load()),
+                                                   attr=b, ctx=ast.Load()), like)
+        return ast.copy_location(ast.Name(id=name, ctx=ast.Load()), like)
+
     class R(ast.NodeTransformer):
         def visit_Name(self, node):
             if node.id in mapping:
-                return ast.copy_location(ast.Name(id=mapping[node.id], ctx=node.ctx), node)
+                return ref(mapping[node.id], node)
+            return node
+
+        def visit_Attribute(self, node):
+            d = _dotted(node)
+            if d is not None:
+                return ref(mapping[d], node) if d in mapping else node
+            self.generic_visit(node)
             return node
     return ast.unparse(R().visit(tree))
 

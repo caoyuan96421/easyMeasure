@@ -229,7 +229,7 @@
   "composites": [
     {
       "type": "multi",
-      "name": "detuning",
+      "name": "dot",
       "variables": [
         {
           "name": "detuning",

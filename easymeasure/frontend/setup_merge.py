@@ -122,6 +122,9 @@ class _OfflineInstruments:
     def __init__(self):
         self.chans: Dict[str, Optional[Dict[str, ChannelSpec]]] = {}
 
+    def names(self) -> List[str]:
+        return list(self.chans)
+
     def add(self, name: str, channels: Optional[Iterable[dict]]) -> None:
         if channels is None:
             self.chans[name] = None
@@ -282,7 +285,7 @@ def _composite_provides(d: dict) -> List[str]:
     except Exception:
         t = d.get("type") or "multi"
         if t == "multi":
-            return [v.get("name") if isinstance(v, dict) else str(v)
+            return ["%s.%s" % (d.get("name", ""), v.get("name") if isinstance(v, dict) else v)
                     for v in d.get("variables") or [] if v]
         return [d.get("name", "")]
 
@@ -407,6 +410,10 @@ class SetupMerge:
                 comps[it.name] = it.target
                 if (it.data.get("type") or "multi") != "multi":
                     chans[it.name] = it.target     # read / map: the composite is the channel
+                elif it.renamed:                   # its variables: name.variable
+                    for v in it.data.get("variables") or []:
+                        short = v.get("name") if isinstance(v, dict) else str(v)
+                        chans["%s.%s" % (it.name, short)] = "%s.%s" % (it.target, short)
         acts = {it.name: it.target for it in self.items["actions"] if it.selected}
         return inst, params, chans, comps, acts
 
@@ -426,13 +433,6 @@ class SetupMerge:
             return d
         if it.kind == "composites":
             t = d.get("type")
-            if t is None and "targets" in d:          # the old one-variable form
-                try:
-                    d = _comp_dict(composite_from_dict(d)[0])
-                    d["name"] = it.target
-                except Exception:
-                    return d
-                t = "multi"
             if t == "multi":
                 own = [v.get("name") if isinstance(v, dict) else str(v)
                        for v in d.get("variables") or []]

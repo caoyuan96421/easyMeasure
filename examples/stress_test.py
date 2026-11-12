@@ -70,7 +70,7 @@ def small_sweep(i):
 
 SCRIPTS = [
     "set('Vg', 0.1)\nsleep(0.2)\nlog('I=%s' % get('I'))",
-    "for i in range(20):\n    set('detuning', 0.01*i)\n    sleep(0.01)",
+    "for i in range(20):\n    set('dot.detuning', 0.01*i)\n    sleep(0.01)",
     "raise RuntimeError('deliberate script failure')",
     "x = 0\nwhile True:\n    x += 1",          # needs an abort
     "set('Vg', 99)",                           # limit violation
@@ -168,7 +168,7 @@ def main():
                     elif op < 0.35:
                         c.call("read_channel", _timeout=60,
                                name=random.choice(["I", "X", "T", "Vg", "spectrum", "chaos_crash",
-                                                   "chaos_garbage", "detuning", "nonexistent"]))
+                                                   "chaos_garbage", "dot.detuning", "nonexistent"]))
                     elif op < 0.45:
                         c.call("write_channel", name="Vx", value=random.uniform(-1.5, 1.5))
                     elif op < 0.55:

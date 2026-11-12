@@ -110,7 +110,7 @@ def test_missing_dependencies_and_select_with_needs(demo):
         cmds.index(("define_composite", "nD"))
     assert cmds.index(("define_parameter", "Cb")) < cmds.index(("define_composite", "nD"))
     apply(demo, m)
-    demo.set_many({"n": 0.5, "D": 0.1})
+    demo.set_many({"nD.n": 0.5, "nD.D": 0.1})
     assert demo.channels.get("Vbg") == pytest.approx((0.5 + 0.15 + 0.1 / 0.0452) / 1.2)
     # merged again: everything is identical now
     m2 = plan(demo, graphene())
@@ -152,14 +152,31 @@ def test_rename_alias_rewrites_formulas_and_actions(demo):
 
 
 def test_composite_variable_conflicts_and_duplicate_new_names(demo):
-    demo.define_alias(name="n", target="src.V1")      # the variable n of nD is taken
+    demo.define_alias(name="n", target="src.V1")      # no conflict: the variable is nD.n
     m = plan(demo, graphene())
     m.select_with_needs("composites", "nD")
-    assert not m.validate()
-    assert "its channel n is already the alias n" in msgs(m, "composites", "nD")
-    # renaming the composite does not rename its variables
+    for it in m.selected("instruments"):
+        it.new_name = it.name + "2"
+    assert m.validate(), m.errors
+    # the composite's name is taken: renaming it renames its variables too
+    demo.define_alias(name="nD", target="src.V2")
+    m = plan(demo, graphene())
+    m.select_with_needs("composites", "nD")
+    for it in m.selected("instruments"):
+        it.new_name = it.name + "2"
+    assert not m.validate() and "already the alias nD" in msgs(m, "composites", "nD")
+    src = graphene()
+    src["composites"].append({"type": "read", "name": "nn", "expression": "nD.n * 2"})
+    m = plan(demo, src)
+    m.select_with_needs("composites", "nn")
+    for it in m.selected("instruments"):
+        it.new_name = it.name + "2"
     m.rename("composites", "nD", "nD2")
-    assert not m.validate()
+    assert m.validate(), m.errors
+    assert m.item("composites", "nn").merged["expression"] == "nD2.n * 2"
+    apply(demo, m)
+    demo.set_many({"nD2.n": 0.5, "nD2.D": 0.0})
+    assert demo.read_channel("nn") == pytest.approx(1.0)
     # two merged items under one name
     m = plan(demo, graphene())
     m.select_with_needs("aliases", "Vbg")
@@ -261,7 +278,7 @@ def test_writable_targets_and_actions_warnings(demo):
     m.select("parameters", "Cb")
     assert m.validate() and m.can_merge
     apply(demo, m)
-    demo.write_channel("w", 0.1, ramp=False)
+    demo.write_channel("h.w", 0.1, ramp=False)
     assert demo.channels.get("Vg") == pytest.approx(0.7)
 
 
@@ -418,17 +435,18 @@ def test_swapped_names(demo):
     t = m.item("composites", "nD").merged["targets"]
     assert t["Vtg"] == "(n - n0 + D/kD) / (2*Cb)" and t["Vbg"] == "(n - n0 - D/kD) / (2*Ct)"
     apply(demo, m)
-    demo.set_many({"n": 1.0, "D": 0.0})
+    demo.set_many({"nD.n": 1.0, "nD.D": 0.0})
     assert demo.instruments.get("bg").read("voltage") == pytest.approx(1.15 / 1.2)
     assert demo.instruments.get("tg").read("voltage") == pytest.approx(1.15 / 1.8)
 
 
 def test_more_edge_cases(demo):
     src = graphene()
-    # the old one-variable composite form, an invalid alias, a mapping of a renamed alias,
+    # a one-variable composite, an invalid alias, a mapping of a renamed alias,
     # actions that quote an instrument channel and another action
     src["composites"] += [
-        {"name": "Vgx", "targets": {"Vbg": "x / 2"}, "min": -1, "max": 1},
+        {"type": "multi", "name": "Vgx", "variables": [{"name": "v", "min": -1, "max": 1}],
+         "targets": {"Vbg": "v / 2"}},
         {"type": "map", "name": "Vbm", "target": "Vbg", "forward": "x * 2",
          "backward": "y / 2", "min": -1, "max": 1}]
     src["aliases"].append({"name": "bad", "target": "bg.voltage", "min": 2, "max": 1})
@@ -446,12 +464,12 @@ def test_more_edge_cases(demo):
     m.select("actions", "a2")
     m.rename("actions", "a2", "second")
     assert m.validate(), m.errors
-    assert m.item("composites", "Vgx").merged["targets"] == {"VB": "Vgx / 2"}
+    assert m.item("composites", "Vgx").merged["targets"] == {"VB": "v / 2"}
     assert m.item("composites", "Vbm").merged["target"] == "VB"
     code = m.item("actions", "a1").merged["code"]
     assert "get('backgate.voltage')" in code and "run_user_action('second')" in code
     apply(demo, m)
-    demo.write_channel("Vgx", 0.5, ramp=False)
+    demo.write_channel("Vgx.v", 0.5, ramp=False)
     assert demo.instruments.get("backgate").read("voltage") == pytest.approx(0.25)
     # renames that would merge two targets of one composite into one name
     m = plan(demo, graphene())

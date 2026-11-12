@@ -273,3 +273,41 @@ class ScriptRunner:
             raise ScriptError("%s: %s: %s" % (name, type(exc).__name__, exc)) from None
         finally:
             sys.settrace(old)
+
+
+#: script functions whose first argument is a channel name
+_CHANNEL_FUNCS = {"get": "read", "set": "set", "set_raw": "set"}
+
+
+def check_code(code: str, channels, what: str = "code") -> dict:
+    """Check Python code for the code fields (scripts, user actions, point actions)
+    without running it: ``{ok, errors, warnings}``.  An error is a syntax error;
+    a warning is a quoted channel that does not exist (``get('Vxx')``,
+    ``set_many({'nD.n': 0})``) - it may be defined before the code runs."""
+    import ast
+    errors, warnings = [], []
+    try:
+        tree = ast.parse(code or "", "<%s>" % what, "exec")
+        compile(tree, "<%s>" % what, "exec")
+    except SyntaxError as exc:
+        line = (exc.text or "").strip()
+        errors.append("line %s: %s%s" % (exc.lineno, exc.msg, (": %s" % line) if line else ""))
+        return {"ok": False, "errors": errors, "warnings": warnings}
+    seen = set()
+
+    def chan(node, line):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            n = node.value
+            if n and n not in seen and not channels.exists(n):
+                seen.add(n)
+                warnings.append("line %d: no channel %r (yet)" % (line, n))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            fn = node.func.id
+            if fn in _CHANNEL_FUNCS and node.args:
+                chan(node.args[0], node.lineno)
+            elif fn == "set_many" and node.args and isinstance(node.args[0], ast.Dict):
+                for k in node.args[0].keys:
+                    if k is not None:
+                        chan(k, node.lineno)
+    return {"ok": True, "errors": errors, "warnings": warnings}
