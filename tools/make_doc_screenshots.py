@@ -568,7 +568,9 @@ def tutorial_nd(be, w):
     pump(5, lambda: "nD" in mp.groups and "n" in mp.rows)
     g = mp.groups["nD"]
     pump(3, lambda: g["forced"] and mp.rows["n"].unset)
-    pump(0.5)
+    old_w = w.manual_dock.width()
+    w.resizeDocks([w.manual_dock], [560], Qt.Horizontal)     # room for the group's controls
+    pump(0.8)
     save(w, "t2-manual-unset", [g["label"], mp.rows["n"].editor, g["hold"], g["zero"]],
          ["1", "2", "3", "4"], crop=w.manual)
     mp.set_group("nD", zero=True)
@@ -576,6 +578,8 @@ def tutorial_nd(be, w):
          and not g["forced"])
     pump(1.0)
     save(w, "t2-manual", crop=w.manual)
+    w.resizeDocks([w.manual_dock], [old_w], Qt.Horizontal)
+    pump(0.3)
 
     tab(w, "Sweep")
     d = json.loads((ROOT / "examples" / "graphene_nD.json").read_text())
