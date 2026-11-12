@@ -30,7 +30,7 @@ os.environ["XDG_CONFIG_HOME"] = str(HOME / "config")      # fresh GUI settings
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QScrollArea, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 APP.setFont(QFont(APP.font().family(), 10))
@@ -525,6 +525,8 @@ def tutorial_nd(be, w):
     pump(1.0)
     # give the Parameters box room: a wide left side, a tall bottom row
     old = w.splitter.sizes()
+    log = w.findChild(QDockWidget, "log_dock")
+    log.hide()
     w.splitter.setSizes([1150, 450])
     pbox = sp.param.parentWidget()
     last = pbox.parentWidget()                     # the splitter Parameters | Actions
@@ -535,6 +537,7 @@ def tutorial_nd(be, w):
         sp.param.resizeColumnToContents(c)
     pump(0.8)
     save(w, "t2-parameters", crop=pbox)
+    log.show()
     w.splitter.setSizes(old)
     pump(0.3)
 
@@ -633,7 +636,7 @@ def tutorial_threshold(be, w):
     bar.setValue(bar.maximum())
     area.horizontalScrollBar().setValue(0)
     pump(0.5)
-    save(w, "t3-manual-actions", [mp.action_buttons["gates to zero"], mp.param_header],
+    save(w, "t3-manual-actions", [mp.action_buttons["gates to zero"], mp.params["Cb"]["label"]],
          ["1", "2"], crop=w.manual)
 
 

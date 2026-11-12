@@ -271,7 +271,7 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
     page.wait_for_selector("td:text-is('Simple mapping')", timeout=10000)
     assert page.locator("td:text-is('Multivariate write')").count() == 1
     assert page.locator("td:text-is('Composite read')").count() == 1
-    comp_group = page.locator(".group", has_text="Composites").last
+    comp_group = page.locator("fieldset.group:has(> legend:text-is('Composites'))")
     # a mapping that is not one-to-one: Check says where
     comp_group.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
@@ -516,7 +516,7 @@ def test_web_parameters_and_actions(browser, gw, demo):
     page = open_page(browser, gw, "ada", errors)
     page.click(".tab:has-text('Instruments')")
     page.wait_for_selector("td:text-is('Cb/2')", timeout=10000)
-    grp = page.locator(".group", has_text="Parameters").first
+    grp = page.locator("fieldset.group:has(> legend:text-is('Parameters'))")
     grp.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
     dlg.locator("input").nth(0).fill("Rbias")

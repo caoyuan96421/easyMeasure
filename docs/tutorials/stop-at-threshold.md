@@ -112,8 +112,8 @@ work there:
 
 1. **▶ gates to zero** runs the action. While an action runs its button turns orange
    (**■**), and clicking it again aborts it.
-2. Below the channels, the Manual panel also lists the setup's
-   [parameters](../guide/parameters.md).
+2. Below the channels, under **Parameters**, the setup's
+   [parameters](../guide/parameters.md): type a value and press Enter to change one.
 
 Actions run **at once**, not through the queue, so they also work while a measurement
 is paused. They are saved with your setup. Their code can use the setup's parameters
