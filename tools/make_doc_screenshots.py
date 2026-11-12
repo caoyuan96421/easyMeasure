@@ -529,7 +529,7 @@ def tutorial_nd(be, w):
     pbox = sp.param.parentWidget()
     last = pbox.parentWidget()                     # the splitter Parameters | Actions
     vsplit = last.parentWidget()
-    vsplit.setSizes([250, 200, 420])
+    vsplit.setSizes([330, 250, 260])
     last.setSizes([800, 300])
     for c in range(sp.param.columnCount() - 1):
         sp.param.resizeColumnToContents(c)
@@ -631,6 +631,7 @@ def tutorial_threshold(be, w):
     area.ensureWidgetVisible(mp.param_header, 0, 0)
     bar = area.verticalScrollBar()
     bar.setValue(bar.maximum())
+    area.horizontalScrollBar().setValue(0)
     pump(0.5)
     save(w, "t3-manual-actions", [mp.action_buttons["gates to zero"], mp.param_header],
          ["1", "2"], crop=w.manual)

@@ -96,7 +96,7 @@ def test_composite(demo):
         ch.set("big", 0.8)                       # Vx target 1.6 > 1: refused before writing
     assert ch.get("Vy") == pytest.approx(-0.3)    # nothing was written
     with pytest.raises(ExpressionError):
-        one("bad", {"Vx": "y*2"})                # y is no variable of it
+        ch.add_composite(one("bad", {"Vx": "y*2"}))  # y: no variable, no parameter
     with pytest.raises(ChannelError):
         ch.add_composite(one("c2", {"nope": "c2"}))
     with pytest.raises(ChannelError):
