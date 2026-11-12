@@ -5,7 +5,7 @@ with a point action, and looking at 2-D data as a map and as curves.
 
 This continues the [Quick start](../quickstart.md). You have the graphene Hall bar with
 the instruments `bg` and `lockin` and the aliases `Vbg`, `Ileak` and `Rxx`. If you
-start fresh: *Instruments & channels → Load setup…* → `examples/graphene_setup.json`.
+start fresh: *Setup → Load setup…* → `examples/graphene_setup.json`.
 
 **The physics.** In a perpendicular magnetic field the electrons of graphene condense
 into Landau levels. $R_{xx}$ drops whenever a whole number of levels is filled. For
@@ -74,14 +74,14 @@ channels → (post-sweep action) → delay → record. With several dimensions, 
 dimension's whole loop runs at the end of each outer point, and the editor shows where.
 
 In the **Post-sweep** tab, set `Vbg` = 0 and `B` = 0, so everything returns to zero at
-the end. Then **Validate**: 101 × 61 = 6161 points, every one checked against the
+the end. Then **Sweep → Validate**: 101 × 61 = 6161 points, every one checked against the
 limits of `Vbg` and `B`.
 
 This sweep is `examples/graphene_fan.json`.
 
 ## 3. Run it and watch the field
 
-**Add & start.** While it runs, add `B` to the **Monitor** (choose `B`, click
+**Sweep → Add & start.** While it runs, add `B` to the **Monitor** (choose `B`, click
 **Monitor**) to watch the magnet step and settle:
 
 ![The fan building up, with the field in the monitor](../images/t1-fan-running.png)

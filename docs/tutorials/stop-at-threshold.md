@@ -52,7 +52,7 @@ recorded:
 | `skip_line()` | `break` | finish this line of a 2-D map early; the next line starts |
 | `skip_point()` | `continue` | skip the rest of this point; its data stays empty |
 
-This sweep is `examples/graphene_leakage.json`. **Add & start.**
+This sweep is `examples/graphene_leakage.json`. **Sweep → Add & start.**
 
 ## 3. The result
 

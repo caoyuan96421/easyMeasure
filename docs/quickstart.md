@@ -164,14 +164,18 @@ values, and at every step others are recorded. Open the **Sweep editor** tab:
 4. **Record**: tick `Rxx` and `Ileak`. Before recording, the **pre-sample delay** of
    0.02 s gives the lock-in time to settle after each step. With a real lock-in, use 3
    to 5 time constants.
+In the **Sweep** menu (menu bar, at the top of the window):
+
+![The Sweep menu](images/qs-sweep-menu.png)
+
 5. **Validate**: easyMeasure computes every point and checks it against the limits.
-   The status line says `✔ valid: shape 161 = 161 points`.
+   The status line of the editor says `✔ valid: shape 161 = 161 points`.
 6. **Add & start**.
 
 Also worth a look: the **Post-sweep** tab. Add a constant there, `Vbg` = 0, and the
 gate goes back to 0 V when the measurement ends, even if it ends with an error or you
-abort it. *Save…* stores the sweep as a file for next time. This one is
-`examples/graphene_dirac.json` (*Load…*).
+abort it. *Sweep → Save…* stores the sweep as a file for next time. This one is
+`examples/graphene_dirac.json` (*Sweep → Load…*).
 
 ## 7. Watch it run
 
@@ -210,8 +214,8 @@ When the sweep ends, the **Queue** tab lists it in the history:
 
 Instruments, aliases and everything else you defined form your **setup**. easyMeasure
 saves it automatically after every change and restores it when it starts again. To
-keep a copy, or to use it on another computer, use **Save setup…** on the *Instruments
-& channels* tab. The setup of this whole tutorial series is `examples/graphene_setup.json`.
+keep a copy, or to use it on another computer, use **Setup → Save setup…** in the menu
+bar. The setup of this whole tutorial series is `examples/graphene_setup.json`.
 
 ## Next
 

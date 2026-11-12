@@ -6,7 +6,7 @@ queue history. Inside it you can set and read channels, wait for instruments and
 sweeps, as many as you like, each into its own data file.
 
 This page uses the graphene setup from the tutorials
-(*Instruments & channels → Load setup…* → `examples/graphene_setup.json`).
+(*Setup → Load setup…* → `examples/graphene_setup.json`).
 
 ## Your first script
 
@@ -78,7 +78,7 @@ Everything here is available without `import`:
 | `sleep(2)` | wait 2 s (abortable) |
 | `wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600)` | check every 0.2 s until it is true, for at most `timeout` s. Returns `False` on timeout |
 | `run_sweep(definition)` | run a sweep, wait for it, return its data (below) |
-| `load_sweep(path)` | a sweep saved by the editor's **Save…**, or the sweep of a data file, as a dictionary |
+| `load_sweep(path)` | a sweep saved with *Sweep → Save…*, or the sweep of a data file, as a dictionary |
 | `action('vna.preset')` | run an instrument action |
 | `instrument('vna').raw_query('*IDN?')` | talk to an instrument directly |
 | `log('text')`, `print(...)` | write to the log |
@@ -108,7 +108,7 @@ then too.
 ### Start from a saved sweep
 
 Rather than writing the dictionary by hand, design the sweep in the editor, check it
-with **Validate**, and **Save…** it. Then load it, change what should change, and run
+with *Sweep → Validate*, and save it (*Sweep → Save…*). Then load it, change what should change, and run
 it:
 
 ```python

@@ -20,10 +20,18 @@ From top to bottom:
   every point.
 * **Pre-sweep** and **Post-sweep** tabs: settings applied before the first point and
   after the last (see [Pre and post phases](#pre-and-post-phases)).
-* The buttons at the bottom: **Validate** (5) checks the sweep and shows its number of
-  points and shortest duration. **Add to queue** and **Add & start** (6) queue it.
-  **Save…** / **Load…** write and read it as a `.json` file, and **Load from data
-  file…** loads the sweep of an earlier measurement, for a rerun or a variation.
+* The status line at the bottom, which shows what the **Sweep** menu did.
+
+The **Sweep** menu, in the menu bar, works on the sweep in the editor:
+
+![The Sweep menu](../images/qs-sweep-menu.png)
+
+* **New** starts an empty sweep. **Load…** / **Save…** read and write it as a
+  `.json` file, and **Load from data file…** loads the sweep of an earlier
+  measurement, for a rerun or a variation.
+* **Validate** (5) checks the sweep and shows its number of points and shortest
+  duration.
+* **Add to queue** and **Add & start** (6) queue it.
 
 A sweep is stored as a plain dictionary, the same as a JSON file. The examples
 below show that form, since it is compact: each key is a box of the editor. The full
@@ -242,7 +250,7 @@ never starts:
     ```
 
 `validate_sweep` returns the shape, total points, minimum duration, warnings and the
-normalised definition. The editor's *Validate* button calls it.
+normalised definition. *Sweep → Validate* calls it.
 
 ## Metadata
 

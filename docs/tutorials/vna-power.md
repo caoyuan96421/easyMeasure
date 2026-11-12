@@ -17,7 +17,7 @@ parameter.
 | VNA | Keysight PNA / Rohde & Schwarz ZNB / … (a driver from the [Driver Wizard](../guide/driver-wizard.md) or [written](../scripting/writing-drivers.md) for it) | `sim_vna` |
 | magnet supply | any | `sim_magnet` |
 
-Start with a fresh setup (*Instruments & channels → Load setup…* →
+Start with a fresh setup (*Setup → Load setup…* →
 `examples/vna_setup.json` has everything below).
 
 ## 1. The VNA

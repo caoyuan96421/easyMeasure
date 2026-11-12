@@ -7,7 +7,7 @@ This page shows how, first in the sweep editor where that is possible, then with
 [queue script](scripts.md) for what the editor can't do.
 
 All examples use the graphene setup of the tutorials (`examples/graphene_setup.json`).
-The `.json` files load in the sweep editor with **Load…**; the `.py` files in the
+The `.json` files load in the sweep editor with *Sweep → Load…*; the `.py` files in the
 script editor with **Open…**.
 
 ## Three ways to give the points
@@ -35,7 +35,7 @@ A **mapping** is a formula of these names:
 It can use `sin`, `cos`, `exp`, `log`, `sqrt`, `sinh`, `sign`, `abs`, `pi` and the
 other functions listed under [expressions](../reference/expressions.md). Every value it
 gives is checked against the channel's limits before the sweep starts, like any other
-sweep: **Validate** shows an error if the formula goes too far.
+sweep: *Sweep → Validate* shows an error if the formula goes too far.
 
 ## More points near the Dirac peak
 

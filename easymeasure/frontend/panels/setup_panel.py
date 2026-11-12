@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
@@ -904,21 +904,22 @@ class SetupPanel(QWidget):
         pl.addWidget(self.param)
         pl.addLayout(pb)
         self.param.cellDoubleClicked.connect(lambda r, c: self._edit_param_sel())
-        # setup files
-        sv = QPushButton("Save setup…")
-        ld = QPushButton("Load setup…")
-        mg = QPushButton("Merge setup…")
-        mg.setToolTip("take instruments, parameters, channels, composites and actions from a "
-                      "setup file into this setup")
-        mg.clicked.connect(self.merge_setup)
-        self.merge_btn = mg
-        sv.clicked.connect(self._save_setup)
-        ld.clicked.connect(self._load_setup)
+        # setup files: actions for the main window's Setup menu
+        self.act_save = QAction("Save setup…", self)
+        self.act_save.setToolTip("write the setup (instruments, parameters, channels, "
+                                 "composites, monitor list, actions) to a file")
+        self.act_save.triggered.connect(self._save_setup)
+        self.act_load = QAction("Load setup…", self)
+        self.act_load.setToolTip("replace the current setup by one from a file")
+        self.act_load.triggered.connect(self._load_setup)
+        self.act_merge = QAction("Merge setup…", self)
+        self.act_merge.setToolTip("take instruments, parameters, channels, composites and "
+                                  "actions from a setup file into this setup")
+        self.act_merge.triggered.connect(lambda: self.merge_setup())
+        #: the actions of the Setup menu, in order
+        self.setup_actions = [self.act_save, self.act_load, self.act_merge]
         self.msg = shrinkable_label(QLabel(""))
         fb = QHBoxLayout()
-        fb.addWidget(sv)
-        fb.addWidget(ld)
-        fb.addWidget(mg)
         fb.addWidget(self.msg, 1)
 
         top = QSplitter(Qt.Horizontal)

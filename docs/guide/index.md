@@ -14,7 +14,7 @@ follows in a box marked **From Python**, which you can skip. The
 [Scripting and Python](../scripting/index.md) chapter explains how that works.
 
 You can try everything with the simulated instruments, without any hardware: load
-`examples/graphene_setup.json` (*Instruments & channels → Load setup…*), or start the
+`examples/graphene_setup.json` (*Setup → Load setup…*), or start the
 backend with the older demo setup, `python -m easymeasure.backend --setup
 examples/demo_setup.json`.
 

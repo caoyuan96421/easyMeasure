@@ -17,7 +17,7 @@ changed under *File → Settings…*.
 * **File → Browse recent runs…** lists the runs in the data folder.
 * **Details** in a data tab shows the sweep definition, the metadata and the
   pre/post-sweep readings.
-* **Load from data file…** in the sweep editor loads the sweep that made a file, to
+* **Sweep → Load from data file…** loads the sweep that made a file, to
   run it again or change it.
 
 ## The journal (`.emj`)
@@ -142,4 +142,4 @@ inside the data folder.
   with the same plots as the live view (see [Plotting](plotting.md)).
 * The web app lists stored runs, opens them and downloads the
   `.emj` / `.h5` files.
-* *Load from data file…* in the sweep editor loads a run's definition.
+* *Sweep → Load from data file…* loads a run's definition.

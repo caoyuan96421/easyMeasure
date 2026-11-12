@@ -188,7 +188,7 @@ In the **Sweep editor**, sweep the *variables*:
 2. Dimension 1: `n` from −4 to 4 in 101 points, snake scan. Dimension 2: `D` from
    −0.45 to 0.45 in 31 points.
 3. Record `Rxx`.
-4. **Validate** computes all 3131 combinations, converts each to gate voltages and
+4. *Sweep → Validate* computes all 3131 combinations, converts each to gate voltages and
    checks them. Some of them are out of range: at large $n$ and $D$ of the same sign,
    $V_{bg}$ would have to exceed 10 V. Validation says how many points will be
    skipped.

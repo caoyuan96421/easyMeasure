@@ -66,9 +66,9 @@ windows can be open at once, also from other computers through the
 | add an instrument, make an alias or a composite channel | *Instruments & channels* |
 | set something by hand | the *Manual* panel (right) |
 | watch values continuously | the *Monitor* panel (right) |
-| describe and start a measurement | *Sweep editor* |
+| describe and start a measurement | *Sweep editor* tab, then the **Sweep** menu (*Validate*, *Add & start*) |
 | pause, abort, see what ran | *Queue* (and the toolbar) |
 | look at data | *Live data*, *File → Open data file…* |
 | write or run a script | *Queue → Script* |
-| save or load your setup | *Instruments & channels → Save setup… / Load setup…* |
+| save, load or merge your setup | the **Setup** menu: *Save setup… / Load setup… / Merge setup…* |
 | data folder, PowerPoint file, font size | *File → Settings* |

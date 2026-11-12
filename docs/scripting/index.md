@@ -45,8 +45,8 @@ you learn at one level works at the next.
 
 ## A sweep is a dictionary
 
-Everything you set up in the sweep editor is stored as a plain dictionary. **Save…**
-in the editor writes it to a JSON file, and every data file contains it. The Dirac-peak
+Everything you set up in the sweep editor is stored as a plain dictionary. *Sweep →
+Save…* writes it to a JSON file, and every data file contains it. The Dirac-peak
 sweep from the Quick start looks like this (`examples/graphene_dirac.json`):
 
 === "In the editor"
@@ -66,7 +66,7 @@ one saved from the editor and changes a few values. Every key is listed in the
 
 !!! tip "Design in the GUI, repeat with a script"
     The easiest way to write a sweep for a script is not to write it at all. Set it
-    up in the editor, check it with **Validate**, **Save…** it, and load it in the
+    up in the editor, check it with *Sweep → Validate*, save it (*Sweep → Save…*), and load it in the
     script with `load_sweep(...)`.
 
 ## In this chapter

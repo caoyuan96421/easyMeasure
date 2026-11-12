@@ -6,7 +6,7 @@ import json
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QStyledItemDelegate, QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -738,32 +738,34 @@ class SweepEditor(QWidget):
         self.tabs.addTab(self.pre, "Pre-sweep")
         self.tabs.addTab(self.post, "Post-sweep")
 
-        # buttons
+        # the main window's Sweep menu
         self.status = shrinkable_label(QLabel(""))
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.btn_new = QPushButton("New")
-        self.btn_load = QPushButton("Load…")
-        self.btn_from_data = QPushButton("Load from data file…")
-        self.btn_save = QPushButton("Save…")
-        self.btn_validate = QPushButton("Validate")
-        self.btn_queue = QPushButton("Add to queue")
-        self.btn_run = QPushButton("Add && start")
-        self.btn_new.clicked.connect(self.new)
-        self.btn_load.clicked.connect(self.load_file)
-        self.btn_from_data.clicked.connect(self.load_from_data)
-        self.btn_save.clicked.connect(self.save_file)
-        self.btn_validate.clicked.connect(self.validate)
-        self.btn_queue.clicked.connect(lambda: self._queue(False))
-        self.btn_run.clicked.connect(lambda: self._queue(True))
-        bar = FlowLayout()
-        for b in (self.btn_new, self.btn_load, self.btn_from_data, self.btn_save,
-                  self.btn_validate, self.btn_queue, self.btn_run):
-            bar.addWidget(b)
+
+        def act(text, fn, tip):
+            a = QAction(text, self)
+            a.setToolTip(tip)
+            a.triggered.connect(lambda _=False: fn())
+            return a
+        self.act_new = act("New", self.new, "start a new, empty sweep")
+        self.act_load = act("Load…", self.load_file, "load a sweep saved as a .json file")
+        self.act_from_data = act("Load from data file…", self.load_from_data,
+                                 "load the sweep that made a data file (to run it again)")
+        self.act_save = act("Save…", self.save_file, "save this sweep as a .json file")
+        self.act_validate = act("Validate", self.validate,
+                                "compute and check every point; shows the number of points "
+                                "and the shortest duration")
+        self.act_queue = act("Add to queue", lambda: self._queue(False),
+                             "put the sweep at the end of the run queue")
+        self.act_run = act("Add && start", lambda: self._queue(True),
+                           "put the sweep at the end of the run queue and start the queue")
+        #: the Sweep menu, in order (None: a separator)
+        self.sweep_actions = [self.act_new, self.act_load, self.act_from_data, self.act_save,
+                              None, self.act_validate, None, self.act_queue, self.act_run]
         lay = QVBoxLayout(self)
         lay.addLayout(head)
         lay.addWidget(self.tabs, 1)
         lay.addWidget(self.status)
-        lay.addLayout(bar)
         if model is not None:
             model.stateChanged.connect(lambda _: self.refresh_channels())
         self.new()
@@ -892,11 +894,12 @@ class SweepEditor(QWidget):
         self.read_only = ro
         for w in (self.name, self.comment):
             w.setReadOnly(ro)
-        for w in (self.on_read, self.on_set, self.post_on_abort, self.ppt, *self._dim_buttons,
-                  self.btn_new, self.btn_load, self.btn_from_data, self.btn_validate,
-                  self.btn_queue, self.btn_run):
+        for w in (self.on_read, self.on_set, self.post_on_abort, self.ppt, *self._dim_buttons):
             w.setEnabled(not ro)
             w.setVisible(not ro or w in (self.on_read, self.on_set, self.post_on_abort, self.ppt))
+        for a in self.sweep_actions:
+            if a is not None and a is not self.act_save:
+                a.setEnabled(not ro)
         for d in self.dims:
             d.set_read_only(ro)
         self.pre.set_read_only(ro)

@@ -12,7 +12,7 @@ it:
 
 ## Adding to the queue
 
-In the **Sweep editor**:
+In the **Sweep** menu (for the sweep in the editor):
 
 * **Add to queue** puts the sweep at the end of the queue.
 * **Add & start** does the same and starts the queue.

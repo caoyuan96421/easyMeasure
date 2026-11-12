@@ -29,7 +29,7 @@ os.environ["EASYMEASURE_HOME"] = str(HOME / "home")
 os.environ["XDG_CONFIG_HOME"] = str(HOME / "config")      # fresh GUI settings
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QScrollArea, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -113,6 +113,48 @@ def save(widget: QWidget, name: str, marks=(), labels=None, crop: QWidget = None
         pix = pix.copy(QRect(tl, crop.size()))
     OUT.mkdir(parents=True, exist_ok=True)
     pix.save(str(OUT / (name + ".png")))
+    print("  ", name)
+
+
+def save_menu(w, menu, name: str, marks: dict) -> None:
+    """Photograph the menu bar with *menu* open below its title; outline the actions
+    in *marks* (action -> label)."""
+    bar = w.menuBar()
+    title = menu.menuAction()
+    pos = bar.mapToGlobal(bar.actionGeometry(title).bottomLeft())
+    menu.popup(pos)
+    pump(0.4)
+    mp = menu.grab()
+    bp = bar.grab()
+    x0 = bar.actionGeometry(title).left()
+    W = max(bp.width() // 2, x0 + mp.width() + 40)
+    out = QPixmap(W, bp.height() + mp.height() + 8)
+    out.fill(APP.palette().window().color())
+    p = QPainter(out)
+    p.drawPixmap(0, 0, bp, 0, 0, W, bp.height())
+    p.drawPixmap(x0, bp.height(), mp)
+    p.setRenderHint(QPainter.Antialiasing)
+    f = QFont(APP.font())
+    f.setBold(True)
+    f.setPointSize(11)
+    p.setFont(f)
+    for act, lab in marks.items():
+        r = menu.actionGeometry(act).translated(x0, bp.height()).adjusted(-2, -1, 2, 1)
+        p.setPen(QPen(RED, 3))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(r, 5, 5)
+        br = p.fontMetrics().boundingRect(lab)
+        box = QRect(r.right() + 6, r.center().y() - (br.height() + 6) // 2, br.width() + 12,
+                    br.height() + 6)
+        p.setBrush(RED)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(box, 4, 4)
+        p.setPen(QColor("white"))
+        p.drawText(box, Qt.AlignCenter, lab)
+    p.end()
+    menu.hide()
+    OUT.mkdir(parents=True, exist_ok=True)
+    out.save(str(OUT / (name + ".png")))
     print("  ", name)
 
 
@@ -354,9 +396,10 @@ def quick_start(be, w):
     w.editor.validate()
     pump(5, lambda: "✔" in w.editor.status.text())
     dim = w.editor.dim_stack.currentWidget()
-    save(w, "qs-sweep-editor", [w.editor.name, dim.points, dim.sweep_box, dim.rec_box,
-                                w.editor.btn_validate, w.editor.btn_run],
-         ["1", "2", "3", "4", "5", "6"], crop=w.left_tabs)
+    save(w, "qs-sweep-editor", [w.editor.name, dim.points, dim.sweep_box, dim.rec_box],
+         ["1", "2", "3", "4"], crop=w.left_tabs)
+    save_menu(w, w.sweep_menu, "qs-sweep-menu",
+              {w.editor.act_validate: "5", w.editor.act_run: "6"})
     w.editor._queue(True)
     pump(4.0)
     save(w, "qs-running", [w.data_tabs])

@@ -253,9 +253,8 @@ See [Robustness](robustness.md) for what happens when an instrument misbehaves.
 ## Saving the setup
 
 Instruments, parameters, aliases, composites, the monitor list and user actions
-together form the **setup**. **Save setup…** and **Load setup…** at the top of the
-*Instruments & channels* tab write it to a file and read it back. Loading replaces the
-current setup.
+together form the **setup**. **Save setup…** and **Load setup…** in the **Setup**
+menu write it to a file and read it back. Loading replaces the current setup.
 
 ??? example "From Python"
 
@@ -270,7 +269,7 @@ The setup is also autosaved on every change. `python -m easymeasure.backend
 
 ### Merging a setup
 
-**Merge setup…** takes parts of another setup file into the current one: a second
+**Setup → Merge setup…** takes parts of another setup file into the current one: a second
 cryostat's instruments, a colleague's composite channels, a set of user actions. A
 wizard asks for the file, then shows one page for each kind of item, in the order they
 depend on each other:

@@ -1437,3 +1437,47 @@ def test_merge_setup_wizard(app, gui):
     assert be.channels.info("Rxx")["kind"] == "read"
     assert be.channels.info("Vxx")["target"] == "lockin2.X"
     assert "merged" in sp.msg.text()
+
+
+def test_setup_and_sweep_menus(app, gui):
+    """Save/Load/Merge setup and the sweep editor's commands live in menus; using one
+    shows its tab; the GUI lock disables them."""
+    from PySide6.QtWidgets import QPushButton
+    from easymeasure.frontend.merge_dialog import MergeSetupDialog
+    w, be, _, _ = gui
+    names = [a.text().replace("&", "") for a in w.menuBar().actions()]
+    assert names[:4] == ["File", "Setup", "Sweep", "Backend"]
+    assert [a.text() for a in w.setup_menu.actions()] == \
+        ["Save setup…", "Load setup…", "Merge setup…"]
+    texts = [a.text() for a in w.sweep_menu.actions() if not a.isSeparator()]
+    assert texts == ["New", "Load…", "Load from data file…", "Save…", "Validate",
+                     "Add to queue", "Add && start"]
+    # no buttons left for them in the panels
+    btns = [b.text() for b in w.setup_panel.findChildren(QPushButton)] + \
+        [b.text() for b in w.editor.findChildren(QPushButton)]
+    assert not {"Save setup…", "Load setup…", "Merge setup…", "Validate", "Add to queue",
+                "Add && start"} & set(btns)
+    # Sweep → Validate from another tab
+    w.left_tabs.setCurrentIndex(0)
+    w.editor.load_definition({"name": "m", "dimensions": [
+        {"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.2}], "record": ["I"]}]})
+    w.editor.act_validate.trigger()
+    assert w.left_tabs.currentWidget().isAncestorOf(w.editor) or \
+        w.left_tabs.currentWidget() is w.editor
+    assert pump(app, 5, lambda: "✔" in w.editor.status.text())
+    # Sweep → Add to queue
+    n = len(be.queue_state()["queued"])
+    w.editor.act_queue.trigger()
+    assert pump(app, 5, lambda: len(be.queue_state()["queued"]) == n + 1)
+    # Setup → Merge setup… opens the wizard, on the setup tab
+    w.left_tabs.setCurrentIndex(1)
+    w.setup_panel.act_merge.trigger()
+    dlg = w.setup_panel.findChild(MergeSetupDialog)
+    assert dlg is not None and dlg.isVisible()
+    assert w.left_tabs.currentWidget().isAncestorOf(w.setup_panel)
+    dlg.reject()
+    # the lock
+    w.set_locked(True)
+    assert not w.setup_panel.act_load.isEnabled() and not w.editor.act_run.isEnabled()
+    w.set_locked(False)
+    assert w.setup_panel.act_load.isEnabled() and w.editor.act_run.isEnabled()

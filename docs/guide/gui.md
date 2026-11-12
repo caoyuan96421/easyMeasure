@@ -33,7 +33,7 @@ The read-only *Running sweep* view can be shown from the *View* menu.
 * **Aliases** and **Composites**: definitions with their last values; Add… / Edit…
   open the editors (see [Aliases](aliases.md), [Composites](composites.md)).
 * **Actions**: your [user actions](user-actions.md).
-* *Save setup… / Load setup…*.
+* The **Setup** menu: *Save setup… / Load setup… / Merge setup…*.
 
 ## Sweep editor
 
@@ -51,9 +51,9 @@ An outer dimension also shows where the next inner dimension's loop runs: last, 
 before recording with *record after inner dims*. The pre and post phases, error
 policies and metadata are below.
 
-*Load… / Save…* read and write JSON, and *Load from data file…* takes the
-definition of a stored run. *Validate* limit-checks every setpoint, and *Add* /
-*Add & start* queue the sweep.
+The **Sweep** menu works on the sweep in the editor: *New*, *Load… / Save…* (JSON),
+*Load from data file…* (the definition of a stored run), *Validate* (limit-checks every
+setpoint), *Add to queue* and *Add & start*.
 
 ## Queue
 
@@ -88,6 +88,11 @@ and search.
 
 * **File**: Open data file… (Ctrl+O), Browse recent runs…, Settings… (data folder,
   PowerPoint file, display), Quit (the backend keeps running).
+* **Setup**: Save setup…, Load setup…, Merge setup… (see
+  [Instruments](instruments.md#saving-the-setup)).
+* **Sweep**: New, Load…, Load from data file…, Save…, Validate, Add to queue, Add &
+  start, for the sweep in the editor (see [Sweeps](sweeps.md#the-sweep-editor)).
+  Using one brings its tab to the front.
 * **Backend**: Start backend, Reconnect, Restart backend…, Show tray icon, Remote
   access…, Driver wizard…, Shut down backend….
 * **View**: show or hide the Monitor, Manual and Log docks and the *Running sweep* view.
@@ -128,6 +133,7 @@ Greyed out:
 * manual control;
 * adding / removing monitors;
 * *Add slide to PPT* and *Settings*;
+* the *Setup* and *Sweep* menus;
 * the *Backend* menu, except *Reconnect*.
 
 Still usable:

@@ -324,6 +324,20 @@ class MainWindow(QMainWindow):
             m.addAction(act)
             if fn == self.edit_settings:
                 self.lock_group.addAction(act)
+        # Setup and Sweep: the actions of the two panels (using one shows its tab)
+        self.setup_menu = self.menuBar().addMenu("&Setup")
+        for act in self.setup_panel.setup_actions:
+            self.setup_menu.addAction(act)
+            act.triggered.connect(lambda _=False: self._show_tab(self.setup_panel))
+            self.lock_group.addAction(act)
+        self.sweep_menu = self.menuBar().addMenu("S&weep")
+        for act in self.editor.sweep_actions:
+            if act is None:
+                self.sweep_menu.addSeparator()
+                continue
+            self.sweep_menu.addAction(act)
+            act.triggered.connect(lambda _=False: self._show_tab(self.editor))
+            self.lock_group.addAction(act)
         b = self.menuBar().addMenu("&Backend")
         for text, fn in (("Start backend", self.start_backend), ("Reconnect", self._reconnect),
                          ("Restart backend…", self.restart_backend),
@@ -508,6 +522,14 @@ class MainWindow(QMainWindow):
                                                 self.model.refresh()))
         dlg.finished.connect(done)
         QTimer.singleShot(0, dlg.open)
+
+    def _show_tab(self, panel) -> None:
+        """Bring the left tab holding *panel* to the front."""
+        for i in range(self.left_tabs.count()):
+            w = self.left_tabs.widget(i)
+            if w is panel or w.isAncestorOf(panel):
+                self.left_tabs.setCurrentIndex(i)
+                return
 
     def _fault(self, instrument: str, text: str, aborted: bool) -> None:
         """A safety fault (magnet quench ...): impossible to miss, but not blocking."""
