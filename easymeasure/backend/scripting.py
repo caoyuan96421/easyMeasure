@@ -18,6 +18,8 @@ Scripts are plain Python run in the backend with a small API in their namespace:
                        (``.status``, ``.data``, ``.setpoints``, ``.path``)
 ``load_sweep(path)``   a sweep definition (dict) from a JSON file saved by the sweep
                        editor, or from a data file
+``params``             the setup's parameters: ``params.Cb``, ``params['Cb']``; each
+                       parameter is also available by its name (value at the start)
 ``np``, ``math``, ``time``  modules
 ``state``              a dict persisting between scripts in the same backend
 =====================  =========================================================
@@ -93,6 +95,52 @@ def load_sweep(path) -> dict:
     return dict(read_header(p)["definition"])
 
 
+class _Params:
+    """The setup's parameters in scripts and actions: ``params.Cb`` or
+    ``params['Cb']`` (the present value), ``dict(params)``.  Read-only."""
+
+    def __init__(self, channels):
+        object.__setattr__(self, "_ch", channels)
+
+    def _vals(self) -> dict:
+        f = getattr(self._ch, "parameter_values", None)
+        return f() if f is not None else {}
+
+    def __getitem__(self, name):
+        v = self._vals()
+        if name not in v:
+            raise KeyError("no parameter %r" % name)
+        return v[name]
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(str(exc)) from None
+
+    def __setattr__(self, name, value):
+        raise ScriptError("parameters are set in the Parameters or Manual panel, not by code")
+
+    __setitem__ = __setattr__
+
+    def __contains__(self, name):
+        return name in self._vals()
+
+    def __iter__(self):
+        return iter(self._vals())
+
+    def keys(self):
+        return self._vals().keys()
+
+    def __len__(self):
+        return len(self._vals())
+
+    def __repr__(self):
+        return "params(%s)" % ", ".join("%s=%g" % kv for kv in self._vals().items())
+
+
 class ScriptRunner:
     def __init__(self, channels, instruments, control,
                  run_sweep: Optional[Callable[[dict], str]] = None):
@@ -158,7 +206,7 @@ class ScriptRunner:
                 raise ScriptError("run_sweep not available here")
             return self.run_sweep(defn)
 
-        return {
+        ns = {
             "__name__": "__easymeasure_script__", "load_sweep": load_sweep,
             "get": _get, "set": _set, "set_many": _set_many, "set_raw": _set_raw, "sleep": ctl.sleep,
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
@@ -166,7 +214,18 @@ class ScriptRunner:
             "run_sweep": _run_sweep, "action": _action, "np": np, "math": math, "time": time,
             "state": self.state, "AbortRequested": AbortRequested, "skip_point": _point_only("skip_point"), "skip_line": _point_only("skip_line"),
             "end_sweep": _point_only("end_sweep"),
+            "params": _Params(self.channels),
         }
+        # parameters by their name too (values at the start), unless the name is taken
+        import builtins
+        for n, v in self._param_values().items():
+            if n not in ns and not hasattr(builtins, n):
+                ns[n] = v
+        return ns
+
+    def _param_values(self) -> dict:
+        f = getattr(self.channels, "parameter_values", None)
+        return f() if f is not None else {}
 
     def run(self, code: str, name: str = "script", extra: Optional[dict] = None) -> None:
         """Execute *code* in the calling thread.  Raises on error/abort.

@@ -1,7 +1,7 @@
 // Right-hand side: Monitor (live tiles pushed by the backend), Manual control
 // (spin box + slider per writable alias) and the Log panel.
 
-import { h, btn, bar, fmt, clock, promptDialog, throttle, autoColumns } from "../ui.js";
+import { h, btn, bar, fmt, clock, promptDialog, confirmDialog, throttle, autoColumns } from "../ui.js";
 import { PlotCanvas } from "../plot.js";
 import { evaluate } from "../expr.js";
 import { NDArray } from "../codec.js";
@@ -368,8 +368,14 @@ export class ManualPanel {
     // permission is applied here together with that
     this.stopBtn = h("button", { class: "stop-ramps", text: "■ Stop ramps", title: "no ramp is running", disabled: true,
       on: { click: () => this._stopRamps() } });
+    // user actions as buttons (hidden while there are none); parameters below the channels
+    this.actionsBar = h("div", { class: "man-actions", hidden: true });
+    this.actionBtns = new Map();
+    this.actSig = null;
+    this.params = new Map();
+    this.paramHost = h("div", { class: "man-params" });
     this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.settings, " settings"),
-      h("label", { class: "check" }, this.ramp, " ramp"), this.stopBtn), this.host, this.status);
+      h("label", { class: "check" }, this.ramp, " ramp")), this.stopBtn, this.actionsBar, this.host, this.paramHost, this.status);
     app.model.on("state", (st) => this._state(st));
     app.model.on("ramps", (act) => this.showRamps(act));
   }
@@ -409,7 +415,101 @@ export class ManualPanel {
     return out;
   }
 
+  // ---- user actions ------------------------------------------------------------------
+  _showActions() {
+    const acts = this.app.model.userActions();
+    const sig = JSON.stringify(acts.map((a) => [a.name, a.description || "", !!a.confirm]));
+    if (sig !== this.actSig) {
+      this.actSig = sig;
+      this.actionsBar.replaceChildren(...(acts.length ? [h("b", { text: "Actions" })] : []));
+      this.actionBtns.clear();
+      for (const a of acts) {
+        const b = h("button", { class: "man-action", on: { click: () => this._actionClicked(a.name) } });
+        this.actionBtns.set(a.name, b);
+        this.actionsBar.append(b);
+      }
+      this.actionsBar.hidden = !acts.length;
+    }
+    const canRun = this.conn.can("run_user_action"), canAbort = this.conn.can("abort_user_action");
+    for (const a of acts) {
+      const b = this.actionBtns.get(a.name);
+      if (!b) continue;
+      const running = !!a.running;
+      b.textContent = (running ? "■ " : "▶ ") + a.name;
+      b.classList.toggle("running", running);
+      b.disabled = running ? !canAbort : !canRun;
+      const last = a.last || {};
+      b.title = (running ? "running - click to abort\n" : "") + (a.description || a.name) +
+        (!running && last.status === "error" ? `\nlast run failed: ${last.error}` : "");
+    }
+  }
+
+  async _actionClicked(name) {
+    const a = this.app.model.userActions().find((x) => x.name === name);
+    if (!a) return;
+    if (a.running) {
+      try { await this.conn.request("abort_user_action", { name }); this.say(`aborting ${name}`); }
+      catch (e) { this.say(`✘ abort ${name}: ${e.message}`); }
+      return;
+    }
+    if (a.confirm && !(await confirmDialog("Run action", `Run ${name}?` + (a.description ? `\n\n${a.description}` : "")))) return;
+    this.say(`running ${name} …`);
+    this.app.model.scheduleRefresh();
+    try {
+      const r = await this.conn.request("run_user_action", { name }, { timeout: 7 * 24 * 3600 * 1000 });
+      this.say(r.status === "finished" ? `✔ ${name} done (${fmt(r.elapsed || 0, 3)} s)` : `✘ ${name} ${r.status}${r.error ? ": " + r.error : ""}`);
+    } catch (e) { this.say(`✘ ${name}: ${e.message}`); }
+    this.app.model.scheduleRefresh();
+  }
+
+  // ---- parameters ----------------------------------------------------------------------
+  _showParams() {
+    const ps = this.app.model.parameters();
+    const sig = JSON.stringify(ps.map((p) => [p.name, p.unit || "", p.formula || "", p.description || ""]));
+    if (sig !== this.paramSig) {
+      this.paramSig = sig;
+      this.params.clear();
+      const rows = [];
+      for (const p of ps) {
+        const label = h("span", { class: "man-label", text: p.name + (p.unit ? ` (${p.unit})` : ""), title: p.description || p.name });
+        let ed;
+        if (p.formula) ed = h("span", { class: "muted man-pformula", title: `computed: ${p.name} = ${p.formula}` });
+        else {
+          ed = h("input", { class: "man-num man-pvalue", type: "text", "data-cmd": "set_parameter",
+            title: "type a value and press Enter (moves no instrument)" });
+          ed.addEventListener("keydown", (ev) => { if (ev.key === "Enter") this.setParameter(p.name, ed.value); });
+        }
+        const row = h("div", { class: "man-row in-group man-param" }, label, ed);
+        row.dataset.param = p.name;
+        this.params.set(p.name, { row, ed, meta: p });
+        rows.push(row);
+      }
+      this.paramHost.replaceChildren(...(ps.length ? [h("div", { class: "man-group", title: "constants of the setup, used by composite channels and actions; setting one moves no instrument" }, h("b", { text: "Parameters" }))] : []), ...rows);
+      this.app.applyPermissions(this.paramHost);
+      this._filter();
+    }
+    for (const p of ps) {
+      const r = this.params.get(p.name);
+      if (!r) continue;
+      const text = p.current === null || p.current === undefined ? "" : fmt(p.current, 6);
+      if (p.formula) r.ed.textContent = `${text}  = ${p.formula}`;
+      else if (document.activeElement !== r.ed) r.ed.value = text;
+    }
+  }
+
+  async setParameter(name, text) {
+    const value = Number(String(text).trim());
+    if (!String(text).trim() || !Number.isFinite(value)) { this.say(`✘ ${name}: "${text}" is not a number`); return; }
+    try {
+      const v = await this.conn.request("set_parameter", { name, value });
+      this.say(`${name} = ${fmt(v, 8)}`);
+    } catch (e) { this.say(`✘ ${name}: ${e.message}`); }
+    this.app.model.scheduleRefresh();
+  }
+
   _state() {
+    this._showActions();
+    this._showParams();
     const chans = this._channels();
     const sig = JSON.stringify(chans.map((m) => [m.name, m.composite || "", m.dtype, m.min, m.max, m.display_unit || m.unit,
       m.choices || m.allowed || [], m.kind || ""]));
@@ -430,7 +530,7 @@ export class ManualPanel {
       }
       this.app.applyPermissions(this.host);
       this._filter();
-      this.say(chans.length ? "" : "no writable aliases, composites or instrument settings");
+      this.say(chans.length || this.app.model.parameters().length ? "" : "no writable aliases, composites or instrument settings");
     }
     for (const m of chans) {
       const r = this.rows.get(m.name);
@@ -442,6 +542,10 @@ export class ManualPanel {
     const t = this.filter.value.trim().toLowerCase();
     for (const [n, r] of this.rows) r.el.hidden = !!t && !n.toLowerCase().includes(t) && !(r.meta.composite || "").toLowerCase().includes(t);
     for (const [c, g] of this.groups || []) g.el.hidden = !!t && !c.toLowerCase().includes(t) && !g.variables.some((v) => v.toLowerCase().includes(t));
+    let anyP = false;
+    for (const [n, r] of this.params || []) { r.row.hidden = !!t && !n.toLowerCase().includes(t) && !"parameters".includes(t); anyP = anyP || !r.row.hidden; }
+    const ph = this.paramHost && this.paramHost.querySelector(".man-group");
+    if (ph) ph.hidden = !anyP;
   }
 
   /** Header of the variables of one multivariate composite: "hold" collects edits,

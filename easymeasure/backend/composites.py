@@ -140,6 +140,13 @@ class CompositeBase:
     type = ""
     name: str
     description: str
+    #: values of the parameters its formulas use (set by the ChannelManager)
+    penv: Dict[str, float] = {}
+
+    def externals(self) -> List[str]:
+        """Names in its formulas that are neither its own channels nor its inputs:
+        they must be parameters."""
+        return []
 
     def channels(self) -> List[str]:
         """Channel names this composite provides."""
@@ -150,8 +157,9 @@ class CompositeBase:
         raise NotImplementedError
 
     def references(self) -> List[str]:
-        """Other channels this composite uses."""
-        return sorted({b for _, b in self.edges()} - set(self.channels()))
+        """Other channels (and parameters) this composite uses."""
+        return sorted(({b for _, b in self.edges()} | set(self.externals()))
+                      - set(self.channels()))
 
     def to_dict(self) -> dict:
         raise NotImplementedError
@@ -183,6 +191,7 @@ class MultiComposite(CompositeBase):
         self.targets: Dict[str, str] = {}
         self.exprs: Dict[str, Expression] = {}
         self.deps: Dict[str, List[str]] = {}
+        self.ext: Dict[str, List[str]] = {}
         for t, e in targets.items():
             t = str(t).strip()
             if t in self.var:
@@ -192,15 +201,28 @@ class MultiComposite(CompositeBase):
                 raise ChannelError("composite %s: target %r must be an alias, mapping or "
                                    "variable name" % (name, t))
             try:
-                ex = Expression(str(e), allowed_names=names)
+                ex = Expression(str(e))
             except ExpressionError as exc:
                 raise ExpressionError("composite %s, target %s: %s" % (name, t, exc)) from None
             self.targets[t] = ex.source
             self.exprs[t] = ex
             self.deps[t] = [n for n in ex.free_names if n in self.var]
+            # other names must be parameters (checked against them when it is added)
+            self.ext[t] = [n for n in ex.free_names if n not in self.var]
+        self.penv = {}
 
     def channels(self) -> List[str]:
         return [v.name for v in self.variables]
+
+    def externals(self) -> List[str]:
+        return sorted({n for ns in self.ext.values() for n in ns})
+
+    def env(self, t: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        """The names target *t*'s formula needs: its variables from *values*, the
+        parameters from ``penv``."""
+        out = {n: self.penv[n] for n in self.ext.get(t, ()) if n in self.penv}
+        out.update({d: values[d] for d in self.deps[t]})
+        return out
 
     def edges(self) -> List[Tuple[str, str]]:
         return [(v, t) for t, ds in self.deps.items() for v in ds]
@@ -280,21 +302,32 @@ class MapComposite(CompositeBase):
         if self.ramp_rate is not None and self.ramp_rate <= 0:
             raise ChannelError("mapping %s: ramp_rate must be positive" % name)
         try:
-            self.f = Expression(str(forward or ""), allowed_names=["x"])
+            self.f = Expression(str(forward or ""))
         except ExpressionError as exc:
             raise ExpressionError("mapping %s, forward (y from x): %s" % (name, exc)) from None
         try:
-            self.g = Expression(str(backward or ""), allowed_names=["y"])
+            self.g = Expression(str(backward or ""))
         except ExpressionError as exc:
             raise ExpressionError("mapping %s, backward (x from y): %s" % (name, exc)) from None
+        if "y" in self.f.free_names:
+            raise ExpressionError("mapping %s, forward (y from x) uses y" % name)
+        if "x" in self.g.free_names:
+            raise ExpressionError("mapping %s, backward (x from y) uses x" % name)
         self.forward, self.backward = self.f.source, self.g.source
-        self.image = self.check_inverse()
+        self.penv = {}
+        # with parameters in the formulas the inverse is checked once they are known
+        self.image = self.check_inverse() if not self.externals() else None
+
+    def externals(self) -> List[str]:
+        return sorted((set(self.f.free_names) - {"x"}) | (set(self.g.free_names) - {"y"}))
 
     def fwd(self, x: float) -> float:
-        return _scalar(self.f.evaluate({"x": float(x)}), "mapping %s: forward(%g)" % (self.name, x))
+        return _scalar(self.f.evaluate(dict(self.penv, x=float(x))),
+                       "mapping %s: forward(%g)" % (self.name, x))
 
     def bwd(self, y: float) -> float:
-        return _scalar(self.g.evaluate({"y": float(y)}), "mapping %s: backward(%g)" % (self.name, y))
+        return _scalar(self.g.evaluate(dict(self.penv, y=float(y))),
+                       "mapping %s: backward(%g)" % (self.name, y))
 
     def check_inverse(self) -> Tuple[float, float]:
         """``backward(forward(x)) == x`` on a dense grid of the range; returns the

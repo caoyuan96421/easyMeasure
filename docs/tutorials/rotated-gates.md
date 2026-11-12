@@ -75,7 +75,40 @@ Reading `Rxx` now reads `Vxx` and `I` and divides. It can be recorded, monitored
 plotted like any channel. In the gap, at $D = 0.3$ V/nm, it reads about a third more than
 the old alias did, because only about 7.5 nA flow there.
 
-## 3. The composite channel n, D
+## 3. The device's constants as parameters
+
+The formulas for the gates contain four numbers that belong to this particular
+device: the two capacitances, the intrinsic doping and $e/2\varepsilon_0$. Rather
+than typing them into formulas, give each a name as a **parameter**. When you cool
+down the next device, or calibrate the capacitances better from a Landau fan, you
+change the number in one place.
+
+In *Instruments & channels*, under **Parameters**, click **Add…**:
+
+![A parameter: the back-gate capacitance](../images/t2-parameter.png)
+
+1. Name `Cb`.
+2. Defined by *Value*.
+3. Value `0.6`.
+4. Unit `1e12 cm^-2/V` (and a description, if you like).
+
+Add the others the same way:
+
+| Name | Value | Unit | Description |
+|---|---|---|---|
+| `Cb` | 0.6 | 1e12 cm^-2/V | back-gate capacitance / e |
+| `Ct` | 0.9 | 1e12 cm^-2/V | top-gate capacitance / e |
+| `n0` | -0.15 | 1e12 cm^-2 | intrinsic doping |
+| `kD` | 0.0452 | V/nm per 1e12 cm^-2 | e / 2ε₀ |
+
+![The parameters](../images/t2-parameters.png)
+
+A parameter can also be a formula of other parameters (*Defined by: Formula*), such
+as `Ct/Cb`. Parameters are constants: they can be changed here or in the Manual panel,
+but never by a sweep or a script. Every data file records their values. See
+[Parameters](../guide/parameters.md).
+
+## 4. The composite channel n, D
 
 On *Instruments & channels*, under **Composites**, click **Add…** again:
 
@@ -90,16 +123,19 @@ On *Instruments & channels*, under **Composites**, click **Add…** again:
     | `D` | -0.45 | 0.45 | V/nm | displacement field |
 
     Each variable gets its own limits, unit and, optionally, a ramp rate.
-3. **Targets**: one line per gate, `channel = formula of the variables`:
+3. **Targets**: one line per gate, `channel = formula of the variables` (and of
+   parameters):
 
     ```
-    Vbg = (n + 0.15 + D/0.0452) / (2*0.6)
-    Vtg = (n + 0.15 - D/0.0452) / (2*0.9)
+    Vbg = (n - n0 + D/kD) / (2*Cb)
+    Vtg = (n - n0 - D/kD) / (2*Ct)
     ```
+
+    This is the pair of equations above, written with the parameters.
 
 4. **Out of range**: what to do with a combination of `n` and `D` that would need a
    gate voltage beyond its ±10 V limit. Leave it at *Skip the point* (see
-   [below](#5-sweep-n-and-d)).
+   [below](#6-sweep-n-and-d)).
 5. **Check** asks the backend whether everything is right without saving anything:
    the names, the formulas, and that the targets exist and can be set. It answers
    `✔ defines n, D`.
@@ -117,7 +153,7 @@ Whenever one of them is set:
   the ±10 V of `Vbg` and `Vtg`;
 * both gates then ramp **together**, each within its own ramp rate.
 
-## 4. Set n and D by hand
+## 5. Set n and D by hand
 
 The **Manual** panel now has a group **nD**, with `n` and `D` indented below it. There
 is one catch the first time. Setting `n` alone needs a value for `D` to compute the
@@ -134,7 +170,7 @@ From then on, you can change either one alone; the other keeps its value.
 To set both to other values at once, tick **hold**, type the values, and click
 **Set all**: the changes are collected and sent together.
 
-## 5. Sweep n and D
+## 6. Sweep n and D
 
 In the **Sweep editor**, sweep the *variables*:
 
@@ -170,7 +206,7 @@ nearest reachable value is good enough.
 without the other. At every point, `n` and `D` are set together, so a new value of
 `D` doesn't move the gates with the old `n` from the end of the previous line.
 
-## 6. The result
+## 7. The result
 
 ![Rxx against n and D: the gap opens at n = 0](../images/t2-map.png)
 
@@ -202,6 +238,8 @@ Formulas can be piecewise: `piecewise(x < 0, -x, 2*x)`, `a if c else b`, `interp
 
 * A **composite read** computes a channel from others, such as $R_{xx} = V_{xx}/I$
   from two lock-ins. It is read, recorded and plotted like any channel.
+* **Parameters** name the constants of a device (capacitances, doping), so formulas
+  stay readable and a new calibration is one change.
 * A **multivariate composite** turns physical quantities ($n$, $D$) into the voltages
   of several instruments. You sweep the physics; easyMeasure moves the hardware.
 * Every point is checked against the limits of the variables **and** of every gate.

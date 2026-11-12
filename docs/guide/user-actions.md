@@ -10,6 +10,13 @@ set('B', 0)
 print('gates and field at 0')
 ```
 
+Each action is also a button at the top of the [Manual panel](monitor-manual.md#user-actions-and-parameters):
+▶ runs it, and while it runs, the same button aborts it.
+
+The code can use the setup's [parameters](parameters.md): by name
+(`set('Vbg', V0)`, the value when the action starts) or as `params.V0` (the present
+value). Parameters cannot be changed by code.
+
 ## The Actions panel
 
 *Instruments & channels → Actions* (desktop and web) lists your actions with their

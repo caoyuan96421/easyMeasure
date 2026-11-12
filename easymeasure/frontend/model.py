@@ -101,6 +101,11 @@ class BackendModel(QObject):
         (``kind`` "variable"), mappings ("map") and composite reads ("read")."""
         return list((self.state.get("channels") or {}).get("virtual", []))
 
+    def parameters(self) -> List[dict]:
+        """The setup's parameters: {name, value | formula, unit, description, current,
+        used_by}."""
+        return list((self.state.get("channels") or {}).get("parameters", []))
+
     def instruments(self) -> List[dict]:
         return list(self.state.get("instruments", []))
 
@@ -119,6 +124,7 @@ class BackendModel(QObject):
     def readable_channels(self) -> List[str]:
         out = [a["name"] for a in self.aliases() if a.get("readable", True)]
         out += [v["name"] for v in self.virtual_channels()]
+        out += [p["name"] for p in self.parameters()]
         return out
 
     def raw_channels(self) -> List[str]:

@@ -69,8 +69,9 @@ def test_definitions_are_validated(demo):
         MultiComposite("m", ["a", "a"], {"Vx": "a"})
     with pytest.raises(ChannelError, match="own variables"):
         MultiComposite("m", ["a", "b"], {"b": "a"})
-    with pytest.raises(ExpressionError, match="unknown name"):
-        MultiComposite("m", ["a"], {"Vx": "a + q"})
+    # names that are not variables must be parameters: checked when it is defined
+    with pytest.raises(ExpressionError, match="unknown name.*q"):
+        demo.define_composite(type="multi", name="m", variables=["a"], targets={"Vx": "a + q"})
     with pytest.raises(ChannelError, match="no variables"):
         MultiComposite("m", [], {"Vx": "1"})
     be = demo

@@ -38,6 +38,32 @@
       "options": {}
     }
   ],
+  "parameters": [
+    {
+      "name": "Cb",
+      "value": 0.6,
+      "unit": "1e12 cm^-2/V",
+      "description": "back-gate capacitance / e"
+    },
+    {
+      "name": "Ct",
+      "value": 0.9,
+      "unit": "1e12 cm^-2/V",
+      "description": "top-gate capacitance / e"
+    },
+    {
+      "name": "n0",
+      "value": -0.15,
+      "unit": "1e12 cm^-2",
+      "description": "intrinsic doping"
+    },
+    {
+      "name": "kD",
+      "value": 0.0452,
+      "unit": "V/nm per 1e12 cm^-2",
+      "description": "e / 2 eps0"
+    }
+  ],
   "aliases": [
     {
       "name": "Vbg",
@@ -105,8 +131,8 @@
         }
       ],
       "targets": {
-        "Vbg": "(n + 0.15 + D/0.0452) / (2*0.6)",
-        "Vtg": "(n + 0.15 - D/0.0452) / (2*0.9)"
+        "Vbg": "(n - n0 + D/kD) / (2*Cb)",
+        "Vtg": "(n - n0 - D/kD) / (2*Ct)"
       },
       "description": "carrier density and displacement field of the dual-gated bilayer",
       "out_of_range": "skip"

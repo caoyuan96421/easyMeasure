@@ -27,39 +27,41 @@ examples/demo_setup.json`.
 2. [Aliases and protection](aliases.md): short names, limits, ramp rates, scaling.
 3. [Composite channels](composites.md): channels computed from others, such as the
    density and displacement field of a dual-gated sample.
+4. [Parameters](parameters.md): named constants (capacitances, gains) that formulas
+   use by name.
 
 **Measuring**
 
-4. [Sweeps](sweeps.md): the sweep editor, dimensions, setpoints, recording, delays,
+5. [Sweeps](sweeps.md): the sweep editor, dimensions, setpoints, recording, delays,
    pre- and post-sweep settings.
-5. [Point actions and flow control](point-actions.md): code at every point;
+6. [Point actions and flow control](point-actions.md): code at every point;
    skipping points, ending a sweep early.
-6. [The run queue](queue.md): queueing, pausing, aborting, the history.
-7. [User actions](user-actions.md): your own one-click buttons ("all gates to zero").
-8. [Data files](data.md): where data goes, the crash-safe journal, HDF5, loading data
+7. [The run queue](queue.md): queueing, pausing, aborting, the history.
+8. [User actions](user-actions.md): your own one-click buttons ("all gates to zero").
+9. [Data files](data.md): where data goes, the crash-safe journal, HDF5, loading data
    in Python.
 
 **Watching and reporting**
 
-9. [Desktop GUI](gui.md): the panels, the lock, settings.
-10. [Plotting live and stored data](plotting.md): curves, heat maps, sliders.
-11. [Monitor and Manual panels](monitor-manual.md): watching and setting channels.
-12. [PowerPoint reports](powerpoint.md): a slide for every sweep.
+10. [Desktop GUI](gui.md): the panels, the lock, settings.
+11. [Plotting live and stored data](plotting.md): curves, heat maps, sliders.
+12. [Monitor and Manual panels](monitor-manual.md): watching and setting channels.
+13. [PowerPoint reports](powerpoint.md): a slide for every sweep.
 
 **Working from elsewhere**
 
-13. [Remote access and the web app](remote.md): measuring from home, accounts, roles.
+14. [Remote access and the web app](remote.md): measuring from home, accounts, roles.
 
 **Instruments without a driver**
 
-14. [Driver Wizard](driver-wizard.md): a driver from a form, no programming.
-15. [Simulated instruments](simulation.md): trying things out, fault injection.
+15. [Driver Wizard](driver-wizard.md): a driver from a form, no programming.
+16. [Simulated instruments](simulation.md): trying things out, fault injection.
 
 **Under the hood**
 
-16. [Robustness](robustness.md): what protects a measurement from misbehaving
+17. [Robustness](robustness.md): what protects a measurement from misbehaving
     hardware.
-17. [Testing](testing.md): the test suite and stress tests.
+18. [Testing](testing.md): the test suite and stress tests.
 
 Python clients and writing drivers in Python are in the
 [Scripting and Python](../scripting/index.md) chapter.

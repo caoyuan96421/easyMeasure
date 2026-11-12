@@ -131,6 +131,7 @@ nav:
           - Instruments: guide/instruments.md
           - Aliases and protection: guide/aliases.md
           - Composite channels: guide/composites.md
+          - Parameters: guide/parameters.md
       - Measuring:
           - Sweeps: guide/sweeps.md
           - Point actions and flow control: guide/point-actions.md

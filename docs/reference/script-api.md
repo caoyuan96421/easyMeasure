@@ -111,6 +111,7 @@ log(smu.raw_query('*IDN?'))
 | `log(msg)`, `print(…)` | write to the backend log (and the GUI's log dock) |
 | `warn(msg)` | the same, as a warning |
 | `state` | a dict kept in the backend between scripts, hooks and user actions |
+| `params` | the setup's [parameters](../guide/parameters.md), read-only: `params.Cb`, `params['Cb']`, `dict(params)` (present values). Each parameter is also a name of its own (`Cb`), with its value when the script or action started, unless that name is taken by the API |
 | `np`, `math`, `time` | modules |
 
 ## Point-action extras

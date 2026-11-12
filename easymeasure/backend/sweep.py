@@ -360,6 +360,10 @@ def validate_against(d: dict, channels, after_pre: bool = False,
             if info["kind"] == "raw":
                 errors.append("sweep channel %s must be an alias or composite" % ch)
                 continue
+            if info["kind"] == "parameter":
+                errors.append("sweep channel %s is a parameter: parameters are constants, set "
+                              "in the Parameters or Manual panel, not swept" % ch)
+                continue
             if not info["writable"]:
                 problem(ch, "sweep channel %s is not writable" % ch)
                 continue
@@ -831,6 +835,13 @@ class SweepRunner:
         self._emit("sweep_phase", {"run": self.run_number, "phase": phase, "v": vals, "e": errs})
 
     # -- main loop -------------------------------------------------------------------
+    def _parameters_snapshot(self) -> dict:
+        if not hasattr(self.channels, "describe_parameters"):
+            return {}
+        return {p["name"]: {"value": p["current"], "unit": p.get("unit", ""),
+                            "formula": p.get("formula") or None}
+                for p in self.channels.describe_parameters()}
+
     def build_header(self) -> dict:
         dims = []
         for k, dim in enumerate(self.d["dimensions"]):
@@ -852,6 +863,8 @@ class SweepRunner:
             "dims": dims,
             "setpoints": {str(k): v for k, v in self.setpoints.items()},
             "units": units,
+            # the setup's parameters at the start: {name: {value, unit, formula}}
+            "parameters": self._parameters_snapshot(),
             "started": time.time(),
             "status": "running",
         }

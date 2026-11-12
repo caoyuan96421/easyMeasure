@@ -503,3 +503,63 @@ def test_web_stop_ramps_button(browser, gw, demo):
     v.context.close()
     assert not errors, errors
     page.context.close()
+
+
+def test_web_parameters_and_actions(browser, gw, demo):
+    """The web Parameters table and dialog; the Manual panel's parameters (a value is
+    set there, a formula follows) and its user-action buttons (run, abort)."""
+    demo.define_parameter(name="Cb", value=0.6, unit="1e12/cm2/V")
+    demo.define_parameter(name="half", formula="Cb/2")
+    demo.define_user_action(name="gate_to_Cb", code="set('Vg', Cb)", description="Vg = Cb")
+    demo.define_user_action(name="slow", code="sleep(30)")
+    errors = []
+    page = open_page(browser, gw, "ada", errors)
+    page.click(".tab:has-text('Instruments')")
+    page.wait_for_selector("td:text-is('Cb/2')", timeout=10000)
+    grp = page.locator(".group", has_text="Parameters").first
+    grp.locator("button:text-is('Add…')").click()
+    dlg = page.locator("dialog.modal")
+    dlg.locator("input").nth(0).fill("Rbias")
+    dlg.locator("input").nth(1).fill("1e6")
+    dlg.locator("input").nth(3).fill("Ω")
+    dlg.locator("button:text-is('OK')").click()
+    t0 = time.time()
+    while "Rbias" not in demo.channels.parameter_values() and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.channels.parameter_values()["Rbias"] == 1e6
+    # the Manual panel
+    man = page.locator(".panel.manual")
+    man.locator(".man-param[data-param='half'] .man-pformula").wait_for(timeout=10000)
+    assert "0.3" in man.locator(".man-param[data-param='half'] .man-pformula").text_content()
+    inp = man.locator(".man-param[data-param='Cb'] input")
+    inp.fill("0.8")
+    inp.press("Enter")
+    page.wait_for_function("document.querySelector(\".man-param[data-param='half'] .man-pformula\")"
+                           ".textContent.startsWith('0.4')", timeout=10000)
+    assert demo.channels.parameter_values()["half"] == pytest.approx(0.4)
+    man.locator("button.man-action:has-text('gate_to_Cb')").click()
+    t0 = time.time()
+    while abs(demo.channels.get("Vg") - 0.8) > 1e-9 and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert demo.channels.get("Vg") == pytest.approx(0.8)
+    page.wait_for_function("[...document.querySelectorAll('button.man-action')].every(b => b.textContent.startsWith('▶'))",
+                           timeout=10000)                     # gate_to_Cb has finished
+    slow = man.locator("button.man-action:has-text('slow')")
+    slow.click()
+    page.wait_for_function("[...document.querySelectorAll('button.man-action')].some(b => b.textContent === '■ slow')",
+                           timeout=10000)
+    slow.click()                                               # aborts
+    t0 = time.time()
+    while (next(a for a in demo.list_user_actions() if a["name"] == "slow").get("last") or {}).get("status") != "aborted" \
+            and time.time() - t0 < 10:
+        time.sleep(0.1)
+    assert next(a for a in demo.list_user_actions() if a["name"] == "slow")["last"]["status"] == "aborted"
+    # a viewer sees them but cannot use them
+    v = open_page(browser, gw, "vic", errors)
+    vman = v.locator(".panel.manual")
+    vman.locator(".man-param[data-param='Cb'] input").wait_for(timeout=10000)
+    assert vman.locator(".man-param[data-param='Cb'] input").is_disabled()
+    assert vman.locator("button.man-action").first.is_disabled()
+    v.context.close()
+    assert not errors, errors
+    page.context.close()

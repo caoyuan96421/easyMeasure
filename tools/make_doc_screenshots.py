@@ -30,7 +30,7 @@ os.environ["XDG_CONFIG_HOME"] = str(HOME / "config")      # fresh GUI settings
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 APP.setFont(QFont(APP.font().family(), 10))
@@ -146,7 +146,7 @@ def _patched_exec(self):
 
 
 for _cls in (sp_mod.InstrumentDialog, sp_mod.AliasDialog, sp_mod.CompositeDialog,
-             sp_mod.UserActionDialog):
+             sp_mod.UserActionDialog, sp_mod.ParameterDialog):
     _cls.exec = _patched_exec
 
 
@@ -506,6 +506,38 @@ def tutorial_nd(be, w):
     sp._edit_comp(None)
     pump(3, lambda: any(c["name"] == "Rxx" for c in w.model.composites()))
 
+    # the device's constants as parameters
+    params = [("Cb", 0.6, "1e12 cm^-2/V", "back-gate capacitance / e"),
+              ("Ct", 0.9, "1e12 cm^-2/V", "top-gate capacitance / e"),
+              ("n0", -0.15, "1e12 cm^-2", "intrinsic doping"),
+              ("kD", 0.0452, "V/nm per 1e12 cm^-2", "e / 2 eps0")]
+    for i, (pn, pv, pu, pd) in enumerate(params):
+        def fill_p(d, pn=pn, pv=pv, pu=pu, pd=pd):
+            d.name.setText(pn)
+            d.kind.setCurrentIndex(0)
+            d.value.setText(repr(pv))
+            d.unit.setText(pu)
+            d.description.setText(pd)
+        expect(sp_mod.ParameterDialog, fill_p, "t2-parameter" if i == 0 else None,
+               lambda d: ([d.name, d.kind, d.value, d.unit], ["1", "2", "3", "4"]))
+        sp._edit_param(None)
+        pump(3, lambda pn=pn: any(p["name"] == pn for p in w.model.parameters()))
+    pump(1.0)
+    # give the Parameters box room: a wide left side, a tall bottom row
+    old = w.splitter.sizes()
+    w.splitter.setSizes([1150, 450])
+    pbox = sp.param.parentWidget()
+    last = pbox.parentWidget()                     # the splitter Parameters | Actions
+    vsplit = last.parentWidget()
+    vsplit.setSizes([250, 200, 420])
+    last.setSizes([800, 300])
+    for c in range(sp.param.columnCount() - 1):
+        sp.param.resizeColumnToContents(c)
+    pump(0.8)
+    save(w, "t2-parameters", crop=pbox)
+    w.splitter.setSizes(old)
+    pump(0.3)
+
     def fill_nd(d):
         d.name.setText("nD")
         d.type.setCurrentIndex(0)
@@ -515,8 +547,8 @@ def tutorial_nd(be, w):
                     "description": "carrier density"})
         d._add_var({"name": "D", "min": -0.45, "max": 0.45, "unit": "V/nm",
                     "description": "displacement field"})
-        d.targets.setPlainText("Vbg = (n + 0.15 + D/0.0452) / (2*0.6)\n"
-                               "Vtg = (n + 0.15 - D/0.0452) / (2*0.9)")
+        d.targets.setPlainText("Vbg = (n - n0 + D/kD) / (2*Cb)\n"
+                               "Vtg = (n - n0 - D/kD) / (2*Ct)")
         d.out_of_range.setCurrentIndex(d.out_of_range.findData("skip"))
         d.description.setText("carrier density and displacement field of the dual-gated bilayer")
         d.check()
@@ -591,6 +623,17 @@ def tutorial_threshold(be, w):
     pump(8, lambda: "done" in sp.msg.text())
     pump(1.0)
     save(w, "t3-actions-panel", [sp.uact, sp.uact_run], ["1", "2"], crop=w.left_tabs)
+    mp = w.manual
+    pump(3, lambda: "gates to zero" in mp.action_buttons)
+    pump(0.5)
+    # the actions bar stays on top; scroll the channel list down to the parameters
+    area = next(a for a in mp.findChildren(QScrollArea) if a.widget() is mp.host)
+    area.ensureWidgetVisible(mp.param_header, 0, 0)
+    bar = area.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    pump(0.5)
+    save(w, "t3-manual-actions", [mp.action_buttons["gates to zero"], mp.param_header],
+         ["1", "2"], crop=w.manual)
 
 
 def scripting(be, w):

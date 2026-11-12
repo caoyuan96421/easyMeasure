@@ -10,7 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from easymeasure.backend.server import Server  # noqa: E402
 from easymeasure.backend.storage import DataSet  # noqa: E402
@@ -723,6 +723,50 @@ def test_actions_and_config_in_gui(app, gui):
     assert "action('lockin.auto_phase')" in ed.definition()["pre"]["hook"]
     # sweep channel lists never contain config channels
     assert not any(n.startswith("dmm.") for n in w.model.writable_channels())
+
+
+def test_parameters_and_actions_in_the_gui(app, gui):
+    """Parameters: the Instruments tab's table and dialog, the Manual panel's group
+    (a value is edited there, a formula follows); user actions as Manual buttons
+    (run, and abort while running)."""
+    from easymeasure.frontend.panels.setup_panel import ParameterDialog
+    w, be, _, _ = gui
+    sp, mp = w.setup_panel, w.manual
+    be.define_parameter(name="Cb", value=0.6, unit="1e12/cm2/V", description="back gate")
+    be.define_parameter(name="half", formula="Cb/2")
+    assert pump(app, 5, lambda: sp.param.rowCount() == 2 and "half" in mp.params)
+    assert [sp.param.item(r, 0).text() for r in range(2)] == ["Cb", "half"]
+    assert sp.param.item(1, 2).text() == "Cb/2" and sp.param.item(0, 4).text() == "half"
+    # the dialog: value or formula
+    dlg = ParameterDialog({"name": "half", "formula": "Cb/2"}, ["Cb", "half"])
+    assert dlg.kind.currentData() == "formula" and not dlg.value.isVisibleTo(dlg)
+    dlg.kind.setCurrentIndex(0)
+    dlg.value.setText("0.25")
+    assert dlg.value_dict() == {"name": "half", "unit": "", "description": "", "value": 0.25}
+    # Manual: the formula parameter is shown, not editable; the value one is set there
+    assert isinstance(mp.params["half"]["editor"], QLabel)
+    assert "0.3" in mp.params["half"]["editor"].text()
+    ed = mp.params["Cb"]["editor"]
+    ed.setText("0.8")
+    ed.returnPressed.emit()
+    assert pump(app, 5, lambda: be.read_channel(name="half") == pytest.approx(0.4))
+    assert pump(app, 5, lambda: "0.4" in mp.params["half"]["editor"].text())
+    mp.filter.setText("Vg")
+    assert not mp.params["Cb"]["label"].isVisibleTo(mp)
+    mp.filter.setText("")
+    # user actions as buttons
+    be.define_user_action(name="gate_to_Cb", code="set('Vg', Cb)", description="Vg = Cb")
+    be.define_user_action(name="slow", code="sleep(30)")
+    assert pump(app, 5, lambda: set(mp.action_buttons) == {"gate_to_Cb", "slow"})
+    assert mp.actions_box.isVisibleTo(mp)
+    mp.action_buttons["gate_to_Cb"].click()
+    assert pump(app, 10, lambda: abs(be.channels.get("Vg") - 0.8) < 1e-9)
+    mp.action_buttons["slow"].click()
+    assert pump(app, 5, lambda: mp.action_buttons["slow"].text().startswith("■"))
+    mp.action_buttons["slow"].click()                    # aborts
+    assert pump(app, 10, lambda: mp.action_buttons["slow"].text().startswith("▶"))
+    last = next(a for a in be.list_user_actions() if a["name"] == "slow")["last"]
+    assert last["status"] == "aborted"
 
 
 def test_manual_stop_ramps_button(app, gui):

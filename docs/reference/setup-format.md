@@ -3,6 +3,7 @@
 A setup contains:
 
 * the instruments;
+* the parameters;
 * the aliases;
 * the composite channels;
 * the monitor list;
@@ -48,6 +49,7 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
 |---|---|
 | `format` | always `"easyMeasure-setup-1"` |
 | `instruments` | `{name, driver, address, options}`; see each [driver](drivers/index.md) for its options |
+| `parameters` | `{name, value \| formula, unit, description}`; see [Parameters](../guide/parameters.md) |
 | `aliases` | `{name, target, min, max, ramp_rate, ramp_step, scale, offset, unit, allowed, read_only, description}`; see [Aliases](../guide/aliases.md#the-fields) |
 | `composites` | `{type: multi \| read \| map, …}`; see [Composite channels](../guide/composites.md#reference) |
 | `monitor` | `{channel, interval}` |
@@ -58,6 +60,8 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
 `load_setup` returns a list of problems. An empty list means everything loaded:
 
 * instruments that cannot connect are added anyway and reported;
+* parameters are loaded together, whatever their order; one that is wrong (a circle,
+  an unknown name) is reported and left out;
 * aliases whose instrument is missing are reported;
 * composites are loaded in dependency order, whatever their order in the file;
 * a user action whose code does not compile is reported.

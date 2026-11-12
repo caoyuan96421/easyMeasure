@@ -1,6 +1,6 @@
 # Key ideas
 
-Seven words cover almost everything in easyMeasure.
+Eight words cover almost everything in easyMeasure.
 
 **Instrument**
 :   One device in your rack, connected through a *driver* (which kind of instrument it
@@ -26,6 +26,12 @@ Seven words cover almost everything in easyMeasure.
     * a resistance computed from a voltage and a current measured by two lock-ins
       ([tutorial 2](tutorials/rotated-gates.md#2-measure-the-current-too-rxx-vxx-i));
     * a temperature in °C on a controller that works in K.
+
+**Parameter**
+:   A named constant of your setup: a capacitance, a bias resistor, a gain. Formulas
+    of composite channels and actions use it by name (`Cb`), so a new calibration
+    is one change. It can be a formula of other parameters (`Ct/Cb`). See
+    [Parameters](guide/parameters.md).
 
 **Sweep**
 :   A measurement. Some channels step through values in one or more nested

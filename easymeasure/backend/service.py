@@ -64,6 +64,7 @@ class Backend:
         "channel_info",
         "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
         "set_many", "list_channels", "stop_ramps", "ramp_state",
+        "define_parameter", "remove_parameter", "set_parameter", "list_parameters",
         "define_user_action", "remove_user_action", "move_user_action", "run_user_action",
         "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
@@ -532,6 +533,41 @@ class Backend:
         self.channels.remove_alias(name)
         self._changed("channels")
 
+    def define_parameter(self, name: str, value=None, formula: str = "", unit: str = "",
+                         description: str = "", replace: bool = False) -> dict:
+        """Define a parameter: a named constant of the setup, with a ``value`` or a
+        ``formula`` of other parameters (no live channels, no circles).  Parameters
+        read like channels and may be used in composite formulas and actions.
+        Returns its definition with the present value (``current``) and warnings."""
+        from .parameters import Parameter
+        p = Parameter(name=name, value=value, formula=formula or "", unit=unit,
+                      description=description)
+        warnings = self.channels.add_parameter(p, replace=replace)
+        self._changed("channels")
+        d = next(x for x in self.channels.describe_parameters() if x["name"] == p.name)
+        return dict(d, warnings=warnings)
+
+    def set_parameter(self, name: str, value: float) -> float:
+        """Set the value of a value parameter (the Parameters and Manual panels).
+        Parameters computed from a formula follow; nothing is written to any
+        instrument.  Refused for a formula parameter, or if a mapping that uses the
+        parameter would no longer be invertible.  Returns the value."""
+        v = self.channels.set_parameter(name, value)
+        self._changed("channels")
+        return v
+
+    def remove_parameter(self, name: str) -> None:
+        """Remove a parameter (refused while a parameter formula or a composite uses
+        it)."""
+        self.channels.remove_parameter(name)
+        self.monitor.remove(name)
+        self._changed("channels")
+
+    def list_parameters(self) -> list:
+        """Every parameter: ``{name, value | formula, unit, description, current,
+        used_by}``."""
+        return self.channels.describe_parameters()
+
     def define_composite(self, replace: bool = False, **comp) -> dict:
         """Define a composite channel (``type`` multi / read / map, see
         backend/composites.py).  Returns its definition, the channels it provides and
@@ -584,8 +620,8 @@ class Backend:
         return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in plan.items()}
 
     def list_channels(self) -> dict:
-        """Aliases, composites and the channels composites define (``virtual``), with
-        their last values."""
+        """Aliases, composites, the channels composites define (``virtual``), with
+        their last values, and the parameters."""
         return self.channels.describe()
 
     # ---------------------------------------------------------------- monitor --

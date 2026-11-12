@@ -42,7 +42,9 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from ..common.errors import ChannelError, ExpressionError, LimitError, OutOfRange, RampStopped
+from ..common.exprs import reserved
 from .composites import CompositeBase, as_value, find_cycle
+from .parameters import Parameter, compute as compute_parameters, users_of as parameter_users
 from .instrument import ChannelSpec, InstrumentManager
 from .logsys import get_logger
 
@@ -156,6 +158,8 @@ class ChannelManager:
         self.instruments = instruments
         self._aliases: Dict[str, Alias] = {}
         self._composites: Dict[str, CompositeBase] = {}
+        self._params: Dict[str, Parameter] = {}      # parameters, in definition order
+        self._pvals: Dict[str, float] = {}           # their values
         self._owner: Dict[str, CompositeBase] = {}   # composite channel -> its composite
         self._last: Dict[str, Any] = {}        # last value written per alias / composite channel
         self._last_time: Dict[str, float] = {}
@@ -180,7 +184,7 @@ class ChannelManager:
                                "directly and cannot be aliased" % alias.target)
         with self._lock:
             if alias.name in self._owner or alias.name in self._composites or \
-                    (alias.name in self._aliases and not replace):
+                    alias.name in self._params or (alias.name in self._aliases and not replace):
                 raise ChannelError("channel name %r already in use" % alias.name)
             old = self._aliases.get(alias.name)
             self._aliases[alias.name] = alias
@@ -243,17 +247,113 @@ class ChannelManager:
             for ch in c.channels():
                 self._last.pop(ch, None)
 
+    # -- parameters ---------------------------------------------------------------
+    def parameters(self) -> List[Parameter]:
+        with self._lock:
+            return list(self._params.values())
+
+    def parameter_values(self) -> Dict[str, float]:
+        """name -> value of every parameter (formulas evaluated)."""
+        return dict(self._pvals)
+
+    def describe_parameters(self) -> List[dict]:
+        with self._lock:
+            out = []
+            for p in self._params.values():
+                d = p.to_dict()
+                d["current"] = self._pvals.get(p.name)
+                d["used_by"] = self._parameter_users(p.name)
+                out.append(d)
+            return out
+
+    def _parameter_users(self, name: str) -> List[str]:
+        return parameter_users(self._params, name) + sorted(
+            c.name for c in self._composites.values() if name in c.references())
+
+    def _is_live_channel(self, n: str) -> bool:
+        return n in self._aliases or n in self._owner or n in self._composites
+
+    def _apply_parameters(self, cand: Dict[str, Parameter]) -> List[str]:
+        """Make *cand* the parameters, if their values compute and every composite
+        still checks out with them (a mapping using one is checked to be inverse
+        again); otherwise raise and keep the old ones."""
+        for n in cand:
+            if n in self._aliases or n in self._owner or n in self._composites:
+                raise ChannelError("parameter name %r is already a channel or composite" % n)
+        vals = compute_parameters(cand, self._is_live_channel)
+        try:
+            warnings = self._validate(self._composites, pvals=vals)
+        except Exception:
+            self._validate(self._composites)              # bind the old values again
+            raise
+        self._params = cand
+        self._pvals = vals
+        return warnings
+
+    def add_parameter(self, p: Parameter, replace: bool = False) -> List[str]:
+        """Define (or with *replace* redefine) a parameter.  Refused for a name in use,
+        a formula with unknown names, live channels or a circle, or if a composite
+        would no longer work with the new value."""
+        with self._lock:
+            if p.name in self._params and not replace:
+                raise ChannelError("parameter %r already exists" % p.name)
+            cand = dict(self._params)
+            cand[p.name] = p
+            w = self._apply_parameters(cand)
+        log.info("parameter %s = %s", p.name, p.formula or p.value)
+        return w
+
+    def set_parameter(self, name: str, value: float) -> float:
+        """Set the value of a value parameter (formulas follow)."""
+        with self._lock:
+            p = self._params.get(name)
+            if p is None:
+                raise ChannelError("no parameter %r" % name)
+            if p.is_formula:
+                raise ChannelError("parameter %s is computed from its formula %s; change the "
+                                   "formula to change it" % (name, p.formula))
+            q = Parameter(name, value=value, unit=p.unit, description=p.description)
+            cand = dict(self._params)
+            cand[name] = q
+            self._apply_parameters(cand)
+        log.info("parameter %s set to %g", name, q.value)
+        return q.value
+
+    def remove_parameter(self, name: str) -> None:
+        with self._lock:
+            if name not in self._params:
+                raise ChannelError("no parameter %r" % name)
+            users = self._parameter_users(name)
+            if users:
+                raise ChannelError("parameter %s is used by %s" % (name, ", ".join(users)))
+            cand = dict(self._params)
+            del cand[name]
+            self._apply_parameters(cand)
+
+    def load_parameters(self, items: List[Parameter]) -> None:
+        """Replace all parameters at once (setups: formulas may come in any order)."""
+        with self._lock:
+            self._apply_parameters({p.name: p for p in items})
+
     def _reindex(self) -> None:
         self._owner = {ch: c for c in self._composites.values() for ch in c.channels()}
 
-    def _validate(self, comps: Dict[str, CompositeBase], new: Optional[CompositeBase] = None
-                  ) -> List[str]:
-        """Check a whole set of composites against the aliases; raise on problems."""
+    def _validate(self, comps: Dict[str, CompositeBase], new: Optional[CompositeBase] = None,
+                  pvals: Optional[Dict[str, float]] = None) -> List[str]:
+        """Check a whole set of composites against the aliases and the parameters
+        (values *pvals*, default the current ones); raise on problems.  Binds the
+        parameter values the composites' formulas use."""
+        pvals = self._pvals if pvals is None else pvals
         owner: Dict[str, CompositeBase] = {}
         for c in comps.values():
+            if c.name in pvals:
+                raise ChannelError("composite name %r is a parameter" % c.name)
             for ch in c.channels():
                 if ch in self._aliases:
                     raise ChannelError("composite %s: channel name %r is an alias" % (c.name, ch))
+                if ch in pvals:
+                    raise ChannelError("composite %s: channel name %r is a parameter"
+                                       % (c.name, ch))
                 if ch in owner:
                     raise ChannelError("channel %s is defined by both %s and %s"
                                        % (ch, owner[ch].name, c.name))
@@ -268,6 +368,8 @@ class ChannelManager:
         def kind(n):
             if n in self._aliases:
                 return "alias"
+            if n in pvals:
+                return "parameter"
             o = owner.get(n)
             if o is None:
                 return None
@@ -281,6 +383,9 @@ class ChannelManager:
             if k == "read":
                 raise ChannelError("composite %s: %s is a composite read channel, it cannot be "
                                    "set" % (c.name, t))
+            if k == "parameter":
+                raise ChannelError("composite %s: %s is a parameter, it cannot be set by a "
+                                   "composite" % (c.name, t))
             if k == "alias":
                 a = self._aliases[t]
                 if a.read_only:
@@ -298,6 +403,15 @@ class ChannelManager:
 
         warnings: List[str] = []
         for c in comps.values():
+            unknown = [n for n in c.externals() if n not in pvals]
+            if c.type != "read" and unknown:
+                where = ("the variables %s" % ", ".join(c.channels())) if c.type == "multi" \
+                    else "x (forward), y (backward)"
+                raise ExpressionError("composite %s: unknown name(s) %s (a formula may use %s "
+                                      "and parameters)" % (c.name, ", ".join(unknown), where))
+            c.penv = {n: pvals[n] for n in c.externals() if n in pvals}
+            if c.type == "map" and c.externals():
+                c.image = c.check_inverse()       # with the parameters' present values
             if c.type == "multi":
                 for t in c.targets:
                     writable_target(c, t, scalar=False)
@@ -329,6 +443,8 @@ class ChannelManager:
             self._composites.clear()
             self._owner.clear()
             self._last.clear()
+            self._params = {}
+            self._pvals = {}
 
     def aliases(self) -> List[Alias]:
         with self._lock:
@@ -346,9 +462,12 @@ class ChannelManager:
         return a
 
     def kind(self, name: str) -> Optional[str]:
-        """``alias``, ``variable``, ``map``, ``read`` or None (raw / unknown)."""
+        """``alias``, ``variable``, ``map``, ``read``, ``parameter`` or None (raw /
+        unknown)."""
         if name in self._aliases:
             return "alias"
+        if name in self._params:
+            return "parameter"
         o = self._owner.get(name)
         if o is None:
             return None
@@ -365,7 +484,7 @@ class ChannelManager:
     def exists(self, name: str) -> bool:
         if name.startswith("@"):
             return name in ("@time",)
-        if name in self._aliases or name in self._owner:
+        if name in self._aliases or name in self._owner or name in self._params:
             return True
         try:
             self.instruments.resolve(name)
@@ -403,6 +522,13 @@ class ChannelManager:
         with self._lock:
             a = self._aliases.get(name)
             o = self._owner.get(name)
+            p = self._params.get(name)
+        if p is not None:
+            return {"name": name, "kind": "parameter", "dtype": "float", "shape": [],
+                    "readable": True, "writable": False, "unit": p.unit, "min": None,
+                    "max": None, "ramp_rate": None, "choices": None,
+                    "description": p.description, "formula": p.formula or None,
+                    "value": self._pvals.get(name)}
         if o is not None:
             return self._virtual_info(o, name)
         if a is not None:
@@ -510,7 +636,8 @@ class ChannelManager:
                 inf = self._virtual_info(c, ch)
                 inf["last"] = self._last.get(ch)
                 virtual.append(inf)
-        return {"aliases": out_a, "composites": out_c, "virtual": virtual}
+        return {"aliases": out_a, "composites": out_c, "virtual": virtual,
+                "parameters": self.describe_parameters()}
 
     def last_value(self, name: str):
         return self._last.get(name)
@@ -529,6 +656,9 @@ class ChannelManager:
             return self._to_float(name, value)
         if k == "read":
             raise ChannelError("%s is a composite read channel (read-only)" % name)
+        if k == "parameter":
+            raise ChannelError("%s is a parameter: set it in the Parameters or Manual panel "
+                               "(set_parameter), it cannot be written or swept" % name)
         if a is not None:
             if a.read_only:
                 raise ChannelError("alias %s is read-only" % name)
@@ -640,7 +770,7 @@ class ChannelManager:
                 if spec.shape != () or spec.dtype == "str" or not spec.writable:
                     return None
                 try:
-                    tv = c.exprs[t].evaluate({d: env[d] for d in deps})
+                    tv = c.exprs[t].evaluate(c.env(t, env))
                     tv = np.broadcast_to(np.asarray(tv, dtype=float), shape)
                 except Exception:
                     return None
@@ -649,9 +779,9 @@ class ChannelManager:
                 for j in set(f for f in flat if 0 <= f < tv.size):
                     ij = np.unravel_index(j, shape)
                     try:
-                        one = float(c.exprs[t].evaluate(
-                            {d: (env[d][ij] if isinstance(env[d], np.ndarray) else env[d])
-                             for d in deps}))
+                        one = float(c.exprs[t].evaluate(c.env(t, {
+                            d: (env[d][ij] if isinstance(env[d], np.ndarray) else env[d])
+                            for d in deps})))
                     except Exception:
                         return None
                     if not (np.isclose(one, tv[ij], rtol=1e-9, atol=1e-12) or
@@ -800,6 +930,9 @@ class ChannelManager:
                 out[n] = self.check_value(n, v)
             elif k == "read":
                 raise ChannelError("%s is a composite read channel (read-only)" % n)
+            elif k == "parameter":
+                raise ChannelError("%s is a parameter: set it in the Parameters or Manual panel "
+                                   "(set_parameter), it cannot be written or swept" % n)
             else:
                 raise ChannelError("%s is not an alias or composite channel" % n)
         return out
@@ -886,7 +1019,7 @@ class ChannelManager:
                                 c.name, ", ".join(missing), "has" if one else "have", t,
                                 "it" if one else "them", "it" if one else "them"))
                     try:
-                        tv = as_value(c.exprs[t].evaluate({d: env[d] for d in deps}))
+                        tv = as_value(c.exprs[t].evaluate(c.env(t, env)))
                     except (ExpressionError, ChannelError) as exc:
                         raise ChannelError("composite %s, target %s: %s" % (c.name, t, exc)) \
                             from None
@@ -958,6 +1091,9 @@ class ChannelManager:
     def get(self, name: str) -> Any:
         if name == "@time":
             return time.time()
+        v = self._pvals.get(name)
+        if v is not None:
+            return v
         with self._lock:
             a = self._aliases.get(name)
             o = self._owner.get(name)

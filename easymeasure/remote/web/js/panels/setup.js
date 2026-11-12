@@ -214,7 +214,12 @@ export class SetupPanel {
       { key: "lastText", label: "Last set" },
     ], { onActivate: () => this._editComp(this.comp.current()), empty: "no composites" });
 
-    // manual control
+    // parameters: constants of the setup (values, or formulas of each other)
+    this.param = new Table([
+      { key: "name", label: "Parameter" }, { key: "currentText", label: "Value" },
+      { key: "formula", label: "Formula" }, { key: "unit", label: "Unit" },
+      { key: "usedBy", label: "Used by" }, { key: "description", label: "Description" },
+    ], { onActivate: () => this._editParam(this.param.current()), empty: "no parameters - constants such as a capacitance, used by name in composites and actions" });
     // user actions: named snippets of code that control any channel
     this.uact = new Table([
       { key: "name", label: "Action" }, { key: "description", label: "Description" },
@@ -245,6 +250,11 @@ export class SetupPanel {
           btn("Add…", () => this._editComp(null), { cmd: "define_composite" }),
           btn("Edit…", () => this._editComp(this.comp.current()), { cmd: "define_composite" }),
           btn("Remove", () => this._remove("remove_composite", this.comp.current()), { cmd: "remove_composite" })))),
+      h("div", { class: "row2" },
+      group("Parameters", this.param.el, bar(
+        btn("Add…", () => this._editParam(null), { cmd: "define_parameter" }),
+        btn("Edit…", () => this._editParam(this.param.current()), { cmd: "define_parameter" }),
+        btn("Remove", () => this._remove("remove_parameter", this.param.current()), { cmd: "remove_parameter" }))),
       group("Actions", this.uact.el, bar(
         btn("▶ Run", () => this._runUact(this.uact.current()), { cmd: "run_user_action", title: "run the selected action now (double click works too)" }),
         this.uactAbort = btn("■ Abort", () => this._abortUact(), { cmd: "abort_user_action", title: "stop the running action(s) at the next line, sleep or ramp step" }),
@@ -252,7 +262,7 @@ export class SetupPanel {
         btn("Edit…", () => this._editUact(this.uact.current()), { cmd: "define_user_action" }),
         btn("Remove", () => this._removeUact(), { cmd: "remove_user_action" }),
         btn("↑", () => this._moveUact(-1), { cmd: "move_user_action", title: "move up" }),
-        btn("↓", () => this._moveUact(1), { cmd: "move_user_action", title: "move down" }))));
+        btn("↓", () => this._moveUact(1), { cmd: "move_user_action", title: "move down" })))));
     this.model.on("state", (st) => this._state(st));
     this.conn.on("connected", () => this._loadDrivers());
   }
@@ -270,6 +280,9 @@ export class SetupPanel {
     this.comp.set(this.model.composites().map((c) => ({ ...c, typeLabel: COMP_TYPES[c.type] || c.type,
       summary: compSummary(c), chans: compChannels(c).join(", "), lastText: compLast(c.last) })),
     { rowTitle: (r) => r.description || null });
+    this.param.set(this.model.parameters().map((p) => ({ ...p, formula: p.formula || "",
+      currentText: p.current === null || p.current === undefined ? "" : fmt(p.current, 6),
+      usedBy: (p.used_by || []).join(", ") })), { rowTitle: (r) => r.description || null });
     const acts = this.model.userActions();
     this.uact.set(acts.map((a) => ({ ...a, lastText: uactStatus(a) })), {
       rowClass: (r) => (r.running ? "busy" : r.last && r.last.status === "error" ? "err" : ""),
@@ -399,6 +412,36 @@ export class SetupPanel {
     if (!ref) { this.say("select a channel", true); return; }
     if (c.config) { this.say("configuration channels cannot be aliased", true); return; }
     this._editAlias({ name: c.name, target: ref, unit: c.unit || "" }, true);
+  }
+
+  // ---- parameters ------------------------------------------------------------------
+  async _editParam(p) {
+    if (!this.conn.can("define_parameter")) return;
+    const existing = !!p;
+    p = p || {};
+    const others = this.model.parameters().map((x) => x.name).filter((n) => n !== p.name);
+    const v = await formDialog(existing ? `Parameter ${p.name}` : "Add parameter", [
+      { key: "name", label: "Name", value: p.name || "" },
+      { key: "value", label: "Value", value: p.formula ? "" : optStr(p.value), placeholder: "a number, e.g. 0.6 or 1e6" },
+      { key: "formula", label: "or a formula", value: p.formula || "",
+        placeholder: others.length ? "of other parameters: " + others.slice(0, 6).join(", ") : "of other parameters" },
+      { key: "unit", label: "Unit", value: p.unit || "" },
+      { key: "description", label: "Description", value: p.description || "" },
+      { key: "help", label: "", type: "info", value: "A constant of the setup. Composite channels and actions use it by its name. A formula may use other parameters only (no channels)." },
+    ], { validate: (x) => {
+      const name = x.name.trim(), formula = x.formula.trim(), value = x.value.trim();
+      if (!name) throw new Error("a name is needed");
+      if (!!formula === !!value) throw new Error("give a value or a formula");
+      if (value && !Number.isFinite(Number(value))) throw new Error("the value must be a number");
+      const d = { name, unit: x.unit.trim(), description: x.description.trim() };
+      if (formula) d.formula = formula; else d.value = Number(value);
+      return d;
+    } });
+    if (!v) return;
+    try {
+      if (existing && p.name !== v.name) await this.conn.request("remove_parameter", { name: p.name });
+      await this._do("define_parameter", { ...v, replace: existing && p.name === v.name }, `parameter ${v.name} saved`);
+    } catch (e) { this.say(`parameter: ${e.message}`, true); }
   }
 
   // ---- aliases & composites ------------------------------------------------------

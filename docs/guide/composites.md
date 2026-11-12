@@ -119,8 +119,10 @@ A few details:
 
 ### Formulas
 
-Targets may use any [expression](../reference/expressions.md) of the variables,
-including piecewise functions and vectors:
+Targets may use any [expression](../reference/expressions.md) of the variables and
+of the setup's [parameters](parameters.md) (`Vbg = (n - n0 + D/kD) / (2*Cb)`),
+including piecewise functions and vectors. The formulas of reads and mappings may use
+parameters too.
 
 ??? example "From Python"
 

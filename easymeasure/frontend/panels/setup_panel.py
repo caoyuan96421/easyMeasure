@@ -262,6 +262,86 @@ class InstrumentDialog(QDialog):
         self.accept()
 
 
+def _float_or_none(text: str):
+    try:
+        return float(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+class ParameterDialog(QDialog):
+    """A parameter: a number, or a formula of other parameters."""
+
+    def __init__(self, param: Optional[dict] = None, others=(), parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Parameter")
+        p = param or {}
+        self.name = QLineEdit(p.get("name", ""))
+        self.kind = QComboBox()
+        self.kind.addItem("Value", "value")
+        self.kind.addItem("Formula of other parameters", "formula")
+        self.kind.setCurrentIndex(1 if p.get("formula") else 0)
+        self.value = QLineEdit(_fmt_opt(p.get("value")) if not p.get("formula") else "")
+        self.value.setPlaceholderText("a number, e.g. 0.6 or 1e6")
+        self.formula = QLineEdit(p.get("formula", ""))
+        others = [o for o in others if o != p.get("name")]
+        self.formula.setPlaceholderText("e.g. Ct/Cb" if not others else
+                                        "uses " + ", ".join(others[:6]))
+        self.unit = QLineEdit(p.get("unit", ""))
+        self.description = QLineEdit(p.get("description", ""))
+        self.help = QLabel("A constant of the setup. Composite channels and actions may use "
+                           "it by its name. A formula may use other parameters only (no "
+                           "channels).")
+        self.help.setWordWrap(True)
+        self.help.setStyleSheet("color: #888")
+        form = QFormLayout(self)
+        form.addRow("Name", self.name)
+        form.addRow("Defined by", self.kind)
+        self.value_lab, self.formula_lab = QLabel("Value"), QLabel("Formula")
+        form.addRow(self.value_lab, self.value)
+        form.addRow(self.formula_lab, self.formula)
+        form.addRow("Unit", self.unit)
+        form.addRow("Description", self.description)
+        form.addRow(self.help)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+        self.kind.currentIndexChanged.connect(self._kind)
+        self._kind()
+        self.result_value = None
+
+    def _kind(self):
+        f = self.kind.currentData() == "formula"
+        for w in (self.value, self.value_lab):
+            w.setVisible(not f)
+        for w in (self.formula, self.formula_lab):
+            w.setVisible(f)
+
+    def value_dict(self) -> dict:
+        d = {"name": self.name.text().strip(), "unit": self.unit.text().strip(),
+             "description": self.description.text().strip()}
+        if self.kind.currentData() == "formula":
+            d["formula"] = self.formula.text().strip()
+        else:
+            d["value"] = _float_or_none(self.value.text())
+        return d
+
+    def _ok(self):
+        d = self.value_dict()
+        if not d["name"]:
+            QMessageBox.warning(self, "Parameter", "a name is needed")
+            return
+        if "value" in d and d["value"] is None:
+            QMessageBox.warning(self, "Parameter", "the value must be a number")
+            return
+        if "formula" in d and not d["formula"]:
+            QMessageBox.warning(self, "Parameter", "the formula is empty")
+            return
+        self.result_value = d
+        self.accept()
+
+
 class AliasDialog(QDialog):
     def __init__(self, targets, alias: Optional[dict] = None, parent=None):
         super().__init__(parent)
@@ -808,6 +888,22 @@ class SetupPanel(QWidget):
             sc = QShortcut(QKeySequence(key), self.uact)
             sc.setContext(Qt.WidgetShortcut)
             sc.activated.connect(self._run_uact)
+        # parameters: constants of the setup (values or formulas of each other)
+        self.param = _table(["Parameter", "Value", "Formula", "Unit", "Used by", "Description"])
+        self.param.setToolTip("constants of the setup; composite channels and actions use them "
+                              "by name - double-click to edit")
+        pb = FlowLayout()
+        for text, fn in (("Add…", lambda: self._edit_param(None)), ("Edit…", self._edit_param_sel),
+                         ("Remove", self._remove_param)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            pb.addWidget(b)
+        pb.addStretch(1)
+        pbox = QGroupBox("Parameters")
+        pl = QVBoxLayout(pbox)
+        pl.addWidget(self.param)
+        pl.addLayout(pb)
+        self.param.cellDoubleClicked.connect(lambda r, c: self._edit_param_sel())
         # setup files
         sv = QPushButton("Save setup…")
         ld = QPushButton("Load setup…")
@@ -825,12 +921,15 @@ class SetupPanel(QWidget):
         bottom = QSplitter(Qt.Horizontal)
         bottom.addWidget(abox)
         bottom.addWidget(cbox)
-        for t in (self.inst, self.raw, self.alias, self.comp, self.uact):
+        for t in (self.inst, self.raw, self.alias, self.comp, self.uact, self.param):
             t.setMinimumWidth(120)
+        last = QSplitter(Qt.Horizontal)
+        last.addWidget(pbox)
+        last.addWidget(ubox)
         split = QSplitter(Qt.Vertical)
         split.addWidget(top)
         split.addWidget(bottom)
-        split.addWidget(ubox)
+        split.addWidget(last)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 3)
         split.setStretchFactor(2, 2)
@@ -910,7 +1009,27 @@ class SetupPanel(QWidget):
                 if c_.get("description"):
                     it.setToolTip(c_["description"])
                 self.comp.setItem(r, c, it)
+        self._show_params()
         self._show_uacts()
+
+    def _show_params(self):
+        ps = self.model.parameters()
+        sel = self._sel_name(self.param)
+        self.param.setRowCount(len(ps))
+        for r, p in enumerate(ps):
+            vals = (p["name"], _short(p.get("current")), p.get("formula") or "",
+                    p.get("unit", ""), ", ".join(p.get("used_by") or []),
+                    p.get("description", ""))
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                if p.get("description"):
+                    it.setToolTip(p["description"])
+                if c == 1 and p.get("formula"):
+                    it.setForeground(QColor("#888"))
+                    it.setToolTip("= %s" % p["formula"])
+                self.param.setItem(r, c, it)
+            if p["name"] == sel:
+                self.param.selectRow(r)
 
     def _show_raw(self):
         name = self._sel_name(self.inst)
@@ -1095,6 +1214,32 @@ class SetupPanel(QWidget):
         if name:
             self.conn.request("remove_alias", {"name": name},
                               on_ok=self._done("alias %s removed" % name), on_err=self._err("remove"))
+
+    # -------------------------------------------------------------- parameters --
+    def _edit_param_sel(self):
+        name = self._sel_name(self.param)
+        p = next((p for p in self.model.parameters() if p["name"] == name), None)
+        if p:
+            self._edit_param(p)
+
+    def _edit_param(self, p):
+        dlg = ParameterDialog(p, [x["name"] for x in self.model.parameters()], parent=self)
+        if dlg.exec() and dlg.result_value:
+            v = dlg.result_value
+            args = dict(v, replace=bool(p) and p["name"] == v["name"])
+            if p and p["name"] != v["name"]:
+                self.conn.request("remove_parameter", {"name": p["name"]},
+                                  on_err=self._err("rename"))
+            self.conn.request("define_parameter", args,
+                              on_ok=self._done("parameter %s saved" % v["name"]),
+                              on_err=self._err("parameter"))
+
+    def _remove_param(self):
+        name = self._sel_name(self.param)
+        if name:
+            self.conn.request("remove_parameter", {"name": name},
+                              on_ok=self._done("parameter %s removed" % name),
+                              on_err=self._err("remove"))
 
     # -------------------------------------------------------------- composites --
     def _edit_comp_sel(self):

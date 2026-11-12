@@ -105,8 +105,19 @@ Select it and click **▶ Run** (or press Enter):
 1. Your actions, with the result of the last run.
 2. **▶ Run**, and **■ Abort** to stop a running action.
 
+Your actions are also buttons at the top of the **Manual** panel, at hand while you
+work there:
+
+![The user actions in the Manual panel](../images/t3-manual-actions.png)
+
+1. **▶ gates to zero** runs the action. While an action runs its button turns orange
+   (**■**), and clicking it again aborts it.
+2. Below the channels, the Manual panel also lists the setup's
+   [parameters](../guide/parameters.md).
+
 Actions run **at once**, not through the queue, so they also work while a measurement
-is paused. They are saved with your setup.
+is paused. They are saved with your setup. Their code can use the setup's parameters
+by name, e.g. `set('Vbg', V0)`.
 
 ## What you learned
 

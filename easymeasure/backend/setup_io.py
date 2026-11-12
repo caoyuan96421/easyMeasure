@@ -1,5 +1,5 @@
-"""Saving and loading of setups (instruments, aliases, composites, monitor list,
-user actions)."""
+"""Saving and loading of setups (instruments, parameters, aliases, composites,
+monitor list, user actions)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from ..common.codec import to_jsonable
 from ..common.errors import EasyMeasureError
 from .channels import Alias
 from .composites import composite_from_dict
+from .parameters import Parameter, ordered
 from .logsys import get_logger
 
 log = get_logger("setup")
@@ -29,6 +30,7 @@ def capture(instruments, channels, monitor, user_actions=None) -> dict:
              "options": dict(h.options)}
             for h in instruments.handles()
         ],
+        "parameters": [p.to_dict() for p in ordered(channels.parameters())],
         "aliases": [a.to_dict() for a in channels.aliases()],
         "composites": [c.to_dict() for c in channels.composites()],
         "monitor": monitor.config(),
@@ -86,6 +88,27 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
                 problems.append("instrument %s: %s" % (inst["name"], h.last_error or h.state))
         except Exception as exc:
             problems.append("instrument %s: %s" % (inst.get("name"), exc))
+    # parameters: all at once (formulas may refer to later ones); a bad one is left out
+    params = []
+    for d in setup.get("parameters", []):
+        try:
+            params.append(Parameter.from_dict(d))
+        except Exception as exc:
+            problems.append("parameter %s: %s" % (d.get("name") if isinstance(d, dict) else d,
+                                                  exc))
+    keep = {p.name: p for p in channels.parameters()} if not replace else {}
+    keep.update({p.name: p for p in params})
+    while True:
+        try:
+            channels.load_parameters(list(keep.values()))
+            break
+        except Exception as exc:
+            bad = getattr(exc, "parameter", None)
+            if bad not in keep:
+                problems.append("parameters: %s" % exc)
+                break
+            problems.append("parameter %s: %s" % (bad, exc))
+            del keep[bad]
     for a in setup.get("aliases", []):
         try:
             channels.add_alias(Alias.from_dict(a), replace=True)

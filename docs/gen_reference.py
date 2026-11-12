@@ -91,6 +91,8 @@ COMMAND_GROUPS = [
                   "channel_info", "list_channels"]),
     ("Aliases and composites", ["define_alias", "remove_alias", "define_composite",
                                 "check_composite", "remove_composite"]),
+    ("Parameters", ["define_parameter", "set_parameter", "remove_parameter",
+                    "list_parameters"]),
     ("User actions", ["define_user_action", "remove_user_action", "move_user_action",
                       "run_user_action", "abort_user_action", "list_user_actions"]),
     ("Monitor", ["monitor_add", "monitor_remove", "monitor_list", "monitor_history"]),

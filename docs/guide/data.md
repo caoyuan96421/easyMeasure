@@ -57,6 +57,7 @@ ds.setpoints[1]["Vb"]        # the 41 bias voltages
 ds.pre, ds.post              # {'T': 1.501, 'B': 0.0}: pre/post recordings
 ds.header["definition"]      # the sweep definition, ready to queue again
 ds.header["units"]           # channel → unit
+ds.header["parameters"]      # the setup's parameters at the start: {name: {value, unit, formula}}
 ds.footer                    # {'status', 'points', 'skipped_points', 'read_failures', …}
 ds.completed_points, ds.total_points
 ```

@@ -15,6 +15,11 @@ hold is ticked, edits only mark the variables and "Set all" sends them in one go
 first setting, when the other variables have never been set yet.  "Set all to
 zero" sets every variable to 0 together, the usual way to start.
 
+The setup's **parameters** are listed in their own group: a value parameter can be
+edited (``set_parameter``; it moves no instrument), a formula parameter shows its
+value.  The **user actions** are buttons at the top: ▶ runs one, and while it runs
+its button aborts it.
+
 Writes go through the backend's protected path (limits, ramp rates).  While a
 channel is still ramping, newer requests for it are coalesced: only the latest
 value is sent once the previous write has finished.  Mouse-wheel changes are
@@ -31,10 +36,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QSizePolicy, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMenu, QScrollArea, QSlider,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QMessageBox, QToolButton, QVBoxLayout, QWidget)
 
 from ...common.exprs import Expression
-from ..widgets import shrinkable_label
+from ..widgets import FlowLayout, shrinkable_label
 
 SLIDER_STEPS = 1000
 GROUP_INDENT = 18      # px: variables under the header of their composite
@@ -286,6 +291,8 @@ class ManualPanel(QWidget):
         self.rows: Dict[str, ChannelRow] = {}
         self._signature = None
         self.groups: Dict[str, dict] = {}       # multivariate composite -> header widgets
+        self.params: Dict[str, dict] = {}       # parameter -> {label, editor, meta}
+        self.param_header = None
         self._held: Dict[str, Dict[str, float]] = {}
         self._pending: Dict[str, bool] = {}
         self._queued: Dict[str, object] = {}
@@ -330,8 +337,16 @@ class ManualPanel(QWidget):
         self.status.setStyleSheet("color: gray")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
+        # user actions: one button each (hidden while there are none)
+        self.actions_box = QWidget()
+        self.actions_flow = FlowLayout(self.actions_box)
+        self.actions_flow.setContentsMargins(0, 0, 0, 0)
+        self.actions_box.setVisible(False)
+        self.action_buttons: Dict[str, QToolButton] = {}
+        self._actions_sig = None
         lay.addLayout(top)
         lay.addWidget(self.stop_ramps)
+        lay.addWidget(self.actions_box)
         lay.addWidget(scroll, 1)
         lay.addWidget(self.status)
         model.stateChanged.connect(self._state)
@@ -380,11 +395,137 @@ class ManualPanel(QWidget):
                                          choices=c.get("allowed")), "config"))
         return out
 
+    # ---- user actions -------------------------------------------------------------------
+    def _show_actions(self) -> None:
+        acts = self.model.user_actions()
+        sig = tuple((a["name"], a.get("description", ""), bool(a.get("confirm"))) for a in acts)
+        if sig != self._actions_sig:
+            self._actions_sig = sig
+            while self.actions_flow.count():
+                it = self.actions_flow.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.setParent(None)
+                    w.deleteLater()
+            self.action_buttons.clear()
+            if acts:
+                lab = QLabel("<b>Actions</b>")
+                self.actions_flow.addWidget(lab)
+            for a in acts:
+                b = QToolButton()
+                b.clicked.connect(lambda _=False, n=a["name"]: self._action_clicked(n))
+                self.action_buttons[a["name"]] = b
+                self.actions_flow.addWidget(b)
+            self.actions_box.setVisible(bool(acts))
+        for a in acts:
+            b = self.action_buttons.get(a["name"])
+            if b is None:
+                continue
+            running = bool(a.get("running"))
+            b.setText(("■ " if running else "▶ ") + a["name"])
+            b.setProperty("running", running)
+            b.setStyleSheet("QToolButton { background: #e39a1b; color: white; }" if running
+                            else "")
+            tip = a.get("description") or a["name"]
+            last = a.get("last") or {}
+            if running:
+                tip = "running - click to abort\n" + tip
+            elif last.get("status") == "error":
+                tip += "\nlast run failed: %s" % last.get("error")
+            b.setToolTip(tip)
+
+    def _action_clicked(self, name: str) -> None:
+        a = next((x for x in self.model.user_actions() if x["name"] == name), None)
+        if a is None:
+            return
+        if a.get("running"):
+            self.conn.request("abort_user_action", {"name": name},
+                              on_ok=lambda r: self.message("aborting %s" % name),
+                              on_err=lambda e: self.message("✘ abort %s: %s" % (name, e)))
+            return
+        if a.get("confirm") and QMessageBox.question(
+                self, "Run action", "Run %s?%s" % (name, ("\n\n" + a["description"])
+                                                   if a.get("description") else "")) \
+                != QMessageBox.Yes:
+            return
+        self.message("running %s…" % name)
+
+        def done(r):
+            st = r.get("status") if isinstance(r, dict) else "finished"
+            if st == "finished":
+                self.message("✔ %s done (%.3g s)" % (name, r.get("elapsed") or 0))
+            else:
+                self.message("✘ %s %s%s" % (name, st, (": " + r["error"]) if r.get("error") else ""))
+            self.model.schedule_refresh()
+        self.conn.request("run_user_action", {"name": name}, on_ok=done,
+                          on_err=lambda e: self.message("✘ %s: %s" % (name, e)),
+                          timeout=7 * 24 * 3600)
+        self.model.schedule_refresh()
+
+    # ---- parameters ---------------------------------------------------------------------
+    def _param_rows(self, r: int) -> int:
+        ps = self.model.parameters()
+        self.params.clear()
+        if not ps:
+            return r
+        lab = QLabel("<b>Parameters</b>")
+        lab.setToolTip("constants of the setup, used by composite channels and actions; "
+                       "setting one moves no instrument")
+        self.grid.addWidget(lab, r, 0, 1, 4)
+        self.param_header = lab
+        r += 1
+        for p in ps:
+            name_l = QLabel(p["name"] + (" (%s)" % p["unit"] if p.get("unit") else ""))
+            name_l.setIndent(GROUP_INDENT)
+            name_l.setToolTip(p.get("description") or p["name"])
+            if p.get("formula"):
+                ed = QLabel()
+                ed.setToolTip("computed: %s = %s" % (p["name"], p["formula"]))
+                ed.setStyleSheet("color: #888")
+            else:
+                ed = QLineEdit()
+                ed.setToolTip("type a value and press Enter (moves no instrument)")
+                ed.returnPressed.connect(lambda n=p["name"], e=ed: self.set_parameter(n, e.text()))
+            self.grid.addWidget(name_l, r, 0)
+            self.grid.addWidget(ed, r, 1, 1, 3)
+            self.params[p["name"]] = {"label": name_l, "editor": ed, "meta": p}
+            r += 1
+        self._show_param_values(ps)
+        return r
+
+    def _show_param_values(self, ps=None) -> None:
+        for p in ps if ps is not None else self.model.parameters():
+            row = self.params.get(p["name"])
+            if row is None:
+                continue
+            ed, v = row["editor"], p.get("current")
+            text = "" if v is None else "%.6g" % v
+            if isinstance(ed, QLabel):
+                ed.setText("%s  = %s" % (text, p["formula"]))
+            elif not ed.hasFocus():
+                ed.setText(text)
+
+    def set_parameter(self, name: str, text: str) -> None:
+        try:
+            value = float(Expression(str(text)).evaluate({}))
+        except Exception:
+            self.message("✘ %s: %r is not a number" % (name, text))
+            return
+        self.message("%s → %g" % (name, value))
+        self.conn.request("set_parameter", {"name": name, "value": value},
+                          on_ok=lambda v: (self.message("%s = %g" % (name, v)),
+                                           self.model.schedule_refresh()),
+                          on_err=lambda e: (self.message("✘ %s: %s" % (name, e)),
+                                            self._show_param_values()))
+
     def _state(self, st: dict) -> None:
+        self._show_actions()
         chans = self._channels()
         sig = tuple((m["name"], m.get("composite"), m.get("dtype"), m.get("min"), m.get("max"),
                      m.get("display_unit") or m.get("unit"),
                      tuple(m.get("choices") or m.get("allowed") or ()), kind) for m, kind in chans)
+        sig += tuple(("param", p["name"], p.get("unit", ""), p.get("formula") or "",
+                      p.get("description", "")) for p in self.model.parameters())
         if sig != self._signature:
             self._signature = sig
             self._rebuild(chans)
@@ -392,6 +533,7 @@ class ManualPanel(QWidget):
             row = self.rows.get(m["name"])
             if row is not None and not self._pending.get(m["name"]):
                 row.show_value(m.get("last"))
+        self._show_param_values()
 
     def _rebuild(self, chans) -> None:
         while self.grid.count():
@@ -420,12 +562,14 @@ class ManualPanel(QWidget):
             self.grid.addWidget(row.read_btn, r, 3)
             r += 1
         self._held = {g: v for g, v in self._held.items() if g in self.groups}
+        self.param_header = None
+        r = self._param_rows(r)
         self.grid.setRowStretch(r, 1)
         self._apply_filter(self.filter.text())
         for meta, _ in chans:
             if meta.get("last") is None:
                 self.read_back(meta["name"])      # show the real present values
-        if not chans:
+        if not chans and not self.params:
             self.message("no writable aliases, composites or instrument settings")
         else:
             self.message("")
@@ -504,6 +648,14 @@ class ManualPanel(QWidget):
             vis = not t or t in comp.lower() or any(t in v.lower() for v in g["variables"])
             g["label"].setVisible(vis)
             g["box"].setVisible(vis)
+        anyp = False
+        for name, prow in self.params.items():
+            vis = not t or t in name.lower() or t in "parameters"
+            anyp |= vis
+            prow["label"].setVisible(vis)
+            prow["editor"].setVisible(vis)
+        if getattr(self, "param_header", None) is not None:
+            self.param_header.setVisible(anyp)
 
     def message(self, text: str) -> None:
         self.status.setText(text)

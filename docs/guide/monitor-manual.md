@@ -88,7 +88,20 @@ composite's name. The header has three controls:
   once from all of them.
 
 See [Composite channels](composites.md#multivariate-write) and
-[tutorial 2](../tutorials/rotated-gates.md#4-set-n-and-d-by-hand).
+[tutorial 2](../tutorials/rotated-gates.md#5-set-n-and-d-by-hand).
+
+### User actions and parameters
+
+Your [user actions](user-actions.md) are buttons at the top of the panel: **▶ name**
+runs one (asking first if it is marked *ask before running*). While it runs its
+button turns orange (**■ name**); clicking it then aborts it.
+
+The setup's [parameters](parameters.md) are listed at the bottom, under
+**Parameters**. Type a new value for a value parameter and press Enter: formula
+parameters follow, and no instrument moves. Formula parameters show their value and
+formula.
+
+![User actions and parameters in the Manual panel](../images/t3-manual-actions.png)
 
 ### Instrument settings
 

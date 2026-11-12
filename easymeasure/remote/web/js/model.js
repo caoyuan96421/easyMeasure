@@ -52,6 +52,8 @@ export class Model {
   instruments() { return this.state.instruments || []; }
   /** user-defined actions: {name, code, description, confirm, running, last} */
   userActions() { return this.state.actions || []; }
+  /** The setup's parameters: {name, value | formula, unit, description, current, used_by}. */
+  parameters() { return ((this.state.channels || {}).parameters) || []; }
   settings() { return this.state.settings || {}; }
 
   writableChannels(numericOnly = false) {
@@ -60,7 +62,8 @@ export class Model {
   }
   readableChannels() {
     return this.aliases().filter((a) => a.readable !== false).map((a) => a.name)
-      .concat(this.virtualChannels().map((v) => v.name));
+      .concat(this.virtualChannels().map((v) => v.name))
+      .concat(this.parameters().map((p) => p.name));
   }
   rawChannels() {
     return this.instruments().flatMap((i) => (i.channels || []).map((c) => `${i.name}.${c.name}`));
