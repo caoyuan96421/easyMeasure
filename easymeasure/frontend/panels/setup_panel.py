@@ -907,12 +907,18 @@ class SetupPanel(QWidget):
         # setup files
         sv = QPushButton("Save setup…")
         ld = QPushButton("Load setup…")
+        mg = QPushButton("Merge setup…")
+        mg.setToolTip("take instruments, parameters, channels, composites and actions from a "
+                      "setup file into this setup")
+        mg.clicked.connect(self.merge_setup)
+        self.merge_btn = mg
         sv.clicked.connect(self._save_setup)
         ld.clicked.connect(self._load_setup)
         self.msg = shrinkable_label(QLabel(""))
         fb = QHBoxLayout()
         fb.addWidget(sv)
         fb.addWidget(ld)
+        fb.addWidget(mg)
         fb.addWidget(self.msg, 1)
 
         top = QSplitter(Qt.Horizontal)
@@ -1423,6 +1429,23 @@ class SetupPanel(QWidget):
             except OSError as exc:
                 self.msg.setText("✘ %s" % exc)
         self.conn.request("get_setup", on_ok=got, on_err=self._err("save setup"))
+
+    def merge_setup(self, path: str = "") -> "MergeSetupDialog":
+        """Open the merge wizard (with *path*: that file already chosen)."""
+        from ..merge_dialog import MergeSetupDialog
+
+        def done(results):
+            bad = [r for r in results if r.startswith("✘")]
+            self.msg.setText(("merged %d items" % len(results)) if not bad else
+                             "merged with problems: %s" % "; ".join(bad[:5]))
+            if bad:
+                QMessageBox.warning(self, "Merge setup", "\n".join(results))
+        dlg = MergeSetupDialog(self.conn, self.model, self.drivers, parent=self, on_done=done)
+        if path:
+            dlg.file_page.path.setText(path)
+            dlg.file_page.load(path)
+        dlg.open()
+        return dlg
 
     def _load_setup(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load setup", "", "Setup (*.json)")

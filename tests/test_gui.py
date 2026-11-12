@@ -1390,3 +1390,50 @@ def test_user_actions_panel(app, gui, monkeypatch):
     sp._remove_uact()                                       # question answered Yes above
     assert pump(app, 5, lambda: sp.uact.rowCount() == 1)
     assert [a["name"] for a in be.list_user_actions()] == ["gates to zero"]
+
+
+def test_merge_setup_wizard(app, gui):
+    """Merge setup…: pick the file, tick items page by page (instruments → parameters →
+    channels → composites → actions), resolve a conflict by a new name, merge."""
+    from PySide6.QtWidgets import QWizard
+    from conftest import EXAMPLES
+    w, be, _, _ = gui
+    sp = w.setup_panel
+    assert pump(app, 5, lambda: bool(sp.drivers))
+    dlg = sp.merge_setup(str(EXAMPLES / "graphene_setup.json"))
+    nxt = dlg.button(QWizard.NextButton)
+    assert dlg.merge is not None and "5 instruments" in dlg.file_page.summary.text()
+    dlg.next()
+    p = dlg.pages["instruments"]
+    assert dlg.currentPage() is p and p.table.rowCount() == 5
+    p.set_checked("lockin")                       # the demo has a different lockin
+    assert not p.isComplete() and not nxt.isEnabled()
+    assert "already the instrument lockin" in p.table.item(2, 3).text()
+    p.set_new_name("lockin", "lockin2")
+    assert p.isComplete() and nxt.isEnabled() and "merge as lockin2" in p.table.item(2, 3).text()
+    for _ in range(3):
+        dlg.next()
+    c = dlg.pages["composites"]
+    assert dlg.currentPage() is c
+    c.set_checked("Rxx")                          # needs Vxx and I
+    assert not c.isComplete() and "needs the alias Vxx" in c.table.item(1, 3).text()
+    c.needs_btn.click()                           # selects Vxx, I and ilockin on their pages
+    a = dlg.pages["aliases"]
+    names = [a.table.item(r, 0).text() for r in range(a.table.rowCount())]
+    assert a.table.item(names.index("Vxx"), 0).checkState() == Qt.Checked
+    # I is taken in the demo (dmm.reading): still a problem, on the Channels page
+    assert not a.isComplete() and "already the alias I" in a.table.item(names.index("I"), 3).text()
+    a.set_new_name("I", "Ilock")
+    assert a.isComplete() and c.isComplete()
+    assert "Vxx / Ilock" in dlg.merge.item("composites", "Rxx").merged["expression"]
+    dlg.next()                                    # actions
+    dlg.next()                                    # review
+    assert dlg.currentPage() is dlg.review and dlg.review.isComplete()
+    txt = dlg.review.text.toPlainText()
+    assert "add_instrument lockin2" in txt and "define_composite Rxx" in txt
+    dlg.accept()
+    assert pump(app, 20, lambda: not dlg.running and not dlg.isVisible())
+    assert all(r.startswith("✔") for r in dlg.results), dlg.results
+    assert be.channels.info("Rxx")["kind"] == "read"
+    assert be.channels.info("Vxx")["target"] == "lockin2.X"
+    assert "merged" in sp.msg.text()
