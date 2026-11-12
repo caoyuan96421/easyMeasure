@@ -690,18 +690,23 @@ class ManualPanel(QWidget):
         note = QLabel("not set yet")
         note.setStyleSheet("color: #c0392b")
         note.setVisible(False)
-        box = QWidget()
-        hl = QHBoxLayout(box)
+        head = QWidget()                           # name, and "not set yet" below it
+        vl = QVBoxLayout(head)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(0)
+        vl.addWidget(lab)
+        vl.addWidget(note)
+        box = QWidget()                            # the controls wrap in a narrow panel
+        hl = FlowLayout(box, hspacing=4, vspacing=2)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.addWidget(hold)
         hl.addWidget(btn)
         hl.addWidget(zero)
-        hl.addWidget(note)
-        hl.addStretch(1)
-        self.grid.addWidget(lab, r, 0)
+        self.grid.addWidget(head, r, 0)
         self.grid.addWidget(box, r, 1, 1, 3)
-        self.groups[comp] = {"label": lab, "box": box, "hold": hold, "set": btn, "zero": zero,
-                             "note": note, "variables": list(variables), "forced": False}
+        self.groups[comp] = {"label": head, "title": lab, "box": box, "hold": hold, "set": btn,
+                             "zero": zero, "note": note, "variables": list(variables),
+                             "forced": False}
 
     def _update_groups(self) -> None:
         """Variables never set show NaN (slider greyed out), and their group has hold
