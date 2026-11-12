@@ -64,6 +64,7 @@ The backend pushes events. By default a client gets only the small status events
 | `item_end` | a queue item finished (sweep or script) |
 | `user_action` | a user action started / ended |
 | `ppt` | a slide was written (or went to the pending file) |
+| `instrument_fault` | a safety fault (magnet quench): instrument, message, whether a run was aborted |
 | `changed`, `settings` | the setup or settings changed |
 
 Ask for more with `subscribe`, or for everything with `"*"`:

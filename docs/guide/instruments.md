@@ -252,9 +252,10 @@ See [Robustness](robustness.md) for what happens when an instrument misbehaves.
 
 ## Saving the setup
 
-Instruments, aliases, composites, the monitor list and user actions together
-form the **setup**. **Save setup…** and **Load setup…** at the bottom of the
-*Instruments & channels* tab write and read it as a file.
+Instruments, parameters, aliases, composites, the monitor list and user actions
+together form the **setup**. **Save setup…** and **Load setup…** at the top of the
+*Instruments & channels* tab write it to a file and read it back. Loading replaces the
+current setup.
 
 ??? example "From Python"
 
@@ -266,3 +267,58 @@ form the **setup**. **Save setup…** and **Load setup…** at the bottom of the
 The setup is also autosaved on every change. `python -m easymeasure.backend
 --restore` starts with the last one. The file format is in the
 [reference](../reference/setup-format.md).
+
+### Merging a setup
+
+**Merge setup…** takes parts of another setup file into the current one: a second
+cryostat's instruments, a colleague's composite channels, a set of user actions. A
+wizard asks for the file, then shows one page for each kind of item, in the order they
+depend on each other:
+
+1. **Instruments**;
+2. **Parameters**;
+3. **Channels** (aliases);
+4. **Composite channels**;
+5. **Actions**;
+
+then a **Review** page, with **Merge**.
+
+![Merging: the Channels page](../images/merge-channels.png)
+
+1. The items of the file. Tick what to take. **Merge as** gives an item a new name here
+   (here `I`, which this setup already has, becomes `Idmm`). **Status** says at once
+   whether each ticked item can be merged. `B` cannot: this setup has a different `B`.
+   Rename it, or untick it to keep using this setup's `B`.
+2. **Also select what these need** ticks, on every page, what the ticked items use:
+   here the instruments `src`, `dmm` and `magnet` (the file's `magnet` differs from this
+   setup's, so it needs a new name on the Instruments page too).
+
+The statuses:
+
+| status | meaning |
+|---|---|
+| ✔ merge | it can be merged |
+| = already here | this setup has an identical one: it is left as it is |
+| ⚠ merge | it can be merged, but look at the message (e.g. an action quotes a channel that will not exist) |
+| ✘ problem | it cannot be merged as it is; **Next** stays greyed out until it is fixed or unticked |
+
+The problems it finds:
+
+* **Name conflicts.** A name already used here (by anything with a name: instrument,
+  alias, parameter, composite channel or variable, action), or two merged items under
+  one name. Give one of them another name in *Merge as*, or untick it. An unticked item
+  whose name exists here is replaced by the one already here: whatever uses it in the
+  file then uses this setup's one. When that one is different, a warning says so.
+* **Missing pieces.** An alias needs its instrument, a formula the channels and
+  parameters it uses. Each must be ticked too, or already be here.
+* **Inconsistencies.** Everything is checked with the backend's own rules, on a copy of
+  the current setup: formulas, writable targets, mappings that must be each other's
+  inverse, parameter formulas that use live channels, and **circular references**
+  between composite channels or between parameters.
+
+New names are carried through. Renaming the instrument `lockin` to `lockin2` changes
+the targets of the merged aliases (`lockin.X` → `lockin2.X`). Renaming an alias or a
+parameter changes the formulas that use it, and the names quoted in the merged
+actions (`get('Vxx')`). Parameters are also renamed where an action uses them by name.
+Nothing changes until you click **Merge**. Then the items are added one by one, in an
+order that works.

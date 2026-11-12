@@ -103,6 +103,7 @@ class Backend:
         self.instruments = InstrumentManager(self.resources, self.drivers)
         self.channels = ChannelManager(self.instruments)
         self.instruments.listeners.append(self._instrument_specs_changed)
+        self.instruments.fault_listeners.append(self._instrument_fault)
         self.control = RunControl()
         self.monitor = Monitor(self.channels)
         self.monitor.listeners.append(lambda m: self.emit("monitor", m))
@@ -448,6 +449,25 @@ class Backend:
         """A driver changed its channel list (mode switch ...): values cached for its
         aliases are stale, and every front end must reload the state."""
         self.channels.forget_instrument(name)
+        self._changed("instruments")
+
+    def _instrument_fault(self, name: str, message: str) -> None:
+        """A safety fault (a magnet quench ...): stop everything that runs - the
+        running sweep or script, the rest of the queue, the user actions - and tell
+        every front end."""
+        reason = "%s: %s" % (name, message)
+        log.error("SAFETY FAULT %s - stopping the queue and the user actions", reason)
+        try:
+            was = self.queue.abort_all(reason)
+        except Exception as exc:
+            was = False
+            log.error("aborting the queue failed: %s", exc)
+        try:
+            self.user_actions.abort()
+        except Exception:
+            pass
+        self.emit("instrument_fault", {"instrument": name, "message": message,
+                                       "aborted": bool(was)})
         self._changed("instruments")
 
     def list_instruments(self) -> list:

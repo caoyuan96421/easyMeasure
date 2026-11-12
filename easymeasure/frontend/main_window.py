@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
         self.conn.disconnected.connect(self._on_disconnected)
         self.conn.event.connect(self._on_event)
         self.model.message.connect(self._message)
+        self.model.fault.connect(self._fault)
         self.model.queueChanged.connect(self._queue_changed)
         geo = self.qsettings.value("geometry")
         if geo is not None:
@@ -507,6 +508,19 @@ class MainWindow(QMainWindow):
                                                 self.model.refresh()))
         dlg.finished.connect(done)
         QTimer.singleShot(0, dlg.open)
+
+    def _fault(self, instrument: str, text: str, aborted: bool) -> None:
+        """A safety fault (magnet quench ...): impossible to miss, but not blocking."""
+        from PySide6.QtWidgets import QMessageBox
+        self._message("error", "FAULT %s: %s" % (instrument, text))
+        box = QMessageBox(QMessageBox.Critical, "Instrument fault: %s" % instrument,
+                          "%s\n\n%s" % (text, "The running item was aborted and the queue "
+                                          "stopped." if aborted else "The queue was stopped."),
+                          QMessageBox.Ok, self)
+        box.setModal(False)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        self.fault_box = box
+        box.show()
 
     def _message(self, level, text):
         self.statusBar().showMessage(("⚠ " if level in ("error", "warning") else "") + str(text), 8000)

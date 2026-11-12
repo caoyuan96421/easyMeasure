@@ -200,25 +200,27 @@ class RunQueue:
         log.info("resumed")
         self._changed()
 
-    def abort(self) -> None:
+    def abort(self, reason: Optional[str] = None) -> None:
         """Abort the current item; the queue continues with the next one."""
         with self._lock:
             if self._current is None:
                 return
-        self.control.abort()
+        self.control.abort(reason)
         log.warning("abort requested for current item")
         self._changed()
 
-    def abort_all(self) -> None:
-        """Abort the current item and stop processing the queue."""
+    def abort_all(self, reason: Optional[str] = None) -> bool:
+        """Abort the current item and stop processing the queue.  Returns whether
+        an item was running."""
         with self._cv:
             self._processing = False
             self._stop_after_current = True
             cur = self._current
         if cur is not None:
-            self.control.abort()
-        log.warning("abort all requested")
+            self.control.abort(reason)
+        log.warning("abort all requested%s", (": %s" % reason) if reason else "")
         self._changed()
+        return cur is not None
 
     def shutdown(self) -> None:
         with self._cv:

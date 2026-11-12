@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..common.errors import (ChannelError, EasyMeasureError, InstrumentError,
+from ..common.errors import (ChannelError, EasyMeasureError, InstrumentError, InstrumentFault,
                              InstrumentNotConnected, InstrumentTimeout, ResourceError)
 from .logsys import RateLimitedLogger, get_logger
 from .resources import (INTERFACE_NAMES, INTERFACES, PRIO_MEASUREMENT, FairLock, Resource,
@@ -280,6 +280,12 @@ class Instrument:
     IDN_MATCH: Sequence[str] = ()
     #: whether this driver's port may be shared with other instruments by default
     SHARED_RESOURCE = False
+    #: seconds between calls of :meth:`poll` by the backend's watchdog (0: never);
+    #: option ``poll_interval`` overrides it
+    POLL_INTERVAL = 0.0
+    #: a safety fault the driver has detected and not seen cleared yet (a message),
+    #: see :class:`~easymeasure.common.errors.InstrumentFault`
+    fault: Optional[str] = None
 
     def __init__(self, name: str, address: str, options: Optional[dict] = None):
         self.name = name
@@ -332,6 +338,18 @@ class Instrument:
         if fn is None:
             raise ChannelError("%s: channel %s is not writable" % (self.name, channel))
         fn(value)
+
+    def poll(self) -> None:
+        """Called by the backend's watchdog every ``POLL_INTERVAL`` seconds while
+        connected (and nothing else is talking to the instrument): check the
+        instrument's health and raise :class:`InstrumentFault` for a safety fault
+        (a quench).  May also move along a procedure the driver runs step by step."""
+
+    def poll_interval(self) -> float:
+        try:
+            return max(0.0, float(self.options.get("poll_interval", self.POLL_INTERVAL) or 0))
+        except (TypeError, ValueError):
+            return float(self.POLL_INTERVAL or 0)
 
     def recover(self) -> None:
         """Light-weight recovery after a failed call (e.g. clear the port)."""
@@ -411,6 +429,11 @@ class InstrumentHandle:
         self.last_error = ""
         #: called (outside the call lock) when the driver's channel/action list changed
         self.on_specs_changed: Optional[Callable[["InstrumentHandle"], None]] = None
+        #: a safety fault reported by the driver (InstrumentFault) and not cleared yet
+        self.fault: Optional[str] = None
+        #: called with (handle, message) when a new fault is reported
+        self.on_fault: Optional[Callable[["InstrumentHandle", str], None]] = None
+        self._next_poll = 0.0
         self._specs_dirty = False
         #: channel -> (value, unix time) of the last successful read or write
         self.last_values: Dict[str, Tuple[Any, float]] = {}
@@ -801,7 +824,12 @@ class InstrumentHandle:
                     self._consecutive_failures = 0
                     if self.state != "connected":
                         self.state = "connected"
+                    self._fault_cleared(drv)
                     return result
+                except InstrumentFault as exc:
+                    # a safety fault: never retried, reported to the backend once
+                    self._report_fault(exc)
+                    raise
                 except ChannelError as exc:
                     # wrong channel / wrong value type: retrying will not help.
                     # (but a ChannelError from coercing a *garbled reply* is retryable;
@@ -841,6 +869,62 @@ class InstrumentHandle:
             raise type(last_exc)("%s (after %d attempts)" % (last_exc, attempt + 1))
         raise InstrumentError("%s %s failed after %d attempts: %s"
                               % (self.name, what, attempts, last_exc))
+
+    # -- safety faults and the watchdog ------------------------------------------------
+    def _report_fault(self, exc: BaseException) -> None:
+        msg = str(exc)
+        self.last_error = "FAULT: %s" % msg
+        new = self.fault is None
+        self.fault = msg
+        if new:
+            log.error("%s: FAULT: %s", self.name, msg)
+            cb = self.on_fault
+            if cb is not None:
+                try:
+                    cb(self, msg)
+                except Exception as cexc:
+                    log.error("%s: fault handler failed: %s", self.name, cexc)
+
+    def _fault_cleared(self, drv) -> None:
+        if self.fault is not None and drv is not None and getattr(drv, "fault", None) is None:
+            log.warning("%s: fault cleared (%s)", self.name, self.fault)
+            self.fault = None
+            if self.last_error.startswith("FAULT"):
+                self.last_error = ""
+
+    def poll_due(self, now: float) -> bool:
+        drv = self.driver
+        if drv is None or self.state != "connected":
+            return False
+        iv = drv.poll_interval()
+        return iv > 0 and now >= self._next_poll
+
+    def poll(self) -> None:
+        """One watchdog call of the driver's ``poll`` - skipped when another call is
+        using the instrument (that call checks the instrument itself)."""
+        drv = self.driver
+        if drv is None:
+            return
+        self._next_poll = time.monotonic() + max(0.02, drv.poll_interval())
+        lk = self._call_lock
+        if not lk.acquire(0.02, tag=self.name):
+            return
+        try:
+            if self.driver is not drv or self.state != "connected":
+                return
+            self._run(drv.poll, min(self.call_timeout, 10.0))
+            self._fault_cleared(drv)
+        except InstrumentFault as exc:
+            self._report_fault(exc)
+        except Exception as exc:
+            self._rl.log(30, "%s.poll" % self.name, "%s: watchdog poll failed: %s",
+                         self.name, exc)
+        finally:
+            try:
+                lk.release()
+            except RuntimeError:
+                pass
+            self._fire_specs_changed()
 
     def read(self, channel: str) -> Any:
         spec = self._io_spec(channel)
@@ -923,6 +1007,7 @@ class InstrumentHandle:
             "options": self.options,
             "state": self.state,
             "last_error": self.last_error,
+            "fault": self.fault,
             "stats": dict(self.stats),
             "quarantined": self.breaker_state(),
             "channels": [dict(c.to_dict(), **self._last_of(c.name)) for c in self.channels.values()],
@@ -961,6 +1046,33 @@ class InstrumentManager:
         self._lock = threading.RLock()
         #: callbacks ``f(instrument_name)`` run when an instrument's channel list changed
         self.listeners: List[Callable[[str], None]] = []
+        #: callbacks ``f(instrument_name, message)`` run when an instrument reports a
+        #: new safety fault (:class:`InstrumentFault`, e.g. a magnet quench)
+        self.fault_listeners: List[Callable[[str, str], None]] = []
+        # the watchdog: calls ``poll`` of the drivers that ask for it (POLL_INTERVAL)
+        self._stop = threading.Event()
+        self._watchdog = threading.Thread(target=self._watch, name="instrument-watchdog",
+                                          daemon=True)
+        self._watchdog.start()
+
+    def _watch(self) -> None:
+        while not self._stop.wait(0.02):
+            now = time.monotonic()
+            for h in self.handles():
+                try:
+                    if h.poll_due(now):
+                        h.poll()
+                except Exception as exc:          # never let the watchdog die
+                    log.warning("watchdog: %s: %s", h.name, exc)
+
+    def _fault(self, h: InstrumentHandle, message: str) -> None:
+        if self._handles.get(h.name) is not h:
+            return
+        for cb in list(self.fault_listeners):
+            try:
+                cb(h.name, message)
+            except Exception as exc:
+                log.error("fault listener failed: %s", exc)
 
     def add(self, name: str, driver: str, address: str = "NONE", options: Optional[dict] = None,
             connect: bool = True) -> InstrumentHandle:
@@ -973,6 +1085,7 @@ class InstrumentManager:
                 raise ChannelError("instrument %r already exists" % name)
             h = InstrumentHandle(name, driver, cls, address, options or {}, self.resources)
             h.on_specs_changed = self._specs_changed
+            h.on_fault = self._fault
             self._handles[name] = h
         if connect:
             try:
@@ -1038,6 +1151,7 @@ class InstrumentManager:
         return [h.describe() for h in self.handles()]
 
     def shutdown(self) -> None:
+        self._stop.set()
         for h in self.handles():
             try:
                 h.disconnect()

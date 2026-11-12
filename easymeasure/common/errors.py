@@ -32,6 +32,15 @@ class InstrumentNotConnected(InstrumentError):
     """The instrument is not (or no longer) connected."""
 
 
+class InstrumentFault(InstrumentError):
+    """A hardware safety fault, e.g. a magnet quench.  Never retried and never
+    turned into NaN or a skipped point: it ends the running sweep or script, and the
+    backend aborts the queue (see ``InstrumentManager.fault_listeners``).  A driver
+    raises it once when it detects the fault and keeps refusing what is unsafe until
+    the fault is cleared (its ``fault`` attribute is the message, ``None`` once
+    cleared)."""
+
+
 class ChannelError(EasyMeasureError):
     """Unknown channel, wrong direction (read-only/write-only) or bad data."""
 

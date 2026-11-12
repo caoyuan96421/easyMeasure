@@ -58,7 +58,7 @@ _DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress"}
 #: small status events only - no monitor values, sweep data or log lines
 DEFAULT_EVENTS = ("queue", "item_end", "sweep_start", "sweep_end", "sweep_paused",
                   "sweep_resumed", "sweep_warning", "ppt", "changed", "settings", "user_action",
-                  "ramps")
+                  "ramps", "instrument_fault")
 PREAUTH_MAX_FRAME = 64 * 1024
 AUTH_TIMEOUT = 10.0
 # commands that never touch instrument I/O: served by their own small pool so that

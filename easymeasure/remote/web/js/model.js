@@ -37,6 +37,11 @@ export class Model {
     else if (kind === "queue" && data) { this.state.queue = data; this.emit("queue", data); }
     else if (kind === "ramps" && data) { this.state.ramps = data.active || []; this.emit("ramps", this.state.ramps); }
     else if (kind === "sweep_warning") this.emit("message", "warning", String(data && data.message));
+    else if (kind === "instrument_fault") {
+      this.emit("message", "error", `FAULT ${data && data.instrument}: ${data && data.message}` +
+        (data && data.aborted ? " - the running item was aborted and the queue stopped" : " - the queue was stopped"));
+      this.scheduleRefresh();
+    }
     else if (kind === "ppt") this.emit("message", "info", `slide added to ${data && data.path}`);
   }
 

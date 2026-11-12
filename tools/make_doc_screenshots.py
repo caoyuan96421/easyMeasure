@@ -601,6 +601,31 @@ def tutorial_nd(be, w):
     save(w, "t2-map", [plots[0]])
 
 
+def merge_wizard(be, w):
+    """The Merge setup wizard on its Channels page (guide/instruments.md)."""
+    print("merge setup")
+    tab(w, "Instruments")
+    sp = w.setup_panel
+    pump(5, lambda: bool(sp.drivers))
+    dlg = sp.merge_setup(str(ROOT / "examples" / "demo_setup.json"))
+    dlg.resize(900, 560)
+    pump(0.5)
+    for _ in range(3):
+        dlg.next()
+    pg = dlg.pages["aliases"]
+    for n in ("Vg", "Vb", "I", "B"):
+        pg.set_checked(n)
+    pg.set_new_name("I", "Idmm")
+    pg.needs_btn.click()
+    pump(0.8)
+    pg.table.resizeColumnToContents(0)
+    pg.table.setColumnWidth(1, 90)
+    pump(0.3)
+    save(dlg, "merge-channels", [pg.table, pg.needs_btn], ["1", "2"])
+    dlg.reject()
+    pump(0.3)
+
+
 def tutorial_threshold(be, w):
     print("tutorial 3: stop at a threshold")
     tab(w, "Sweep")
@@ -787,6 +812,7 @@ def main(parts):
                 tutorial_nd(be, w)
             if "t3" in want:
                 tutorial_threshold(be, w)
+                merge_wizard(be, w)
             if "s" in want:
                 scripting(be, w)
         finally:

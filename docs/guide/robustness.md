@@ -76,6 +76,27 @@ Every physical port is one `Resource`:
 * The post phase of a sweep runs after errors and aborts, to bring things back to a
   safe state.
 
+## Safety faults
+
+Some instruments can report a fault that endangers the hardware, such as a magnet
+quench ([`ami430`](../reference/drivers/ami430.md)). Such a fault is not an ordinary
+error:
+
+* it is **never retried**, and never turned into a NaN reading or a skipped point,
+  whatever the sweep's `on_read_error` and `on_set_error` say;
+* the backend checks these instruments by itself (a watchdog, every `poll_interval`
+  seconds), even when no sweep or monitor reads them;
+* when one is detected, the backend aborts the running sweep or script (its status is
+  *aborted* or *error*, with the fault as the reason), **stops the run queue** so that
+  nothing else starts unattended, aborts running user actions, and sends
+  `instrument_fault` to every front end. The desktop GUI shows a warning window, the
+  web app an error message;
+* the instrument's last error reads `FAULT: …` until the fault is cleared. The driver
+  refuses what is unsafe meanwhile (for a magnet: changing the field), and reports the
+  fault only once.
+
+After clearing the fault on the instrument, start the queue again by hand.
+
 ## Scripts and code
 
 * Abort reaches scripts on **every line**, so even `while True: pass` stops.

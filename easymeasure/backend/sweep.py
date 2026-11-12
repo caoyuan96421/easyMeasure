@@ -84,7 +84,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..common.errors import (AbortRequested, ChannelError, EasyMeasureError, LimitError,
+from ..common.errors import (AbortRequested, ChannelError, EasyMeasureError, InstrumentFault,
+                             LimitError,
                              EndSweep, OutOfRange, SkipLine, SkipPoint, SweepDefinitionError)
 from ..common.exprs import Expression
 from .logsys import get_logger
@@ -519,13 +520,19 @@ def validate_against(d: dict, channels, after_pre: bool = False,
 class RunControl:
     """Pause / abort flags shared between the queue and running work."""
 
+    USER = "aborted by user"
+
     def __init__(self):
         self._abort = threading.Event()
         self._running = threading.Event()
         self._running.set()          # set = not paused
         self.pause_requested = False
+        self.reason = self.USER
 
-    def abort(self) -> None:
+    def abort(self, reason: Optional[str] = None) -> None:
+        """Abort; *reason* (default: by the user) is what the run reports."""
+        if reason or not self._abort.is_set():
+            self.reason = reason or self.USER
         self._abort.set()
         self._running.set()
 
@@ -539,12 +546,13 @@ class RunControl:
 
     def reset(self) -> None:
         self._abort.clear()
+        self.reason = self.USER
         self.resume()
 
     def check_abort(self) -> None:
         """Non-blocking: raise AbortRequested if an abort was requested."""
         if self._abort.is_set():
-            raise AbortRequested("aborted by user")
+            raise AbortRequested(self.reason)
 
     @property
     def aborted(self) -> bool:
@@ -557,7 +565,7 @@ class RunControl:
     def check(self, on_pause: Optional[Callable[[bool], None]] = None) -> None:
         """Raise AbortRequested if aborted; block while paused."""
         if self._abort.is_set():
-            raise AbortRequested("aborted by user")
+            raise AbortRequested(self.reason)
         if not self._running.is_set():
             if on_pause:
                 on_pause(True)
@@ -567,14 +575,14 @@ class RunControl:
             if on_pause:
                 on_pause(False)
             if self._abort.is_set():
-                raise AbortRequested("aborted by user")
+                raise AbortRequested(self.reason)
 
     def sleep(self, seconds: float) -> None:
         """Abortable sleep (pause does not stop the clock of a delay)."""
         end = time.monotonic() + max(0.0, seconds)
         while True:
             if self._abort.is_set():
-                raise AbortRequested("aborted by user")
+                raise AbortRequested(self.reason)
             remaining = end - time.monotonic()
             if remaining <= 0:
                 return
@@ -739,7 +747,7 @@ class SweepRunner:
             try:
                 v = self._read(name)
                 values[name] = v
-            except AbortRequested:
+            except (AbortRequested, InstrumentFault):
                 raise
             except Exception as exc:
                 self.read_failures += 1
@@ -752,7 +760,7 @@ class SweepRunner:
     def _set_many(self, values: dict) -> None:
         try:
             self.channels.set_many(values, ramp=True, abort_check=self.control.check)
-        except AbortRequested:
+        except (AbortRequested, InstrumentFault):
             raise
         except Exception as exc:
             if self.d["on_set_error"] == "skip":
@@ -764,7 +772,7 @@ class SweepRunner:
     def _set(self, name: str, value) -> None:
         try:
             self.channels.set(name, value, ramp=True, abort_check=self.control.check)
-        except AbortRequested:
+        except (AbortRequested, InstrumentFault):
             raise
         except Exception as exc:
             if self.d["on_set_error"] == "skip":
@@ -912,9 +920,13 @@ class SweepRunner:
                         at.get("dimension", "?"), at.get("index", "?"), self.dataset.points,
                         self.dataset.total_points)
             self._journal(EVENT, dict(event="terminated", t=time.time(), **at), sync=True)
-        except AbortRequested:
+        except AbortRequested as exc:
             self.status = "aborted"
-            log.warning("run %d aborted by user", self.run_number)
+            why = str(exc) or RunControl.USER
+            if why != RunControl.USER:
+                self.error = why
+            log.warning("run %d %s", self.run_number,
+                        why if why == RunControl.USER else "aborted: %s" % why)
         except Exception as exc:
             main_error = exc
             self.status = "error"
@@ -924,6 +936,7 @@ class SweepRunner:
         # post phase: always for errors, optionally on abort
         if self.status != "aborted" or self.d["run_post_on_abort"]:
             was_aborted = self.control.aborted
+            reason = self.control.reason
             if was_aborted:
                 self.control.reset()  # let the de-init run to completion
             try:
@@ -936,7 +949,7 @@ class SweepRunner:
                     self.status, self.error = "error", "post-sweep: %s" % exc
             finally:
                 if was_aborted:
-                    self.control.abort()
+                    self.control.abort(reason)
         footer = {"status": self.status, "error": self.error, "ended": time.time(),
                   "points": self.dataset.points, "read_failures": self.read_failures,
                   "skipped_points": self.skipped_points,

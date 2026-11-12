@@ -16,6 +16,7 @@ class BackendModel(QObject):
     queueChanged = Signal(dict)
     rampsChanged = Signal(list)       # ramps of direct writes now running (stop_ramps)
     message = Signal(str, str)        # (level, text) for the status bar
+    fault = Signal(str, str, bool)    # (instrument, message, a run was aborted): a quench ...
 
     def __init__(self, conn: BackendConnection, parent=None):
         super().__init__(parent)
@@ -56,6 +57,10 @@ class BackendModel(QObject):
             self.rampsChanged.emit(self.state["ramps"])
         elif kind == "sweep_warning":
             self.message.emit("warning", str(data.get("message")))
+        elif kind == "instrument_fault" and isinstance(data, dict):
+            self.fault.emit(str(data.get("instrument")), str(data.get("message")),
+                            bool(data.get("aborted")))
+            self.schedule_refresh()
         elif kind == "ppt":
             self.message.emit("info", "slide added to %s" % data.get("path"))
 
