@@ -421,3 +421,75 @@ def test_swapped_names(demo):
     demo.set_many({"n": 1.0, "D": 0.0})
     assert demo.instruments.get("bg").read("voltage") == pytest.approx(1.15 / 1.2)
     assert demo.instruments.get("tg").read("voltage") == pytest.approx(1.15 / 1.8)
+
+
+def test_more_edge_cases(demo):
+    src = graphene()
+    # the old one-variable composite form, an invalid alias, a mapping of a renamed alias,
+    # actions that quote an instrument channel and another action
+    src["composites"] += [
+        {"name": "Vgx", "targets": {"Vbg": "x / 2"}, "min": -1, "max": 1},
+        {"type": "map", "name": "Vbm", "target": "Vbg", "forward": "x * 2",
+         "backward": "y / 2", "min": -1, "max": 1}]
+    src["aliases"].append({"name": "bad", "target": "bg.voltage", "min": 2, "max": 1})
+    src["actions"] += [{"name": "a1", "code": "x = get('bg.voltage')\nrun_user_action('a2')"},
+                       {"name": "a2", "code": "log('two')"}]
+    m = plan(demo, src)
+    m.select("aliases", "bad")
+    assert not m.validate() and "invalid" in msgs(m, "aliases", "bad")
+    m.select("aliases", "bad", False)
+    m.select_with_needs("composites", "Vgx")
+    m.select_with_needs("composites", "Vbm")
+    m.rename("aliases", "Vbg", "VB")
+    m.rename("instruments", "bg", "backgate")
+    m.select("actions", "a1")
+    m.select("actions", "a2")
+    m.rename("actions", "a2", "second")
+    assert m.validate(), m.errors
+    assert m.item("composites", "Vgx").merged["targets"] == {"VB": "Vgx / 2"}
+    assert m.item("composites", "Vbm").merged["target"] == "VB"
+    code = m.item("actions", "a1").merged["code"]
+    assert "get('backgate.voltage')" in code and "run_user_action('second')" in code
+    apply(demo, m)
+    demo.write_channel("Vgx", 0.5, ramp=False)
+    assert demo.instruments.get("backgate").read("voltage") == pytest.approx(0.25)
+    # renames that would merge two targets of one composite into one name
+    m = plan(demo, graphene())
+    m.select_with_needs("composites", "nD")
+    for it in m.selected():
+        if it.kind == "instruments":
+            it.new_name = it.name + "2"
+    m.rename("aliases", "Vbg", "Vq")
+    m.rename("aliases", "Vtg", "Vq")
+    assert not m.validate()
+    assert "two of its targets" in msgs(m, "composites", "nD")
+
+
+def test_offline_instrument_and_unknown_channel_lists(demo):
+    """An alias of an instrument whose channels are not known (never connected) is
+    accepted with a warning; one of a known instrument is checked."""
+    st = demo.get_state()
+    for i in st["instruments"]:
+        if i["name"] == "lockin":
+            i["channels"] = []            # as if its channel list were unknown
+    src = graphene()
+    m = SetupMerge.from_state(src, st, demo.list_drivers()["drivers"])
+    m.select("aliases", "Vxx")
+    assert m.validate()
+    assert m.item("aliases", "Vxx").status == WARNING
+    assert "once it is connected" in msgs(m, "aliases", "Vxx")
+    # without the driver list nothing is said about drivers
+    m = SetupMerge.from_state(src, demo.get_state(), None)
+    m.select("instruments", "bg")
+    assert m.validate()
+
+
+def test_dependencies_on_different_items_of_the_same_name_warn(demo):
+    """Rxx needs I; leaving the file's I out uses this setup's I (dmm.reading), which is
+    not the same channel: allowed, but with a warning."""
+    m = plan(demo, graphene())
+    m.select("composites", "Rxx")
+    m.select_with_needs("aliases", "Vxx")
+    m.validate()
+    rxx = m.item("composites", "Rxx")
+    assert rxx.status == WARNING and "dmm.reading" in " ".join(rxx.messages)

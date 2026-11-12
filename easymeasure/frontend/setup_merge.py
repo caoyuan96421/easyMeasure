@@ -436,8 +436,14 @@ class SetupMerge:
             if t == "multi":
                 own = [v.get("name") if isinstance(v, dict) else str(v)
                        for v in d.get("variables") or []]
-                d["targets"] = {chans.get(tg, tg): rename_formula(f, chans, keep=own)
-                                for tg, f in (d.get("targets") or {}).items()}
+                targets = {}
+                for tg, f in (d.get("targets") or {}).items():
+                    new = chans.get(tg, tg)
+                    if new in targets:
+                        raise ChannelError("two of its targets would both be %s after the new "
+                                           "names" % new)
+                    targets[new] = rename_formula(f, chans, keep=own)
+                d["targets"] = targets
             elif t == "read":
                 d["expression"] = rename_formula(d.get("expression", ""), chans)
             elif t == "map":
