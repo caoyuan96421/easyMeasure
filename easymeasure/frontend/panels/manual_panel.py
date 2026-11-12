@@ -11,9 +11,13 @@ expression of the present value ``x`` (e.g. ``x + 0.01``, ``x/2``, ``0.1*pi``).
 Variables of a multivariate composite channel are grouped (indented) under the
 composite's name.  A group has "hold", "Set all" and "Set all to zero": while
 hold is ticked, edits only mark the variables and "Set all" sends them in one go
-(the hardware channels are computed once from all of them) - needed for the
-first setting, when the other variables have never been set yet.  "Set all to
-zero" sets every variable to 0 together, the usual way to start.
+(the hardware channels are computed once from all of them).  "Set all to zero"
+sets every variable to 0 together, the usual way to start.
+
+Until a group's variables have been set for the first time they have no value:
+they show NaN, their sliders are greyed out and hold is forced on.  The group is
+started with "Set all to zero", or by typing a value for every variable and
+clicking "Set all" (enabled once none shows NaN).
 
 The setup's **parameters** are listed in their own group: a value parameter can be
 edited (``set_parameter``; it moves no instrument), a formula parameter shows its
@@ -45,6 +49,13 @@ SLIDER_STEPS = 1000
 GROUP_INDENT = 18      # px: variables under the header of their composite
 
 
+def _finite(v) -> bool:
+    try:
+        return v is not None and math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
 def _parse(text: str, numeric: bool):
     """Value typed into a text field: a number for numeric channels if it parses."""
     t = text.strip()
@@ -66,6 +77,7 @@ class _NoWheelMixin:
 
 
 class SafeSpinBox(_NoWheelMixin, QDoubleSpinBox):
+    """A spin box that never sends on a scroll, and can show "NaN" (no value yet)."""
     expressionRequested = Signal()
     readRequested = Signal()
 
@@ -75,6 +87,54 @@ class SafeSpinBox(_NoWheelMixin, QDoubleSpinBox):
         self.setKeyboardTracking(False)              # send on Enter / arrows, not per digit
         # right click is handled here (not by the embedded line edit)
         self.lineEdit().setContextMenuPolicy(Qt.NoContextMenu)
+        self._nan = False
+        # a number was entered over "NaN": it must be sent even if it equals the
+        # hidden value of the box (valueChanged would not fire then)
+        self.entered_over_nan = False
+
+    # ---- "no value yet" -----------------------------------------------------------------
+    def is_nan(self) -> bool:
+        return self._nan
+
+    def set_nan(self, on: bool) -> None:
+        on = bool(on)
+        if on == self._nan:
+            return
+        self._nan = on
+        self.blockSignals(True)
+        if on:                                     # hidden value: 0, or the nearest limit
+            self.setValue(min(self.maximum(), max(self.minimum(), 0.0)))
+        self.setValue(self.value())                # redraw the text
+        self.lineEdit().setText(self.prefix() + self.textFromValue(self.value()) + self.suffix())
+        self.blockSignals(False)
+
+    def textFromValue(self, v: float) -> str:     # noqa: N802 - Qt API
+        return "NaN" if self._nan else super().textFromValue(v)
+
+    def valueFromText(self, text: str) -> float:  # noqa: N802 - Qt API
+        v = super().valueFromText(text)
+        if self._nan:
+            self._nan = False
+            self.entered_over_nan = True
+        return v
+
+    def stepBy(self, steps: int) -> None:         # noqa: N802 - Qt API
+        if self._nan:
+            self._nan = False
+            self.entered_over_nan = True
+        super().stepBy(steps)
+
+    def _select_if_nan(self) -> None:
+        if self._nan:
+            self.selectAll()                       # typing replaces "NaN"
+
+    def focusInEvent(self, ev):                    # noqa: N802 - Qt API
+        super().focusInEvent(ev)
+        self._select_if_nan()
+
+    def mouseReleaseEvent(self, ev):               # noqa: N802 - Qt API
+        super().mouseReleaseEvent(ev)
+        self._select_if_nan()
 
     def contextMenuEvent(self, ev):                  # noqa: N802
         menu = QMenu(self)
@@ -158,6 +218,7 @@ class ChannelRow:
             sp.valueChanged.connect(self._spin_changed)
             sp.expressionRequested.connect(self._expression)
             sp.readRequested.connect(lambda: self.panel.read_back(self.name))
+            sp.editingFinished.connect(self._editing_finished)
             sp.setToolTip("Enter or arrows: set (ramped)\nright click: expression / read back")
             self.editor = sp
             if self.lo is not None and self.hi is not None and self.hi > self.lo:
@@ -173,6 +234,26 @@ class ChannelRow:
         self.read_btn.setToolTip("read the present value from the instrument")
         self.read_btn.clicked.connect(lambda: self.panel.read_back(self.name))
         self._updating = False
+        self.backend_set = _finite(meta.get("last"))       # refreshed from the state
+        self.unset = False
+
+    def set_unset(self, on: bool) -> None:
+        """Show "no value yet" (NaN, slider greyed out), or end it."""
+        on = bool(on)
+        if on == self.unset or not isinstance(self.editor, SafeSpinBox):
+            return
+        self.unset = on
+        self._updating = True
+        try:
+            self.editor.set_nan(on)
+        finally:
+            self._updating = False
+        if self.slider is not None:
+            self.slider.setEnabled(not on)
+            if on:
+                self.slider.blockSignals(True)
+                self.slider.setValue(self._to_slider(self.editor.value()))
+                self.slider.blockSignals(False)
 
     # ---- value display --------------------------------------------------------
     def user_is_typing(self) -> bool:
@@ -196,6 +277,10 @@ class ChannelRow:
                 if not math.isfinite(fv):
                     return
                 if (force and not self.user_is_typing()) or not self.editor.hasFocus():
+                    self.editor.set_nan(False)
+                    self.unset = False
+                    if self.slider is not None:
+                        self.slider.setEnabled(True)
                     self.editor.setValue(fv)
                     self.editor.lineEdit().setModified(False)
                 if self.slider is not None and not self.slider.isSliderDown():
@@ -242,6 +327,10 @@ class ChannelRow:
     def _spin_changed(self, v: float) -> None:
         if self._updating:
             return
+        self.editor.entered_over_nan = False
+        if self.unset or self.editor.is_nan():      # a value was entered over "NaN"
+            self.set_unset(False)
+            self.editor.set_nan(False)
         if self.slider is not None:
             self.slider.blockSignals(True)
             self.slider.setValue(self._to_slider(v))
@@ -258,11 +347,16 @@ class ChannelRow:
         if not self.slider.isSliderDown():           # click on the track / keyboard
             self.panel.request_set(self.name, v)
 
+    def _editing_finished(self) -> None:
+        sp = self.editor
+        if sp.entered_over_nan:                     # the number typed equals the hidden value
+            self._spin_changed(sp.value())
+
     def _slider_released(self) -> None:
         self.panel.request_set(self.name, self._from_slider(self.slider.value()))
 
     def _expression(self) -> None:
-        cur = self.editor.value()
+        cur = float("nan") if self.unset else self.editor.value()
         txt, ok = QInputDialog.getText(
             self.panel, "Set %s" % self.name,
             "New value as an expression of the present value x = %g\n"
@@ -531,8 +625,11 @@ class ManualPanel(QWidget):
             self._rebuild(chans)
         for m, _ in chans:
             row = self.rows.get(m["name"])
+            if row is not None:
+                row.backend_set = _finite(m.get("last"))
             if row is not None and not self._pending.get(m["name"]):
                 row.show_value(m.get("last"))
+        self._update_groups()
         self._show_param_values()
 
     def _rebuild(self, chans) -> None:
@@ -562,12 +659,14 @@ class ManualPanel(QWidget):
             self.grid.addWidget(row.read_btn, r, 3)
             r += 1
         self._held = {g: v for g, v in self._held.items() if g in self.groups}
+        self._update_groups()
         self.param_header = None
         r = self._param_rows(r)
         self.grid.setRowStretch(r, 1)
         self._apply_filter(self.filter.text())
-        for meta, _ in chans:
-            if meta.get("last") is None:
+        for meta, kind in chans:
+            if meta.get("last") is None and not (kind == "variable" and
+                                                 meta.get("composite") in self.groups):
                 self.read_back(meta["name"])      # show the real present values
         if not chans and not self.params:
             self.message("no writable aliases, composites or instrument settings")
@@ -588,17 +687,59 @@ class ManualPanel(QWidget):
         zero.setToolTip("set every variable of %s to 0 together (limits and ramps apply)" % comp)
         zero.clicked.connect(lambda: self.set_group(comp, zero=True))
         hold.toggled.connect(lambda on: None if on else self._held.pop(comp, None))
+        note = QLabel("not set yet")
+        note.setStyleSheet("color: #c0392b")
+        note.setVisible(False)
         box = QWidget()
         hl = QHBoxLayout(box)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.addWidget(hold)
         hl.addWidget(btn)
         hl.addWidget(zero)
+        hl.addWidget(note)
         hl.addStretch(1)
         self.grid.addWidget(lab, r, 0)
         self.grid.addWidget(box, r, 1, 1, 3)
         self.groups[comp] = {"label": lab, "box": box, "hold": hold, "set": btn, "zero": zero,
-                             "variables": list(variables)}
+                             "note": note, "variables": list(variables), "forced": False}
+
+    def _update_groups(self) -> None:
+        """Variables never set show NaN (slider greyed out), and their group has hold
+        forced on until Set all to zero, or Set all once every one has a value."""
+        for comp, g in self.groups.items():
+            held = self._held.get(comp, {})
+            rows = {n: self.rows[n] for n in g["variables"] if n in self.rows}
+            unset = [n for n, r in rows.items() if not r.backend_set]
+            for n, r in rows.items():
+                if not self._pending.get(n):
+                    r.set_unset(not r.backend_set and n not in held)
+            hold, setb = g["hold"], g["set"]
+            if unset:
+                if not g["forced"]:
+                    g["forced"] = True
+                    hold.blockSignals(True)
+                    hold.setChecked(True)
+                    hold.blockSignals(False)
+                    hold.setEnabled(False)
+                    hold.setToolTip("%s not set yet: hold stays on until all variables are set "
+                                    "together (Set all, or Set all to zero)" % ", ".join(unset))
+                missing = [n for n in unset if n not in held]
+                setb.setEnabled(not missing)
+                setb.setToolTip(("type a value for %s first (it shows NaN)" % ", ".join(missing))
+                                if missing else "set %s together to the values shown"
+                                % ", ".join(rows))
+                g["note"].setVisible(True)
+                g["note"].setToolTip("%s %s never been set: no value yet" % (
+                    ", ".join(unset), "has" if len(unset) == 1 else "have"))
+            else:
+                if g["forced"]:
+                    g["forced"] = False
+                    hold.setEnabled(True)
+                    hold.setChecked(False)
+                    hold.setToolTip("collect edits of these variables and send them with Set all")
+                setb.setEnabled(True)
+                setb.setToolTip("set every variable of %s together to the values shown" % comp)
+                g["note"].setVisible(False)
 
     def _group_of(self, name: str) -> Optional[str]:
         row = self.rows.get(name)
@@ -616,21 +757,29 @@ class ManualPanel(QWidget):
             row = self.rows.get(n)
             if row is None or not isinstance(row.editor, QDoubleSpinBox):
                 continue
-            values[n] = 0.0 if zero else self._held.get(comp, {}).get(n, row.editor.value())
+            held = self._held.get(comp, {})
+            if not zero and n not in held and row.unset:
+                self.message("✘ %s has no value yet: type one, or use Set all to zero" % n)
+                return
+            values[n] = 0.0 if zero else held.get(n, row.editor.value())
         for n in values:
             self._pending[n] = True
             self.rows[n].set_state("busy")
         self.message("setting %s together …" % ", ".join(values))
 
         def done(ok=True, err=""):
-            self._held.pop(comp, None)
+            if ok:                                 # on failure the held values stay
+                self._held.pop(comp, None)
             for n, v in values.items():
                 self._pending[n] = False
                 r = self.rows.get(n)
                 if r is not None:
-                    r.set_state("ok" if ok else "error", err)
+                    r.set_state("ok" if ok else
+                                "held" if n in self._held.get(comp, {}) else "error", err)
                     if ok:
+                        r.backend_set = True
                         r.show_value(v, force=True)
+            self._update_groups()
             self.message(("%s set" % ", ".join("%s = %g" % kv for kv in values.items()))
                          if ok else "✘ %s: %s" % (comp, err))
             self.model.schedule_refresh()
@@ -669,6 +818,7 @@ class ManualPanel(QWidget):
             self.rows[name].set_state("held", "held: sent with Set all")
             self.message("%s = %s held; Set all sends %s" % (
                 name, value, ", ".join(self._held[comp])))
+            self._update_groups()
             return
         if self._pending.get(name):
             self._queued[name] = value

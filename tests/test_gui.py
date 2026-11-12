@@ -11,6 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 
 from easymeasure.backend.server import Server  # noqa: E402
 from easymeasure.backend.storage import DataSet  # noqa: E402
@@ -1179,17 +1181,33 @@ def test_composite_editor_and_manual_groups(app, gui):
     assert mp.rows["eps"].kind == "variable" and "Tset_C" in mp.rows and "Vdiff" not in mp.rows
     assert "detuning" not in mp.groups                    # one variable: no group needed
     g = mp.groups["gates"]
-    g["hold"].setChecked(True)
-    mp.rows["eps"].editor.setValue(0.1)
-    mp.rows["U"].editor.setValue(0.2)
+    # never set: NaN, sliders greyed out, hold forced on, Set all waits for values
+    eps, U = mp.rows["eps"], mp.rows["U"]
+    assert eps.editor.is_nan() and "NaN" in eps.editor.text() and U.editor.is_nan()
+    assert not eps.slider.isEnabled() and not U.slider.isEnabled()
+    assert g["hold"].isChecked() and not g["hold"].isEnabled()
+    assert not g["set"].isEnabled() and g["zero"].isEnabled()
+    assert g["note"].isVisibleTo(mp)
+    # a value typed over NaN (even one equal to the hidden 0) is held
+    eps.editor.setFocus()
+    eps.editor.lineEdit().selectAll()
+    QTest.keyClicks(eps.editor.lineEdit(), "0")
+    QTest.keyClick(eps.editor, Qt.Key_Return)
+    assert mp._held["gates"] == {"eps": 0.0} and not eps.editor.is_nan()
+    assert eps.slider.isEnabled() and U.editor.is_nan() and not g["set"].isEnabled()
+    eps.editor.setValue(0.1)
+    U.editor.setValue(0.2)
     assert mp._held["gates"] == {"eps": 0.1, "U": 0.2}
+    assert g["set"].isEnabled() and not U.editor.is_nan() and "0.2" in U.editor.text()
     assert math.isnan(be.channels.get("eps"))             # nothing sent yet
     mp.set_group("gates")
     assert pump(app, 10, lambda: not mp._pending.get("eps") and
                 be.channels.last_value("U") == pytest.approx(0.2))
     assert be.channels.get("Vx") == pytest.approx(0.3) and be.channels.get("Vy") == \
         pytest.approx(0.1)
-    g["hold"].setChecked(False)
+    # set: hold is released and free again
+    assert pump(app, 5, lambda: not g["hold"].isChecked() and g["hold"].isEnabled())
+    assert not g["note"].isVisibleTo(mp) and eps.slider.isEnabled()
     mp.rows["eps"].editor.setValue(0.0)                   # now one alone is fine
     assert pump(app, 10, lambda: abs(be.channels.get("Vx") - 0.2) < 1e-9)
     # the variables are indented under their group; "Set all to zero"

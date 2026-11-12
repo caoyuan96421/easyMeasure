@@ -310,18 +310,35 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
     # manual panel: the group header, hold, Set all
     grp = page.locator(".man-group[data-composite='gates']")
     grp.wait_for(timeout=10000)
-    grp.locator("input[type=checkbox]").check()
+    hold = grp.locator("input[type=checkbox]")
+    set_all = grp.locator("button:text-is('Set all')")
+
+    def row(n):
+        return page.locator(".man-row:has(.man-label:text-is('%s'))" % n).first
+    # never set: NaN, sliders greyed out, hold forced on, Set all waits for values
+    page.wait_for_function("document.querySelector(\".man-group[data-composite='gates'] input\").disabled")
+    assert hold.is_checked() and hold.is_disabled() and set_all.is_disabled()
+    assert grp.locator(".man-unset").is_visible()
+    for n in ("eps", "U"):
+        assert row(n).locator("input.man-num").input_value() == ""
+        assert row(n).locator("input.man-num").get_attribute("placeholder") == "NaN"
+        assert row(n).locator("input.man-slider").is_disabled()
     for n, v in (("eps", "0.1"), ("U", "0.2")):
-        e = page.locator(".man-row:has(.man-label:text-is('%s')) input.man-num" % n).first
+        assert set_all.is_disabled()
+        e = row(n).locator("input.man-num")
         e.fill(v)
         e.press("Enter")
     page.wait_for_timeout(300)
     assert math.isnan(demo.channels.get("eps"))           # held, not sent
-    grp.locator("button:text-is('Set all')").click()
+    assert set_all.is_enabled() and row("eps").locator("input.man-slider").is_enabled()
+    set_all.click()
     t0 = time.time()
     while demo.channels.last_value("U") != 0.2 and time.time() - t0 < 10:
         time.sleep(0.1)
     assert demo.channels.get("Vx") == pytest.approx(0.3) and demo.channels.get("Vy") == pytest.approx(0.1)
+    # set: hold is free again and off
+    page.wait_for_function("!document.querySelector(\".man-group[data-composite='gates'] input\").disabled")
+    assert not hold.is_checked() and not grp.locator(".man-unset").is_visible()
     # indented under the header; "Set all to zero"
     assert page.locator(".man-row.in-group:has(.man-label:text-is('eps'))").count() == 1
     grp.locator("button:text-is('Set all to zero')").click()

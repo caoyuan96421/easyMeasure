@@ -155,17 +155,25 @@ Whenever one of them is set:
 
 ## 5. Set n and D by hand
 
-The **Manual** panel now has a group **nD**, with `n` and `D` indented below it. There
-is one catch the first time. Setting `n` alone needs a value for `D` to compute the
-gates, and `D` has never been set. So start with both at zero:
+The **Manual** panel now has a group **nD**, with `n` and `D` indented below it.
+Neither has been set yet, so neither has a value. Setting `n` alone would need a
+value of `D` to compute the gates, and there is none. The panel shows this:
 
-![Set all to zero](../images/t2-manual.png)
+![n and D before their first setting](../images/t2-manual-unset.png)
 
-1. The group header of the composite `nD`, with its variables `n` and `D` indented
-   below it.
-2. **Set all to zero**: `n` and `D` are set to 0 together, and both gates move there.
+1. The group header of the composite `nD`, marked *not set yet*.
+2. `n` and `D` show **NaN**, and their sliders are greyed out.
+3. **hold** is ticked, and stays ticked until both have been set: whatever you type
+   is held (blue), not sent.
+4. **Set all to zero**: `n` and `D` are set to 0 together, and both gates move there.
 
-From then on, you can change either one alone; the other keeps its value.
+Click **Set all to zero**. Alternatively, type a value into `n` and one into `D`, then
+click **Set all**, which lights up once neither shows NaN.
+
+![n and D after Set all to zero](../images/t2-manual.png)
+
+Now the group works like any other channel: hold unticks itself, the sliders work,
+and you can change either variable alone; the other keeps its value.
 
 To set both to other values at once, tick **hold**, type the values, and click
 **Set all**: the changes are collected and sent together.
@@ -244,6 +252,7 @@ Formulas can be piecewise: `piecewise(x < 0, -x, 2*x)`, `a if c else b`, `interp
   of several instruments. You sweep the physics; easyMeasure moves the hardware.
 * Every point is checked against the limits of the variables **and** of every gate.
   With **Out of range: Skip**, points the gates can't reach are left out of the map.
-* Start with **Set all to zero**, then set either variable alone.
+* New variables show **NaN** until they are first set together: start with **Set all
+  to zero**, then set either variable alone.
 
 **Next:** [Tutorial 3: stop at a threshold](stop-at-threshold.md).

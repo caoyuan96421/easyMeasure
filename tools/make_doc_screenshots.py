@@ -567,10 +567,15 @@ def tutorial_nd(be, w):
     mp = w.manual
     pump(5, lambda: "nD" in mp.groups and "n" in mp.rows)
     g = mp.groups["nD"]
+    pump(3, lambda: g["forced"] and mp.rows["n"].unset)
+    pump(0.5)
+    save(w, "t2-manual-unset", [g["label"], mp.rows["n"].editor, g["hold"], g["zero"]],
+         ["1", "2", "3", "4"], crop=w.manual)
     mp.set_group("nD", zero=True)
-    pump(10, lambda: be.channels.last_value("D") == 0.0 and not mp._pending.get("D"))
+    pump(10, lambda: be.channels.last_value("D") == 0.0 and not mp._pending.get("D")
+         and not g["forced"])
     pump(1.0)
-    save(w, "t2-manual", [g["label"], g["zero"]], ["1", "2"], crop=w.manual)
+    save(w, "t2-manual", crop=w.manual)
 
     tab(w, "Sweep")
     d = json.loads((ROOT / "examples" / "graphene_nD.json").read_text())

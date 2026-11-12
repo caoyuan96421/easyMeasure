@@ -81,11 +81,21 @@ Variables of a multivariate composite are listed, indented, under a header with 
 composite's name. The header has three controls:
 
 * **Set all to zero** sets every variable to 0 together, with limits and ramps as
-  usual. This is the easy way to start: a variable can only be set alone once the
-  others have a value.
+  usual. This is the easy way to start.
 * **hold**: while ticked, edits only mark the variables (blue) and are not sent.
 * **Set all** sends the held values together; the hardware channels are computed
   once from all of them.
+
+**Before the first setting.** Until the variables of a composite have been set, they
+have no value, and the panel says so:
+
+* each variable shows **NaN**, and its slider is greyed out;
+* the header says *not set yet*, and **hold** is ticked and cannot be unticked: a
+  variable can only be set alone once the others have a value;
+* **Set all** is greyed out until every variable has a value typed in (each is held,
+  blue); **Set all to zero** works at once.
+
+Once the variables are set, hold unticks itself and everything works as usual.
 
 See [Composite channels](composites.md#multivariate-write) and
 [tutorial 2](../tutorials/rotated-gates.md#5-set-n-and-d-by-hand).

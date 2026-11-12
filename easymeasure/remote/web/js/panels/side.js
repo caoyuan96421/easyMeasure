@@ -236,6 +236,8 @@ class ChannelRow {
     this.lo = typeof meta.min === "number" ? meta.min : null;
     this.hi = typeof meta.max === "number" ? meta.max : null;
     this.typing = false;
+    this.unset = false;                       // no value yet: shows NaN
+    this.backendSet = Number.isFinite(meta.last);
     const unitText = meta.display_unit || meta.unit || "";
     const choices = meta.choices || meta.allowed;
     this.numChoices = !!(choices && choices.length) && meta.dtype !== "str";
@@ -285,10 +287,27 @@ class ChannelRow {
   }
 
   _commit() {
+    if (this.editor.value.trim() === "") return;           // still NaN: nothing typed
     const v = Number(this.editor.value);
     if (!Number.isFinite(v)) return;
+    if (this.unset) this.setUnset(false, v);
     if (this.slider) this.slider.value = this._toSlider(v);
     this.panel.requestSet(this.name, v);
+  }
+
+  /** No value yet: an empty box showing "NaN", the slider greyed out. */
+  setUnset(on, keep = null) {
+    if (on === this.unset || this.editor.type !== "number") return;
+    this.unset = on;
+    this.editor.placeholder = on ? "NaN" : "";
+    this.editor.classList.toggle("nan", on);
+    if (on) this.editor.value = "";
+    else if (keep !== null && this.editor.value === "") this.editor.value = String(keep);
+    if (this.slider) {
+      this.slider.classList.toggle("nan", on);
+      this.slider.dataset.busy = on ? "1" : "";      // applyPermissions keeps it disabled
+      this.slider.disabled = on || !this.panel.app.conn.can("write_channel");
+    }
   }
 
   _toSlider(v) { return Math.round(Math.min(1, Math.max(0, (v - this.lo) / (this.hi - this.lo))) * SLIDER_STEPS); }
@@ -308,7 +327,7 @@ class ChannelRow {
 
   async _expression() {
     if (!this.panel.app.conn.can("write_channel")) return;
-    const cur = Number(this.editor.value);
+    const cur = this.unset ? NaN : Number(this.editor.value);
     const txt = await promptDialog(`Set ${this.name}`, "Expression", this.panel.lastExpr[this.name] || "x",
       `New value as an expression of the present value x = ${fmt(cur, 8)} (e.g. x + 0.01, x/2, 0.1*pi, sqrt(2)/10)`);
     if (txt === null || !txt.trim()) return;
@@ -335,7 +354,10 @@ class ChannelRow {
     const f = Number(v);
     if (!Number.isFinite(f)) return;
     const focused = document.activeElement === this.editor;
-    if ((force && !this.typing) || !focused) this.editor.value = String(Number(f.toPrecision(10)));
+    if ((force && !this.typing) || !focused) {
+      this.setUnset(false);
+      this.editor.value = String(Number(f.toPrecision(10)));
+    }
     if (this.slider) this.slider.value = this._toSlider(f);
   }
 
@@ -526,7 +548,8 @@ export class ManualPanel {
         this.rows.set(m.name, r);
         if (comp && multi.has(comp)) r.el.classList.add("in-group");   // indented under its header
         this.host.append(r.el);
-        if (m.last === null || m.last === undefined) this.readBack(m.name);
+        const inGroup = comp && multi.has(comp);
+        if ((m.last === null || m.last === undefined) && !inGroup) this.readBack(m.name);
       }
       this.app.applyPermissions(this.host);
       this._filter();
@@ -534,7 +557,46 @@ export class ManualPanel {
     }
     for (const m of chans) {
       const r = this.rows.get(m.name);
+      if (r) r.backendSet = Number.isFinite(m.last);
       if (r && !this.pending[m.name]) r.show(m.last);
+    }
+    this._updateGroups();
+  }
+
+  /** Variables never set show NaN (slider greyed out); their group keeps hold on
+   *  until Set all to zero, or Set all once every one has a value. */
+  _updateGroups() {
+    const canSet = this.conn.can("set_many");
+    for (const [comp, g] of this.groups) {
+      const held = this.held[comp] || {};
+      const rows = g.variables.map((n) => [n, this.rows.get(n)]).filter(([, r]) => r);
+      const unset = rows.filter(([, r]) => !r.backendSet).map(([n]) => n);
+      for (const [n, r] of rows) if (!this.pending[n]) r.setUnset(!r.backendSet && !(n in held));
+      if (unset.length) {
+        if (!g.forced) {
+          g.forced = true;
+          g.hold.checked = true;
+          g.hold.disabled = true;
+          g.hold.title = `${unset.join(", ")} not set yet: hold stays on until all variables are set together (Set all, or Set all to zero)`;
+        }
+        const missing = unset.filter((n) => !(n in held));
+        g.set.dataset.busy = missing.length ? "1" : "";
+        g.set.disabled = !canSet || missing.length > 0;
+        g.set.title = missing.length ? `type a value for ${missing.join(", ")} first (it shows NaN)` : `set ${g.variables.join(", ")} together to the values shown`;
+        g.note.hidden = false;
+      } else {
+        if (g.forced) {
+          g.forced = false;
+          g.hold.checked = false;
+          g.hold.disabled = false;
+          g.hold.title = "collect edits of these variables and send them with Set all";
+          delete this.held[comp];
+        }
+        g.set.dataset.busy = "";
+        g.set.disabled = !canSet;
+        g.set.title = `set every variable of ${comp} together to the values shown`;
+        g.note.hidden = true;
+      }
     }
   }
 
@@ -556,10 +618,12 @@ export class ManualPanel {
       on: { change: () => { if (!hold.checked) delete this.held[comp]; } } });
     const set = btn("Set all", () => this.setGroup(comp), { cmd: "set_many", title: `set every variable of ${comp} together to the values shown` });
     const zero = btn("Set all to zero", () => this.setGroup(comp, true), { cmd: "set_many", title: `set every variable of ${comp} to 0 together (limits and ramps apply)` });
+    const note = h("span", { class: "man-unset", text: "not set yet", hidden: true,
+      title: `${variables.join(", ")}: no value yet. Set all to zero, or type every value and Set all` });
     const el = h("div", { class: "man-group" }, h("b", { text: comp }), h("span", { class: "muted", text: `(${variables.join(", ")})` }),
-      h("label", { class: "check" }, hold, " hold"), set, zero);
+      h("label", { class: "check" }, hold, " hold"), set, zero, note);
     el.dataset.composite = comp;
-    this.groups.set(comp, { el, hold, variables });
+    this.groups.set(comp, { el, hold, set, zero, note, variables, forced: false });
     return el;
   }
 
@@ -577,6 +641,7 @@ export class ManualPanel {
       const r = this.rows.get(n);
       if (!r) continue;
       const held = (this.held[comp] || {})[n];
+      if (!zero && held === undefined && r.unset) { this.say(`✘ ${n} has no value yet: type one, or use Set all to zero`); return; }
       values[n] = zero ? 0 : held !== undefined ? held : Number(r.editor.value);
     }
     for (const n of Object.keys(values)) { this.pending[n] = true; this.rows.get(n).setState("busy"); }
@@ -584,12 +649,16 @@ export class ManualPanel {
     let ok = true, err = "";
     try { await this.conn.request("set_many", { values, ramp: this.ramp.checked }, { timeout: 3600000 }); }
     catch (e) { ok = false; err = e.message; }
-    delete this.held[comp];
+    if (ok) delete this.held[comp];           // on failure the held values stay
     for (const [n, v] of Object.entries(values)) {
       this.pending[n] = false;
       const r = this.rows.get(n);
-      if (r) { r.setState(ok ? "ok" : "error", err); if (ok) r.show(v, true); }
+      if (r) {
+        r.setState(ok ? "ok" : (this.held[comp] || {})[n] !== undefined ? "held" : "error", err);
+        if (ok) { r.backendSet = true; r.show(v, true); }
+      }
     }
+    this._updateGroups();
     this.say(ok ? Object.entries(values).map(([n, v]) => `${n} = ${fmt(v, 8)}`).join(", ") + " set" : `✘ ${comp}: ${err}`);
     this.app.model.scheduleRefresh();
   }
@@ -601,6 +670,7 @@ export class ManualPanel {
       (this.held[comp] = this.held[comp] || {})[name] = value;
       this.rows.get(name).setState("held", "held: sent with Set all");
       this.say(`${name} = ${fmt(value)} held; Set all sends ${Object.keys(this.held[comp]).join(", ")}`);
+      this._updateGroups();
       return;
     }
     if (this.pending[name]) { this.queued[name] = value; return; }

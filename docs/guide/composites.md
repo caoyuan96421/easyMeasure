@@ -55,8 +55,9 @@ other variables' last values.
 !!! note "The first setting"
     While a variable has never been set, the targets that need it cannot be
     computed, so setting `eps` alone fails with a message naming the missing `U`.
-    Set the variables together the first time. In the Manual panel, click
-    **Set all to zero**, or tick **hold**, type the values, then click **Set all**.
+    Set the variables together the first time. In the Manual panel the variables
+    show **NaN** until then, with **hold** forced on: click **Set all to zero**, or
+    type a value for each, then click **Set all**.
     In a script or from Python, use `set_many`. A sweep sets them together by
     itself (below).
 
