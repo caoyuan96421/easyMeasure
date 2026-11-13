@@ -15,7 +15,8 @@ dimension has four of them, at the positions shown in
 
 In the sweep editor, tick an action next to *Actions:* and its code box appears at
 its place in the sequence. The **+ action** box offers common snippets, and the
-drop-down next to it (*Skip this point*, …) inserts the flow-control calls:
+drop-down next to it (*Skip this point*, …) inserts the flow-control calls, and
+**Check** checks the code without running it (syntax, and the channels it quotes):
 
 ![A post-record action that ends the sweep](../images/t3-action.png)
 

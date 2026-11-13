@@ -78,7 +78,7 @@ Each channel has a spin box, and a slider when it has a minimum and a maximum.
 ### Composite variables: Set all to zero, hold and Set all
 
 Variables of a multivariate composite are listed, indented, under a header with the
-composite's name. The header has three controls:
+composite's name, by their short names (`n` for `nD.n`). The header has three controls:
 
 * **Set all to zero** sets every variable to 0 together, with limits and ramps as
   usual. This is the easy way to start.

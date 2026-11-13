@@ -244,3 +244,31 @@ dialog.modal h3 { margin: 0 0 10px; font-size: 1.15rem; }
 .stop-ramps { width: 100%; margin: 2px 0; }
 .stop-ramps.active { background: #c0392b; color: #fff; font-weight: bold; border-color: #c0392b; }
 .mon-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* ---- Instruments & channels: two rows, no scroll bar -------------------------------- */
+.tabpage.panel.setup { height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; gap: 0; }
+.setup-top { flex: 1 1 42%; min-height: 120px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.setup-top > .group, .setup-page { min-height: 0; overflow: hidden; }
+.setup-top .table-wrap, .setup-page .table-wrap { flex: 1 1 0; max-height: none; min-height: 3.2em; }
+.setup-hw > .table-wrap:first-of-type { flex-grow: 2; }
+.setup-lower { flex: 1 1 58%; min-height: 120px; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.setup-lower > .tabbody { overflow: hidden; }
+.setup-lower .tabpage { height: 100%; min-height: 0; }
+.setup-page { display: flex; flex-direction: column; gap: 5px; padding: 6px; box-sizing: border-box; }
+.tab.drop { border-color: var(--accent); border-style: dashed; }
+.tab[draggable="true"] { cursor: grab; }
+tr.comp-var-row td:first-child { padding-left: 1.6em; }
+tr.comp-var-row td:nth-child(2), tr.comp-var-row td:nth-child(3) { color: var(--muted); }
+
+/* a Check button's result line */
+.check-info { white-space: pre-line; font-size: .9rem; min-height: 1.2em; color: var(--muted); }
+.check-info.ok { color: var(--ok); } .check-info.warn { color: var(--warn); } .check-info.err { color: var(--err); }
+.status-msg.error { color: var(--err); } .status-msg.warning { color: var(--warn); }
+.status-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+
+@media (max-width: 900px) {
+  .tabpage.panel.setup { height: auto; overflow: visible; }
+  .setup-top { grid-template-columns: 1fr; }
+  .setup-top .table-wrap, .setup-page .table-wrap { flex: 0 0 auto; max-height: 260px; }
+  .setup-lower > .tabbody, .setup-top > .group, .setup-page { overflow: visible; }
+}

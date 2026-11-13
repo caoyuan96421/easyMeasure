@@ -46,6 +46,14 @@ def open_page(browser, gw, user, errors, bypass_csp=True):
     return page
 
 
+def lower_page(page, key):
+    """Show one of the Instruments page's lower tabs; its page."""
+    titles = {"aliases": "Channels (aliased)", "composites": "Channels (composite)",
+              "actions": "User Actions", "parameters": "Parameters"}
+    page.click(".setup-lower .tab:has(> span:text-is('%s'))" % titles[key])
+    return page.locator(".setup-page[data-page='%s']" % key)
+
+
 def canvas_has_image(page, sel):
     return page.evaluate("""(sel) => {
         const c = document.querySelector(sel);
@@ -268,10 +276,10 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
     errors = []
     page = open_page(browser, gw, "ada", errors)
     page.click(".tab:has-text('Instruments')")
+    comp_group = lower_page(page, "composites")
     page.wait_for_selector("td:text-is('Simple mapping')", timeout=10000)
     assert page.locator("td:text-is('Multivariate write')").count() == 1
     assert page.locator("td:text-is('Composite read')").count() == 1
-    comp_group = page.locator("fieldset.group:has(> legend:text-is('Composites'))")
     # a mapping that is not one-to-one: Check says where
     comp_group.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
@@ -304,6 +312,9 @@ def test_web_composite_editor_and_manual_groups(browser, gw, demo):
                            timeout=10000)
     dlg.locator("button.primary").click()
     page.wait_for_selector("td:text-is('gates')", timeout=10000)
+    # the variables are listed under it, by the names they go by
+    assert page.locator("tr.comp-var-row td:text-is('↳ gates.eps')").count() == 1
+    assert page.locator("tr.comp-var-row td:text-is('↳ gates.U')").count() == 1
     c = next(c for c in demo.list_channels()["composites"] if c["name"] == "gates")
     assert [v["name"] for v in c["variables"]] == ["eps", "U"] and c["variables"][0]["min"] == -0.4
     assert "bad" not in [c["name"] for c in demo.list_channels()["composites"]]
@@ -440,14 +451,14 @@ def test_web_user_actions(browser, gw, demo):
     page = open_page(browser, gw, "ada", errors)
     page.click(".tab:has-text('Instruments')")
     assert page.locator(".group", has_text="Manual control").count() == 0
-    grp = page.locator("fieldset.group:has(> legend:text-is('Actions'))")
+    grp = lower_page(page, "actions")
     grp.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
     dlg.locator("input").nth(0).fill("gates to zero")
     dlg.locator("input").nth(1).fill("Vx and Vy to 0 V")
     dlg.locator("textarea").fill("set('Vx', 0\n")                  # syntax error: refused
     dlg.locator("button.primary").click()
-    page.wait_for_selector("dialog.modal .modal-msg:has-text('syntax error')", timeout=5000)
+    page.wait_for_selector("dialog.modal .check-info.err:has-text('line 1')", timeout=5000)
     dlg.locator("textarea").fill("set_many({'Vx': 0, 'Vy': 0}, ramp=False)")
     dlg.locator("input[type=checkbox]").check()
     dlg.locator("button.primary").click()
@@ -458,7 +469,7 @@ def test_web_user_actions(browser, gw, demo):
     demo.define_user_action(name="slow", code="sleep(20)")
     page = open_page(browser, gw, "olga", errors)                    # operator
     page.click(".tab:has-text('Instruments')")
-    grp = page.locator("fieldset.group:has(> legend:text-is('Actions'))")
+    grp = lower_page(page, "actions")
     assert grp.locator("button:text-is('Add…')").is_disabled()       # defining is for admins
     page.dblclick("td:text-is('gates to zero')")
     page.click("dialog.modal button:text-is('Yes')")                 # it asks first
@@ -532,13 +543,14 @@ def test_web_parameters_and_actions(browser, gw, demo):
     errors = []
     page = open_page(browser, gw, "ada", errors)
     page.click(".tab:has-text('Instruments')")
+    grp = lower_page(page, "parameters")
     page.wait_for_selector("td:text-is('Cb/2')", timeout=10000)
-    grp = page.locator("fieldset.group:has(> legend:text-is('Parameters'))")
     grp.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
     dlg.locator("input").nth(0).fill("Rbias")
     dlg.locator("input").nth(1).fill("1e6")
-    dlg.locator("input").nth(3).fill("Ω")
+    assert dlg.locator(".help:text-is('→ a value')").count() == 1
+    dlg.locator("input").nth(2).fill("Ω")
     dlg.locator("button:text-is('OK')").click()
     t0 = time.time()
     while "Rbias" not in demo.channels.parameter_values() and time.time() - t0 < 10:
@@ -578,5 +590,77 @@ def test_web_parameters_and_actions(browser, gw, demo):
     assert vman.locator(".man-param[data-param='Cb'] input").is_disabled()
     assert vman.locator("button.man-action").first.is_disabled()
     v.context.close()
+    assert not errors, errors
+    page.context.close()
+
+
+def test_web_setup_layout_tabs_and_checks(browser, gw, demo):
+    """The Instruments page: two rows that fit without a scroll bar, the lower tabs
+    can be reordered (remembered) but not closed; messages go to the status line;
+    the parameter, action and script editors check first."""
+    demo.define_parameter(name="Cb", value=0.6)
+    errors = []
+    page = open_page(browser, gw, "ada", errors)
+    page.click(".tab:has-text('Instruments')")
+    page.wait_for_selector(".setup-top fieldset.group legend:text-is('Channels (hardware)')", timeout=10000)
+    tabs = page.locator(".setup-lower .tabbar .tab")
+    assert tabs.all_text_contents() == ["Channels (aliased)", "Channels (composite)", "User Actions", "Parameters"]
+    assert page.locator(".setup-lower .tab-x").count() == 0
+    # no scroll bar: the panel is no taller than its tab
+    assert page.evaluate("""() => { const b = document.querySelector('.panel.setup').parentElement;
+        return b.scrollHeight <= b.clientHeight + 1; }""")
+    # the top row and the tabs share the height
+    top = page.locator(".setup-top").bounding_box()
+    low = page.locator(".setup-lower").bounding_box()
+    assert top["height"] > 150 and low["height"] > 150 and low["y"] > top["y"] + top["height"] - 1
+    # drag Parameters to the front; the order is remembered
+    page.locator(".setup-lower .tab:has(> span:text-is('Parameters'))").drag_to(
+        page.locator(".setup-lower .tab:has(> span:text-is('Channels (aliased)'))"))
+    assert tabs.all_text_contents()[0] == "Parameters"
+    page.reload()
+    page.wait_for_selector(".conn.ok", timeout=15000)
+    assert page.locator(".setup-lower .tabbar .tab").all_text_contents()[0] == "Parameters"
+    # the parameter editor: one field, Check, refused on OK
+    grp = lower_page(page, "parameters")
+    grp.locator("button:text-is('Add…')").click()
+    dlg = page.locator("dialog.modal")
+    dlg.locator("input").nth(0).fill("k2")
+    dlg.locator("input").nth(1).fill("Cb * 2")
+    assert dlg.locator(".help:text-is('→ a formula of other parameters')").count() == 1
+    dlg.locator(".param-check").click()
+    page.wait_for_selector("dialog.modal .check-info.ok:has-text('k2 = 1.2')", timeout=10000)
+    dlg.locator("input").nth(1).fill("nope + 1")
+    dlg.locator("button:text-is('OK')").click()
+    page.wait_for_selector("dialog.modal .check-info.err", timeout=10000)
+    assert "k2" not in demo.channels.parameter_values()
+    dlg.locator("input").nth(1).fill("Cb * 3")
+    dlg.locator("button:text-is('OK')").click()
+    page.wait_for_selector("td:text-is('Cb * 3')", timeout=10000)
+    assert demo.channels.parameter_values()["k2"] == pytest.approx(1.8)
+    # the message is in the window's status line
+    page.wait_for_selector(".statusbar .status-msg:has-text('parameter k2 saved')", timeout=5000)
+    # a user action: Check warns about a channel that does not exist
+    grp = lower_page(page, "actions")
+    grp.locator("button:text-is('Add…')").click()
+    dlg = page.locator("dialog.modal")
+    dlg.locator("input").nth(0).fill("bad")
+    dlg.locator("textarea").fill("set('nope', 1)")
+    dlg.locator(".uact-check").click()
+    page.wait_for_selector("dialog.modal .check-info.warn:has-text('nope')", timeout=10000)
+    dlg.locator("textarea").fill("for i in range(3)\n    pass")
+    dlg.locator("button:text-is('OK')").click()
+    page.wait_for_selector("dialog.modal .check-info.err:has-text('line 1')", timeout=10000)
+    dlg.locator("button:text-is('Cancel')").click()
+    assert not demo.list_user_actions()
+    # the script editor checks before queueing
+    page.click(".tab:has-text('Queue')")
+    page.fill(".panel.queue textarea.code", "for i in range(3)\n    pass")
+    page.click("button:text-is('Add script to queue')")
+    page.wait_for_selector(".panel.queue .check-info.err", timeout=10000)
+    assert not demo.queue_state()["queued"]
+    page.click(".script-check")
+    page.fill(".panel.queue textarea.code", "x = get('Vg')")
+    page.click(".script-check")
+    page.wait_for_selector(".panel.queue .check-info.ok:has-text('valid Python')", timeout=10000)
     assert not errors, errors
     page.context.close()

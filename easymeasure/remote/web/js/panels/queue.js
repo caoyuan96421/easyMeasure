@@ -1,6 +1,6 @@
 // Run queue: state, queued items, history (rerun, open data), scripts.
 
-import { h, Table, btn, bar, group, clock, confirmDialog, qcan } from "../ui.js";
+import { h, Table, btn, bar, group, clock, confirmDialog, qcan, codeChecker } from "../ui.js";
 
 const SCRIPT_HELP = `# Script API: get(name), set(name, value), action('inst.act'), sleep(s),
 # log(msg), run_sweep(definition), instrument(name) ...
@@ -35,6 +35,8 @@ export class QueuePanel {
     this.history.keyOf = (r) => r.id;
     this.scriptName = h("input", { value: "script", class: "w-chan" });
     this.script = h("textarea", { class: "code", rows: 8, spellcheck: false });
+    this.scriptCheck = codeChecker(this.script, "script");
+    this.scriptCheck.button.classList.add("script-check");
     this.script.value = SCRIPT_HELP + "set('Vg', 0.1)\nsleep(1)\nlog('I = %g' % get('I'))\n";
     this.el = h("div", { class: "panel queue" },
       bar(this.state,
@@ -55,8 +57,9 @@ export class QueuePanel {
         this.copyHist,
         btn("Open data", () => this._openData(this.history.current()), { cmd: "load_run" }))),
       group("Script (admin)", this.script, bar(h("span", { text: "Name" }), this.scriptName,
-        btn("Add script to queue", () => this._script(false), { cmd: "queue_add run_script_now" }),
-        btn("Run now (front of queue)", () => this._script(true), { cmd: "run_script_now" }))),
+        btn("Add script to queue", () => this._script(false), { cmd: "queue_add run_script_now", title: "check the script, then queue it" }),
+        btn("Run now (front of queue)", () => this._script(true), { cmd: "run_script_now", title: "check the script, then run it next" }),
+        this.scriptCheck.button), this.scriptCheck.info),
       this.msg);
     app.model.on("queue", (q) => this._queue(q));
   }
@@ -129,6 +132,7 @@ export class QueuePanel {
 
   async _script(now) {
     const code = this.script.value, name = this.scriptName.value.trim() || "script";
+    try { await this.scriptCheck.run(); } catch (e) { this.say(`script not queued: ${e.message}`, true); return; }
     try {
       const id = now ? await this.conn.request("run_script_now", { code, name })
         : await this.conn.request("queue_add", { item: { kind: "script", code, name } });

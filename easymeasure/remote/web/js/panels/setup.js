@@ -1,7 +1,10 @@
-// Instruments & channels: instruments, raw channels and actions, aliases,
-// composites, manual get/set, setup save/load (port of panels/setup_panel.py).
+// Instruments & channels (port of panels/setup_panel.py).  First row: the
+// instruments and their hardware channels and actions; below, tabs the user may
+// reorder (not close): aliased channels, composite channels, user actions and
+// parameters.  Messages go to the window's status line (and the Log).
 
-import { h, Table, btn, bar, group, fmt, formDialog, confirmDialog, download, pickFile, message, modal } from "../ui.js";
+import { h, Table, Tabs, btn, bar, group, fmt, formDialog, confirmDialog, download, pickFile, message, modal, checker,
+  splitter } from "../ui.js";
 import { toJSONable } from "../codec.js";
 
 const STATE_CLS = { connected: "ok", error: "err", hung: "hung", disconnected: "muted" };
@@ -38,8 +41,29 @@ function compSummary(c) {
   if (c.type === "read") return c.expression || "";
   return `${c.target} = ${c.forward}  (x = ${c.backward})`;
 }
+/** The channels a composite defines: a multivariate one's variables are named
+ *  after it (MEMS.Vd), the others are channels of their own name. */
 function compChannels(c) {
-  return (c.type || "multi") === "multi" ? (c.variables || []).map((v) => v.name) : [c.name];
+  return (c.type || "multi") === "multi" ? (c.variables || []).map((v) => `${c.name}.${typeof v === "string" ? v : v.name}`) : [c.name];
+}
+const num6 = (x) => (x === null || x === undefined || x === "" ? "" : fmt(Number(x), 6));
+function varSummary(v) {
+  const rng = v.min !== null && v.min !== undefined || v.max !== null && v.max !== undefined
+    ? `${num6(v.min) || "−∞"} … ${num6(v.max) || "∞"}` : "";
+  return [rng, v.unit || "", v.ramp_rate ? `ramp ${num6(v.ramp_rate)}/s` : ""].filter(Boolean).join(" ");
+}
+
+/** The tabs below the instruments, by key: [title].  Their order is remembered. */
+const LOWER_TABS = [["aliases", "Channels (aliased)"], ["composites", "Channels (composite)"],
+  ["actions", "User Actions"], ["parameters", "Parameters"]];
+const TAB_KEY = "em.setup.lower_tabs";
+function savedTabOrder() {
+  const keys = LOWER_TABS.map((t) => t[0]);
+  let order = [];
+  try { order = JSON.parse(localStorage.getItem(TAB_KEY) || "[]"); } catch (e) { order = []; }
+  if (!Array.isArray(order)) order = [];
+  order = order.filter((k) => keys.includes(k));
+  return order.concat(keys.filter((k) => !order.includes(k)));
 }
 function compLast(v) {
   if (v && typeof v === "object" && !Array.isArray(v) && !v.shape) {
@@ -122,7 +146,7 @@ export function compositeDialog(model, conn, c, onSave = null) {
   const show = () => { for (const [k, p] of Object.entries(pages)) p.hidden = k !== type.value; };
   type.addEventListener("change", show);
   show();
-  const info = h("div", { class: "help comp-info", text: FORMULA_HELP });
+  const help = h("div", { class: "help", text: FORMULA_HELP });
 
   const value = () => {
     const d = { type: type.value, name: name.value.trim(), description: desc.value };
@@ -147,28 +171,21 @@ export function compositeDialog(model, conn, c, onSave = null) {
     }
     return d;
   };
-  const check = async () => {
-    let d;
-    try { d = value(); } catch (e) { info.className = "help comp-info err"; info.textContent = "✘ " + e.message; return; }
-    info.className = "help comp-info";
-    info.textContent = "checking …";
-    try {
-      const r = await conn.request("check_composite", { ...d, replace: !!c.name && c.name === d.name });
-      const w = r.warnings || [];
-      info.className = "help comp-info " + (w.length ? "warn" : "ok");
-      info.textContent = `✔ defines ${(r.channels || []).join(", ")}` + w.map((x) => "\n⚠ " + x).join("");
-    } catch (e) { info.className = "help comp-info err"; info.textContent = "✘ " + e.message; }
-  };
-  const checkBtn = h("button", { text: "Check", class: "comp-check", title: "check with the backend (references, dependency loops, the inverse of a mapping) without saving",
-    on: { click: check } });
-  if (!conn.can("check_composite")) checkBtn.disabled = true;
+  const chk = checker("check_composite", () => {
+    const d = value();
+    if (!d.name) throw new Error("a name is needed");
+    return { ...d, replace: !!c.name && c.name === d.name };
+  }, (r) => `✔ defines ${(r.channels || []).join(", ")}`,
+  { conn, title: "check with the backend (references, dependency loops, the inverse of a mapping) without saving" });
+  chk.button.classList.add("comp-check");
+  chk.info.classList.add("comp-info");
   const body = h("div", { class: "comp-dialog" },
     h("div", { class: "form" }, h("label", { text: "Name" }), name, h("label", { text: "Type" }), type),
     multi, read, map,
     h("div", { class: "form" }, h("label", { text: "Description" }), desc),
-    h("div", { class: "bar" }, checkBtn), info);
+    help, h("div", { class: "bar" }, chk.button), chk.info);
   return modal(c.name ? `Composite ${c.name}` : "Add composite channel", body, [["Cancel", null], ["OK", true]],
-    { wide: true, onOk: async () => { const d = value(); if (onSave) await onSave(d); return d; } });
+    { wide: true, onOk: async () => { await chk.run(); const d = value(); if (onSave) await onSave(d); return d; } });
 }
 
 export class SetupPanel {
@@ -177,9 +194,6 @@ export class SetupPanel {
     this.conn = app.conn;
     this.model = app.model;
     this.drivers = {};
-    this.msg = h("span", { class: "msg" });
-    const say = (t, err = false) => { this.msg.textContent = (err ? "✘ " : "") + t; this.msg.className = "msg " + (err ? "err" : ""); };
-    this.say = say;
 
     this.inst = new Table([
       { key: "name", label: "Name" }, { key: "driver", label: "Driver" }, { key: "address", label: "Address" },
@@ -208,11 +222,12 @@ export class SetupPanel {
       { key: "ramp_step", label: "Step" }, { key: "scale", label: "Scale" }, { key: "offset", label: "Offset" },
       { key: "unit", label: "Unit" }, { key: "last", label: "Last set" },
     ], { onActivate: () => this._editAlias(this.alias.current()), empty: "no aliases" });
+    // a row per composite; a multivariate one is followed by its variables (MEMS.Vd)
     this.comp = new Table([
-      { key: "name", label: "Composite" }, { key: "typeLabel", label: "Type" },
-      { key: "summary", label: "Definition" }, { key: "chans", label: "Channels" },
-      { key: "lastText", label: "Last set" },
-    ], { onActivate: () => this._editComp(this.comp.current()), empty: "no composites" });
+      { key: "name", label: "Name" }, { key: "typeLabel", label: "Type" },
+      { key: "summary", label: "Definition" }, { key: "lastText", label: "Last set" },
+    ], { onActivate: () => this._editComp(this._selComp()), empty: "no composite channels" });
+    this.comp.keyOf = (r) => r.key;
 
     // parameters: constants of the setup (values, or formulas of each other)
     this.param = new Table([
@@ -226,45 +241,67 @@ export class SetupPanel {
       { key: "lastText", label: "Last run" },
     ], { onActivate: () => this._runUact(this.uact.current()), empty: "no actions - Add… one: a few lines of get / set / sleep" });
 
-    this.el = h("div", { class: "panel setup" },
-      bar(btn("Save setup…", () => this._saveSetup(), { cmd: "get_setup", title: "download the setup (instruments, aliases, composites, monitor) as JSON" }),
-        btn("Load setup…", () => this._loadSetup(), { cmd: "load_setup", title: "load a setup JSON file from this computer into the backend" }), this.msg),
-      h("div", { class: "row2" },
-        group("Instruments", this.inst.el, bar(
-          btn("Add…", () => this._addInst(), { cmd: "add_instrument" }),
-          btn("Edit…", () => this._editInst(), { cmd: "update_instrument" }),
-          btn("Reconnect", () => this._instCmd("reconnect_instrument"), { cmd: "reconnect_instrument" }),
-          btn("Disconnect", () => this._instCmd("disconnect_instrument"), { cmd: "disconnect_instrument" }),
-          btn("Remove", () => this._instCmd("remove_instrument", true), { cmd: "remove_instrument" }))),
-        group("Instrument channels & actions", this.raw.el, bar(
-          btn("Make alias…", () => this._aliasFromRaw(), { cmd: "define_alias" }),
-          btn("Get", () => this._rawGet(), { cmd: "read_channel" }),
-          btn("Set…", () => this._rawSet(), { cmd: "write_channel", title: "set a configuration channel" })),
-          this.actions.el, bar(btn("▶ Run action", () => this._runAction(), { cmd: "run_action" })))),
-      h("div", { class: "row2" },
-        group("Aliases", this.alias.el, bar(
-          btn("Add…", () => this._editAlias(null), { cmd: "define_alias" }),
-          btn("Edit…", () => this._editAlias(this.alias.current()), { cmd: "define_alias" }),
-          btn("Remove", () => this._remove("remove_alias", this.alias.current()), { cmd: "remove_alias" }))),
-        group("Composites", this.comp.el, bar(
-          btn("Add…", () => this._editComp(null), { cmd: "define_composite" }),
-          btn("Edit…", () => this._editComp(this.comp.current()), { cmd: "define_composite" }),
-          btn("Remove", () => this._remove("remove_composite", this.comp.current()), { cmd: "remove_composite" })))),
-      h("div", { class: "row2" },
-      group("Parameters", this.param.el, bar(
-        btn("Add…", () => this._editParam(null), { cmd: "define_parameter" }),
-        btn("Edit…", () => this._editParam(this.param.current()), { cmd: "define_parameter" }),
-        btn("Remove", () => this._remove("remove_parameter", this.param.current()), { cmd: "remove_parameter" }))),
-      group("Actions", this.uact.el, bar(
+    const page = (key, ...children) => h("div", { class: "setup-page", dataset: { page: key } }, ...children);
+    const pages = {
+      aliases: page("aliases", this.alias.el, bar(
+        btn("Add…", () => this._editAlias(null), { cmd: "define_alias" }),
+        btn("Edit…", () => this._editAlias(this.alias.current()), { cmd: "define_alias" }),
+        btn("Remove", () => this._remove("remove_alias", this.alias.current()), { cmd: "remove_alias" }))),
+      composites: page("composites", this.comp.el, bar(
+        btn("Add…", () => this._editComp(null), { cmd: "define_composite" }),
+        btn("Edit…", () => this._editComp(this._selComp()), { cmd: "define_composite" }),
+        btn("Remove", () => this._remove("remove_composite", this._selComp()), { cmd: "remove_composite" }))),
+      actions: page("actions", this.uact.el, bar(
         btn("▶ Run", () => this._runUact(this.uact.current()), { cmd: "run_user_action", title: "run the selected action now (double click works too)" }),
         this.uactAbort = btn("■ Abort", () => this._abortUact(), { cmd: "abort_user_action", title: "stop the running action(s) at the next line, sleep or ramp step" }),
         btn("Add…", () => this._editUact(null), { cmd: "define_user_action" }),
         btn("Edit…", () => this._editUact(this.uact.current()), { cmd: "define_user_action" }),
         btn("Remove", () => this._removeUact(), { cmd: "remove_user_action" }),
         btn("↑", () => this._moveUact(-1), { cmd: "move_user_action", title: "move up" }),
-        btn("↓", () => this._moveUact(1), { cmd: "move_user_action", title: "move down" })))));
+        btn("↓", () => this._moveUact(1), { cmd: "move_user_action", title: "move down" }))),
+      parameters: page("parameters", this.param.el, bar(
+        btn("Add…", () => this._editParam(null), { cmd: "define_parameter" }),
+        btn("Edit…", () => this._editParam(this.param.current()), { cmd: "define_parameter" }),
+        btn("Remove", () => this._remove("remove_parameter", this.param.current()), { cmd: "remove_parameter" }))),
+    };
+    const titles = Object.fromEntries(LOWER_TABS);
+    const keyOf = Object.fromEntries(LOWER_TABS.map(([k, t]) => [t, k]));
+    this.lower = new Tabs({ movable: true, onMove: (names) => {
+      try { localStorage.setItem(TAB_KEY, JSON.stringify(names.map((n) => keyOf[n]))); } catch (e) { /* storage blocked */ }
+    } });
+    this.lowerTabs = {};
+    for (const k of savedTabOrder()) this.lowerTabs[k] = this.lower.add(titles[k], pages[k]);
+    this.lower.el.classList.add("setup-lower");
+
+    this.top = h("div", { class: "setup-top" },
+      group("Instruments", this.inst.el, bar(
+        btn("Add…", () => this._addInst(), { cmd: "add_instrument" }),
+        btn("Edit…", () => this._editInst(), { cmd: "update_instrument" }),
+        btn("Reconnect", () => this._instCmd("reconnect_instrument"), { cmd: "reconnect_instrument" }),
+        btn("Disconnect", () => this._instCmd("disconnect_instrument"), { cmd: "disconnect_instrument" }),
+        btn("Remove", () => this._instCmd("remove_instrument", true), { cmd: "remove_instrument" }))),
+      group("Channels (hardware)", this.raw.el, bar(
+        btn("Make alias…", () => this._aliasFromRaw(), { cmd: "define_alias" }),
+        btn("Get", () => this._rawGet(), { cmd: "read_channel" }),
+        btn("Set…", () => this._rawSet(), { cmd: "write_channel", title: "set a configuration channel" })),
+        this.actions.el, bar(btn("▶ Run action", () => this._runAction(), { cmd: "run_action" }))));
+    this.top.firstChild.classList.add("setup-inst");
+    this.top.lastChild.classList.add("setup-hw");
+    this.el = h("div", { class: "panel setup" }, this.top, splitter(this.top, { vertical: false, key: "setup", min: 120 }), this.lower.el);
     this.model.on("state", (st) => this._state(st));
     this.conn.on("connected", () => this._loadDrivers());
+  }
+
+  /** A message for the window's status line (and the Log). */
+  say(t, err = false) { message(err ? "error" : "info", t); }
+
+  /** Show one of the lower tabs: aliases, composites, actions or parameters. */
+  showPage(key) { if (this.lowerTabs[key]) this.lower.show(this.lowerTabs[key]); }
+
+  /** The composite of the selected row (a variable's row selects its composite). */
+  _selComp() {
+    const r = this.comp.current();
+    return r ? this.model.composites().find((c) => c.name === r.owner) || null : null;
   }
 
   async _loadDrivers() {
@@ -277,9 +314,22 @@ export class SetupPanel {
     this._showRaw();
     this.alias.set(this.model.aliases().map((a) => ({ ...a, last: a.last && a.last.shape ? `array(${a.last.shape.join("×")})` : a.last })),
       { rowClass: (r) => (r.error ? "err" : ""), rowTitle: (r) => r.error || r.description || null });
-    this.comp.set(this.model.composites().map((c) => ({ ...c, typeLabel: COMP_TYPES[c.type] || c.type,
-      summary: compSummary(c), chans: compChannels(c).join(", "), lastText: compLast(c.last) })),
-    { rowTitle: (r) => r.description || null });
+    const rows = [];
+    for (const c of this.model.composites()) {
+      const multi = (c.type || "multi") === "multi";
+      rows.push({ key: c.name, owner: c.name, name: c.name, typeLabel: COMP_TYPES[c.type] || c.type, summary: compSummary(c),
+        lastText: multi || c.last === null || c.last === undefined ? "" : compLast(c.last), description: c.description });
+      if (!multi) continue;
+      const lasts = c.last && typeof c.last === "object" && !Array.isArray(c.last) && !c.last.shape ? c.last : {};
+      for (let v of c.variables || []) {
+        if (typeof v === "string") v = { name: v };
+        const full = `${c.name}.${v.name}`;
+        const lv = lasts[full] !== undefined ? lasts[full] : lasts[v.name];
+        rows.push({ key: full, owner: c.name, name: "↳ " + full, variable: true, typeLabel: "variable",
+          summary: varSummary(v), lastText: lv === null || lv === undefined ? "—" : lastText(lv), description: v.description });
+      }
+    }
+    this.comp.set(rows, { rowClass: (r) => (r.variable ? "comp-var-row" : ""), rowTitle: (r) => r.description || null });
     this.param.set(this.model.parameters().map((p) => ({ ...p, formula: p.formula || "",
       currentText: p.current === null || p.current === undefined ? "" : fmt(p.current, 6),
       usedBy: (p.used_by || []).join(", ") })), { rowTitle: (r) => r.description || null });
@@ -420,23 +470,33 @@ export class SetupPanel {
     const existing = !!p;
     p = p || {};
     const others = this.model.parameters().map((x) => x.name).filter((n) => n !== p.name);
+    const isNumber = (t) => /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t.trim());
+    const kindText = (t) => (!t.trim() ? "" : isNumber(t) ? "→ a value" : "→ a formula of other parameters");
+    const definition = p.formula ? p.formula : optStr(p.value);
+    const dict = (x) => {
+      const d = { name: x.name.trim(), definition: x.definition.trim(), unit: x.unit.trim(), description: x.description.trim() };
+      if (!d.name) throw new Error("a name is needed");
+      if (!d.definition) throw new Error("type a number or a formula");
+      return d;
+    };
+    let chk = null;
     const v = await formDialog(existing ? `Parameter ${p.name}` : "Add parameter", [
       { key: "name", label: "Name", value: p.name || "" },
-      { key: "value", label: "Value", value: p.formula ? "" : optStr(p.value), placeholder: "a number, e.g. 0.6 or 1e6" },
-      { key: "formula", label: "or a formula", value: p.formula || "",
-        placeholder: others.length ? "of other parameters: " + others.slice(0, 6).join(", ") : "of other parameters" },
+      { key: "definition", label: "Value or formula", value: definition,
+        placeholder: "a number (0.6, 1e6) or a formula" + (others.length ? " of " + others.slice(0, 5).join(", ") : " of other parameters"),
+        onInput: (el, inp) => { inp.kind.textContent = kindText(el.value); } },
+      { key: "kind", label: "", type: "info", value: kindText(definition) },
       { key: "unit", label: "Unit", value: p.unit || "" },
       { key: "description", label: "Description", value: p.description || "" },
-      { key: "help", label: "", type: "info", value: "A constant of the setup. Composite channels and actions use it by its name. A formula may use other parameters only (no channels)." },
-    ], { validate: (x) => {
-      const name = x.name.trim(), formula = x.formula.trim(), value = x.value.trim();
-      if (!name) throw new Error("a name is needed");
-      if (!!formula === !!value) throw new Error("give a value or a formula");
-      if (value && !Number.isFinite(Number(value))) throw new Error("the value must be a number");
-      const d = { name, unit: x.unit.trim(), description: x.description.trim() };
-      if (formula) d.formula = formula; else d.value = Number(value);
-      return d;
-    } });
+      { key: "help", label: "", type: "info", value: "A constant of the setup. Composite channels and actions use it by its name. " +
+        "Type a number for a value; anything else is a formula of other parameters (no channels)." },
+    ], { extra: (inputs, read) => {
+      chk = checker("check_parameter", () => ({ ...dict(read()), replace: existing && read().name.trim() === p.name }),
+        (r) => `✔ ${r.name} = ${fmt(r.current, 6)}` + (r.formula ? `  (= ${r.formula})` : ""),
+        { conn: this.conn, title: "check the value or formula with the backend (names, circles, what uses it) without saving" });
+      chk.button.classList.add("param-check");
+      return h("div", {}, h("div", { class: "bar" }, chk.button), chk.info);
+    }, validate: async (x) => { const d = dict(x); await chk.run(); return d; } });
     if (!v) return;
     try {
       if (existing && p.name !== v.name) await this.conn.request("remove_parameter", { name: p.name });
@@ -521,6 +581,14 @@ export class SetupPanel {
     const existing = !!a;
     a = a || {};
     const chans = this.model.readableChannels().concat(this.model.configChannels(true));
+    const names = this.model.userActions().map((x) => x.name);
+    const dict = (x) => {
+      const d = { name: x.name.trim(), code: x.code, description: x.description.trim(), confirm: x.confirm };
+      if (!d.name || !d.code.trim()) throw new Error("an action needs a name and code");
+      if (d.name !== a.name && names.includes(d.name)) throw new Error(`there is already an action ${d.name}`);
+      return d;
+    };
+    let chk = null;
     const v = await formDialog(existing ? `Action ${a.name}` : "Add action", [
       { key: "name", label: "Name", value: a.name || "" },
       { key: "description", label: "Description", value: a.description || "" },
@@ -528,9 +596,14 @@ export class SetupPanel {
       { key: "code", label: "Code", type: "textarea", rows: 10, value: a.code || "",
         placeholder: "e.g.\nset_many({'VL': 0, 'VR': 0})\nset('B', 0)  # ramps at the alias rate\nprint('gates and field at 0')",
         help: ACTION_HELP + "\nChannels: " + chans.join(", ") },
-    ], { wide: true, validate: async (v) => {
-      const d = { name: v.name.trim(), code: v.code, description: v.description.trim(), confirm: v.confirm };
-      if (!d.name || !d.code.trim()) throw new Error("an action needs a name and code");
+    ], { wide: true, extra: (inputs, read) => {
+      chk = checker("check_user_action", () => { const d = dict(read()); return { ...d, replace: existing && a.name === d.name }; },
+        () => "✔ valid", { conn: this.conn, title: "check the name and the code (syntax, the channels it quotes) without saving" });
+      chk.button.classList.add("uact-check");
+      return h("div", {}, h("div", { class: "bar" }, chk.button), chk.info);
+    }, validate: async (x) => {
+      const d = dict(x);
+      await chk.run();
       const args = existing ? { ...d, replace: a.name === d.name, rename_from: a.name } : d;
       await this.conn.request("define_user_action", args);     // refused: the dialog stays open
       return d;
@@ -553,8 +626,8 @@ export class SetupPanel {
     await this._do("move_user_action", { name: a.name, position: pos }, "").catch(() => {});
   }
 
-  // ---- setup files -----------------------------------------------------------------
-  async _saveSetup() {
+  // ---- setup files (the Setup menu) --------------------------------------------------
+  async saveSetup() {
     try {
       const s = await this.conn.request("get_setup");
       download("setup.json", JSON.stringify(toJSONable(s), null, 2));
@@ -562,14 +635,14 @@ export class SetupPanel {
     } catch (e) { this.say(e.message, true); }
   }
 
-  async _loadSetup() {
+  async loadSetup() {
     const f = await pickFile();
     if (!f) return;
     let setup;
     try { setup = JSON.parse(f.text); } catch (e) { this.say(`${f.name}: invalid JSON`, true); return; }
     if (!(await confirmDialog("Load setup", `Replace the backend's instruments, aliases and composites with ${f.name}?`))) return;
     const problems = await this._do("load_setup", { setup, replace: true }, `setup ${f.name} loaded`).catch(() => null);
-    if (problems && problems.length) { this.say(`loaded with problems: ${problems.join("; ")}`, true); message("warning", problems.join("; ")); }
+    if (problems && problems.length) message("warning", `setup loaded with problems: ${problems.join("; ")}`);
   }
 }
 

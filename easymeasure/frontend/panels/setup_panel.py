@@ -1139,6 +1139,12 @@ class SetupPanel(QWidget):
                 self.comp.setItem(r, c, it)
             if owner == sel and not is_var:
                 self.comp.selectRow(r)
+        # fit the names and types (a variable's full name must be readable); the
+        # definition gets what is left, at most half the width
+        for c in (0, 1, 2):
+            self.comp.resizeColumnToContents(c)
+        self.comp.setColumnWidth(2, min(self.comp.columnWidth(2),
+                                        max(160, self.comp.viewport().width() // 2)))
 
     def _sel_comp(self):
         """The composite of the selected row (also when a variable row is selected)."""

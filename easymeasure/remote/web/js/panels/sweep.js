@@ -1,7 +1,7 @@
 // Sweep editor: create / modify / save / load N-dimensional sweeps
 // (port of panels/sweep_editor.py).  read_only=true for the running-sweep view.
 
-import { h, btn, bar, group, fmt, download, pickFile } from "../ui.js";
+import { h, btn, bar, group, fmt, download, pickFile, codeChecker } from "../ui.js";
 import { toJSONable } from "../codec.js";
 
 const SPECIAL_RECORD = ["@time", "@elapsed"];
@@ -129,8 +129,9 @@ class HookEditor {
       this.code.value = t + (flow ? flow[1] : `action('${ref}')`) + "\n";
     }, { title: "append the selected action to this code" });
     this.legend = h("legend", { text: title });
+    this.check = codeChecker(this.code, "point action " + name);
     this.el = h("fieldset", { class: "group hook", title: "Python code run " + when, hidden: true },
-      this.legend, this.code, bar(this.actionBox, this.addAction));
+      this.legend, this.code, bar(this.actionBox, this.addAction, this.check.button), this.check.info);
     this.setActions([]);
   }
   setActions(actions) {
@@ -277,6 +278,7 @@ class PhaseEditor {
     this.canHook = canHook;
     this.hookNote = h("div", { class: "help" });
     this.addConstBtn = btn("+ constant", () => this.addConst());
+    this.check = codeChecker(this.hook, phase + "-sweep hook");
     this.el = h("div", { class: "phase" },
       h("div", { class: "help", text: phase === "pre" ? "Order: hook → constants → record" : "Order: record → constants → hook (always runs, also after errors/abort)" }),
       h("div", { class: "row2" },
@@ -284,7 +286,8 @@ class PhaseEditor {
           h("thead", {}, h("tr", {}, ["Channel", "Value (number or text)", ""].map((t) => h("th", { text: t })))), this.tbody)),
           bar(this.addConstBtn)),
         group("Record once", this.record.el)),
-      group("Hook code", this.hook, bar(h("span", { text: "Action" }), this.actionBox, this.addAction), this.hookNote));
+      group("Hook code", this.hook, bar(h("span", { text: "Action" }), this.actionBox, this.addAction, this.check.button),
+        this.check.info, this.hookNote));
   }
   setChannels(writable, readable, choices = {}) {
     this.channels = writable;

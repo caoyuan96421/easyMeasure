@@ -181,6 +181,13 @@ def _patched_exec(self):
             save(self, name, m)
     if hasattr(self, "_ok"):
         self._ok()
+        # the OK of a dialog with a Check asks the backend first and accepts later
+        chk = getattr(self, "checker", None)
+        pump(10, lambda: self.result() == QDialog.Accepted or (chk is not None and not chk.busy))
+        pump(0.2)
+        if self.result() != QDialog.Accepted:
+            raise RuntimeError("%s was not accepted: %s" % (
+                type(self).__name__, getattr(getattr(self, "info", None), "text", lambda: "")()))
     else:
         self.accept()
     self.hide()
@@ -364,6 +371,8 @@ def quick_start(be, w):
     sp._alias_from_raw()
     pump(3, lambda: any(a["name"] == "Rxx" for a in w.model.aliases()))
     pump(1.0)
+    sp.show_page("aliases")
+    pump(0.3)
     save(w, "qs-aliases", [sp.alias], crop=w.left_tabs)
 
     # try it by hand
@@ -557,29 +566,26 @@ def tutorial_nd(be, w):
     for i, (pn, pv, pu, pd) in enumerate(params):
         def fill_p(d, pn=pn, pv=pv, pu=pu, pd=pd):
             d.name.setText(pn)
-            d.kind.setCurrentIndex(0)
-            d.value.setText(repr(pv))
+            d.definition.setText(repr(pv))
             d.unit.setText(pu)
             d.description.setText(pd)
+            d.checker.check()
+            pump(3, lambda: "✔" in d.info.text())
         expect(sp_mod.ParameterDialog, fill_p, "t2-parameter" if i == 0 else None,
-               lambda d: ([d.name, d.kind, d.value, d.unit], ["1", "2", "3", "4"]))
+               lambda d: ([d.name, d.definition, d.unit, d.check_btn], ["1", "2", "3", "4"]))
         sp._edit_param(None)
         pump(3, lambda pn=pn: any(p["name"] == pn for p in w.model.parameters()))
     pump(1.0)
-    # give the Parameters box room: a wide left side, a tall bottom row
+    # the Parameters tab, with room: a wide left side
+    sp.show_page("parameters")
     old = w.splitter.sizes()
     log = w.findChild(QDockWidget, "log_dock")
     log.hide()
     w.splitter.setSizes([1150, 450])
-    pbox = sp.param.parentWidget()
-    last = pbox.parentWidget()                     # the splitter Parameters | Actions
-    vsplit = last.parentWidget()
-    vsplit.setSizes([330, 250, 260])
-    last.setSizes([800, 300])
     for c in range(sp.param.columnCount() - 1):
         sp.param.resizeColumnToContents(c)
     pump(0.8)
-    save(w, "t2-parameters", crop=pbox)
+    save(w, "t2-parameters", crop=sp.lower)
     log.show()
     w.splitter.setSizes(old)
     pump(0.3)
@@ -605,19 +611,21 @@ def tutorial_nd(be, w):
     sp._edit_comp(None)
     pump(3, lambda: any(c["name"] == "nD" for c in w.model.composites()))
     pump(1.0)
+    sp.show_page("composites")
+    pump(0.5)
     save(w, "t2-composites", [sp.comp], crop=w.left_tabs)
 
     mp = w.manual
-    pump(5, lambda: "nD" in mp.groups and "n" in mp.rows)
+    pump(5, lambda: "nD" in mp.groups and "nD.n" in mp.rows)
     g = mp.groups["nD"]
-    pump(3, lambda: g["forced"] and mp.rows["n"].unset)
+    pump(3, lambda: g["forced"] and mp.rows["nD.n"].unset)
     old_w = w.manual_dock.width()
     w.resizeDocks([w.manual_dock], [560], Qt.Horizontal)     # room for the group's controls
     pump(0.8)
-    save(w, "t2-manual-unset", [g["label"], mp.rows["n"].editor, g["hold"], g["zero"]],
+    save(w, "t2-manual-unset", [g["label"], mp.rows["nD.n"].editor, g["hold"], g["zero"]],
          ["1", "2", "3", "4"], crop=w.manual)
     mp.set_group("nD", zero=True)
-    pump(10, lambda: be.channels.last_value("D") == 0.0 and not mp._pending.get("D")
+    pump(10, lambda: be.channels.last_value("nD.D") == 0.0 and not mp._pending.get("nD.D")
          and not g["forced"])
     pump(1.0)
     save(w, "t2-manual", crop=w.manual)
@@ -698,6 +706,7 @@ def tutorial_threshold(be, w):
     sp._edit_uact(None)
     pump(3, lambda: bool(w.model.user_actions()))
     pump(1.0)
+    sp.show_page("actions")
     sp.uact.selectRow(0)
     sp._run_uact()
     pump(8, lambda: "done" in sp.msg.text())
@@ -727,8 +736,8 @@ def scripting(be, w):
     old_sizes = split.sizes()
     split.setSizes([120, 160, 700])            # room for the script
     pump(0.5)
-    save(w, "s-script-editor", [qp.script_open, qp.script, qp.script_name, qp.script_add],
-         ["1", "2", "3", "4"], crop=w.left_tabs)
+    save(w, "s-script-editor", [qp.script_open, qp.script, qp.script_name, qp.script_add,
+                                qp.script_check], ["1", "2", "3", "4", "5"], crop=w.left_tabs)
     split.setSizes(old_sizes)
     be.set_many(values={"Vbg": 0.0, "Vtg": 0.0})
     qp._add_script(False)
@@ -753,7 +762,7 @@ def scripting(be, w):
     pump(0.8)
     save(w, "s-mapping", [dim0.sweep_box], ["1"], crop=w.left_tabs)
     tab(w, "Sweep")
-    be.set_many(values={"n": 0.0, "D": 0.0})
+    be.set_many(values={"nD.n": 0.0, "nD.D": 0.0})
     w.editor._queue(True)
     wait_idle(be)
     pump(2.0)

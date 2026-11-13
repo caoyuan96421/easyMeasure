@@ -144,7 +144,8 @@ export class Table {
 
 // ------------------------------------------------------------------- tabs ----
 export class Tabs {
-  constructor({ closable = false, onClose = null, onChange = null } = {}) {
+  /** movable: tabs can be dragged into another order (onMove(names) is told). */
+  constructor({ closable = false, onClose = null, onChange = null, movable = false, onMove = null } = {}) {
     this.bar = h("div", { class: "tabbar" });
     this.body = h("div", { class: "tabbody" });
     this.el = h("div", { class: "tabs" }, this.bar, this.body);
@@ -153,6 +154,9 @@ export class Tabs {
     this.closable = closable;
     this.onClose = onClose;
     this.onChange = onChange;
+    this.movable = movable;
+    this.onMove = onMove;
+    this._drag = null;
   }
 
   add(name, el, { closable = this.closable, title = null, index = null } = {}) {
@@ -163,6 +167,25 @@ export class Tabs {
         on: { click: (ev) => { ev.stopPropagation(); this.remove(item); if (this.onClose) this.onClose(item); } } }));
     }
     tab.addEventListener("click", () => this.show(item));
+    if (this.movable) {
+      tab.draggable = true;
+      tab.title = (title ? title + "\n" : "") + "drag to change the order of the tabs";
+      tab.addEventListener("dragstart", (ev) => {
+        this._drag = item;
+        ev.dataTransfer.effectAllowed = "move";
+        try { ev.dataTransfer.setData("text/plain", name); } catch (e) { /* */ }
+      });
+      tab.addEventListener("dragover", (ev) => { if (this._drag && this._drag !== item) { ev.preventDefault(); tab.classList.add("drop"); } });
+      tab.addEventListener("dragleave", () => tab.classList.remove("drop"));
+      tab.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        tab.classList.remove("drop");
+        const d = this._drag;
+        this._drag = null;
+        if (d && d !== item) this.move(d, this.items.indexOf(item));
+      });
+      tab.addEventListener("dragend", () => { this._drag = null; });
+    }
     el.classList.add("tabpage");
     if (index === null || index >= this.items.length) {
       this.items.push(item); this.bar.append(tab); this.body.append(el);
@@ -192,6 +215,18 @@ export class Tabs {
     item.tab.remove();
     item.el.remove();
     if (this.active === item) this.show(this.items[Math.max(0, i - 1)]);
+  }
+
+  /** Put *item* at position *index* (the tab bar follows). */
+  move(item, index) {
+    if (typeof item === "string") item = this.items.find((it) => it.name === item);
+    const i = this.items.indexOf(item);
+    if (i < 0) return;
+    this.items.splice(i, 1);
+    index = Math.max(0, Math.min(this.items.length, index));
+    this.items.splice(index, 0, item);
+    for (const it of this.items) this.bar.append(it.tab);
+    if (this.onMove) this.onMove(this.items.map((it) => it.name));
   }
 
   rename(item, name) { item.name = name; item.tab.firstChild.textContent = name; }
@@ -266,7 +301,7 @@ export function modal(title, body, buttons = [["Cancel", null], ["OK", true]], {
 }
 
 /** fields: [{key, label, type, value, options, placeholder, rows, help, list}] */
-export function formDialog(title, fields, { wide = false, validate = null } = {}) {
+export function formDialog(title, fields, { wide = false, validate = null, extra = null } = {}) {
   const inputs = {};
   const grid = h("div", { class: "form" });
   for (const f of fields) {
@@ -310,10 +345,11 @@ export function formDialog(title, fields, { wide = false, validate = null } = {}
     }
     return out;
   };
-  return modal(title, grid, [["Cancel", null], ["OK", true]], { wide,
+  const body = extra ? h("div", {}, grid, extra(inputs, read)) : grid;
+  return modal(title, body, [["Cancel", null], ["OK", true]], { wide,
     onOk: async () => {
       const v = read();
-      if (validate) { const r = await validate(v); if (r === false) return false; if (r !== undefined && r !== true) return r; }
+      if (validate) { const r = await validate(v, inputs); if (r === false) return false; if (r !== undefined && r !== true) return r; }
       return v;
     } });
 }
@@ -352,15 +388,68 @@ export function pickFile(accept = ".json,application/json") {
 }
 
 // ---------------------------------------------------------- status messages --
+// One status line at the bottom of the window: errors and warnings stay until the
+// next message, the rest clears after 10 s; every message also goes to the Log.
 let statusEl = null;
 let statusTimer = null;
-export function setStatusElement(el) { statusEl = el; }
+let statusListener = null;
+export function setStatusElement(el, onMessage = null) { statusEl = el; statusListener = onMessage; }
 export function message(level, text) {
+  if (statusListener) { try { statusListener(level, text); } catch (e) { /* log closed */ } }
   if (!statusEl) return;
-  statusEl.textContent = (level === "error" || level === "warning" ? "⚠ " : "") + text;
+  const bad = level === "error" || level === "warning";
+  statusEl.textContent = (bad ? (level === "error" ? "✘ " : "⚠ ") : "") + text;
   statusEl.className = "status-msg " + level;
+  statusEl.title = text;
   clearTimeout(statusTimer);
-  statusTimer = setTimeout(() => { statusEl.textContent = ""; }, 9000);
+  if (!bad) statusTimer = setTimeout(() => { statusEl.textContent = ""; statusEl.title = ""; }, 10000);
+}
+
+// ------------------------------------------------------------------ checks ----
+// Every editor of code or formulas has a Check button, and its OK checks first:
+// the backend answers (it knows the channels, parameters and rules).
+let defaultConn = null;
+export function setConnection(conn) { defaultConn = conn; }
+
+/** cmd: the backend check command; request() -> args (throws for what can be told
+ *  locally); okText(reply) -> the line shown when it passed.  run() resolves with
+ *  the reply or rejects; a reply {ok: false, errors} counts as failed. */
+export function checker(cmd, request, okText, { conn = null, title = "check it with the backend without saving anything" } = {}) {
+  const info = h("div", { class: "check-info" });
+  const show = (t, cls) => {
+    info.classList.remove("ok", "warn", "err", "busy");
+    if (cls) info.classList.add(cls);
+    info.textContent = t;
+  };
+  const getConn = () => conn || defaultConn;
+  const run = async () => {
+    let args;
+    try { args = request(); } catch (e) { show("✘ " + e.message, "err"); throw e; }
+    const c = getConn();
+    if (!c || !c.can(cmd)) { show("✔ looks right (not checked with the backend)", "ok"); return null; }
+    show("checking …", "busy");
+    let r;
+    try { r = await c.request(cmd, args); } catch (e) { show("✘ " + e.message, "err"); throw e; }
+    if (r && r.ok === false) {
+      const m = (r.errors || ["not valid"]).join("; ");
+      show("✘ " + m, "err");
+      throw new Error(m);
+    }
+    const w = (r && r.warnings) || [];
+    show(okText(r) + w.map((x) => "\n⚠ " + x).join(""), w.length ? "warn" : "ok");
+    return r;
+  };
+  const button = h("button", { text: "Check", class: "check-btn", title, on: { click: () => run().catch(() => {}) } });
+  return { info, button, run, show };
+}
+
+/** A Check button and result line for a code box (check_code). */
+export function codeChecker(textarea, what) {
+  return checker("check_code", () => {
+    const code = textarea.value;
+    if (!code.trim()) throw new Error("no code");
+    return { code, what };
+  }, () => "✔ valid Python", { title: "check the code: syntax, and that the channels it quotes exist" });
 }
 
 export function group(title, ...children) {

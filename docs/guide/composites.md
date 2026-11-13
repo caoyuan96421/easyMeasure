@@ -11,17 +11,25 @@ There are three types:
 
 ## Defining one
 
-In *Instruments & channels*, click **Add…** under the *Composites* list. The editor
-has a type selector, a variables table and the formulas. **Check** runs every check
-described below without defining anything, and shows which channels the composite
-would define:
+In *Instruments & channels*, on the **Channels (composite)** tab, click **Add…**. The
+editor has a type selector, a variables table and the formulas. **Check** runs every
+check described below without defining anything, and shows which channels the
+composite would define; **OK** checks first and keeps the editor open if the check
+fails:
 
 ![The composite editor](../images/t2-composite.png)
 
 [Tutorial 2](../tutorials/rotated-gates.md) builds this one step by step: the
 carrier density `n` and displacement field `D` of a dual-gated sample, driving the two
-gate voltages. Once defined, the variables are channels like any alias: they appear in
-the Manual panel, can be swept, recorded and monitored.
+gate voltages, in a composite `nD`. Once defined, the variables are channels like any
+alias, named `nD.n` and `nD.D`: they appear in the Manual panel, can be swept,
+recorded and monitored. The table lists them below their composite:
+
+| Name | Type | Definition |
+|---|---|---|
+| nD | Multivariate write | Vbg = …; Vtg = … |
+| ↳ nD.n | variable | −2 … 2 1e12/cm² |
+| ↳ nD.D | variable | −0.5 … 0.5 V/nm |
 
 ## Multivariate write
 
@@ -36,25 +44,33 @@ Several variables, whose names you choose, drive several hardware channels:
            targets={"Vx": "U + eps", "Vy": "U - eps"})
     ```
 
-Each variable (`eps`, `U`) is now a channel of its own, with its own minimum,
-maximum, unit and ramp rate:
+Each variable is now a channel of its own, **named after the composite**:
+`gates.eps` and `gates.U`, with its own minimum, maximum, unit and ramp rate:
 
 ??? example "From Python"
 
     ```python
-    c.call("read_channel", name="eps")          # nan: never set yet
-    c.call("set_many", values={"eps": 0.1, "U": 0.3})
+    c.call("read_channel", name="gates.eps")          # nan: never set yet
+    c.call("set_many", values={"gates.eps": 0.1, "gates.U": 0.3})
     # {'Vx': 0.4, 'Vy': 0.2}   (the hardware values that were set)
-    c.call("read_channel", name="eps")          # 0.1: the value it was last set to
-    c.call("write_channel", name="U", value=0.1)  # eps stays 0.1 → Vx = 0.2, Vy = 0.0
+    c.call("read_channel", name="gates.eps")          # 0.1: the value it was last set to
+    c.call("write_channel", name="gates.U", value=0.1)  # eps stays 0.1 → Vx = 0.2, Vy = 0.0
     ```
+
+!!! note "Names"
+    Inside the composite's own target formulas, the variables go by their short
+    names (`U + eps`). Everywhere else (the Manual panel, sweeps, scripts, other
+    formulas, the Monitor, data files) they go by the full name `gates.eps`. So two
+    composites may both have a variable `x` (`a.x`, `b.x`), and a variable never
+    clashes with an alias or a parameter. A composite may not have the name of an
+    instrument (`dmm.x` would read like an instrument channel).
 
 Setting one variable recomputes only the targets that depend on it, using the
 other variables' last values.
 
 !!! note "The first setting"
     While a variable has never been set, the targets that need it cannot be
-    computed, so setting `eps` alone fails with a message naming the missing `U`.
+    computed, so setting `gates.eps` alone fails with a message naming the missing `gates.U`.
     Set the variables together the first time. In the Manual panel the variables
     show **NaN** until then, with **hold** forced on: click **Set all to zero**, or
     type a value for each, then click **Set all**.
@@ -96,7 +112,7 @@ labelled with variable values the hardware did not quite reach.
 Variables of one composite are always set together:
 
 * swept in the **same dimension**, they are set together at every point;
-* swept in **different dimensions** (`n` inner, `D` outer), the outer variable is not
+* swept in **different dimensions** (`nD.n` inner, `nD.D` outer), the outer variable is not
   written on its own: at every inner point both are set together. So a new `D` never
   moves the gates with the old `n` left over from the previous line, and every
   combination the hardware sees is one of the sweep's points, checked in advance.
@@ -121,7 +137,8 @@ A few details:
 ### Formulas
 
 Targets may use any [expression](../reference/expressions.md) of the variables and
-of the setup's [parameters](parameters.md) (`Vbg = (n - n0 + D/kD) / (2*Cb)`),
+of the setup's [parameters](parameters.md) (`Vbg = (n - n0 + D/kD) / (2*Cb)`; the
+variables by their short names here),
 including piecewise functions and vectors. The formulas of reads and mappings may use
 parameters too.
 
@@ -225,11 +242,11 @@ write can target another composite's variables or a mapping:
 ??? example "From Python"
 
     ```python
-    c.call("define_composite", type="map", name="eps_mV", target="eps",
+    c.call("define_composite", type="map", name="eps_mV", target="gates.eps",
            forward="x/1000", backward="1000*y", min=-400, max=400, unit="mV")
     c.call("define_composite", type="multi", name="outer", variables=["s"],
-           targets={"U": "0.2 + s", "eps_mV": "100*s"})
-    c.call("write_channel", name="s", value=0.1)
+           targets={"gates.U": "0.2 + s", "eps_mV": "100*s"})
+    c.call("write_channel", name="outer.s", value=0.1)
     # U = 0.3, eps = 0.01 V → Vx = 0.31, Vy = 0.29
     ```
 
@@ -264,8 +281,8 @@ are swept **in the same dimension** are set together at every point, so even the
 first point works before they have ever been set:
 
 ```json
-{"points": 51, "sweep": [{"channel": "eps", "start": -0.2, "stop": 0.2},
-                         {"channel": "U",   "start": 0.1,  "stop": 0.3}],
+{"points": 51, "sweep": [{"channel": "gates.eps", "start": -0.2, "stop": 0.2},
+                         {"channel": "gates.U",   "start": 0.1,  "stop": 0.3}],
  "record": ["Vx", "Vy", "Vdiff"]}
 ```
 
@@ -274,8 +291,8 @@ All combinations are limit-checked before the sweep starts.
 ## In scripts
 
 ```python
-set_many({"eps": 0.0, "U": 0.25})
-set("eps", 0.1)                 # U stays 0.25
+set_many({"gates.eps": 0.0, "gates.U": 0.25})
+set("gates.eps", 0.1)           # gates.U stays 0.25
 print(get("Vdiff"), get("Tset_C"))
 ```
 
@@ -289,7 +306,7 @@ channels it would define and any warnings, without changing anything:
     ```python
     c.call("check_composite", type="multi", name="lazy", variables=["p", "q"],
            targets={"Vb": "p"})
-    # {'channels': ['p', 'q'], 'warnings': ['composite lazy: variable q drives no target'], …}
+    # {'channels': ['lazy.p', 'lazy.q'], 'warnings': ['composite lazy: variable q drives no target'], …}
     ```
 
 ## Reference
@@ -300,6 +317,4 @@ channels it would define and any warnings, without changing anything:
 | `read` | `name`, `expression`, `unit`, `description` |
 | `map` | `name`, `target`, `forward` (of `x`), `backward` (of `y`), `min`, `max` (required), `unit`, `ramp_rate`, `tolerance`, `description` |
 
-Setups made before composites had types still load. A one-variable composite with
-`targets` as formulas of `x` becomes a multivariate write whose variable has the
-composite's name.
+A multivariate composite's variables are channels named `composite.variable`.

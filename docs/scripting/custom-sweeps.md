@@ -78,17 +78,17 @@ points. `np.unique` sorts the merged list and removes duplicates.
 
 Every channel in the same dimension is set at every point, each from its own row.
 With mappings, the rows can draw any curve. Here is a circle around the
-charge-neutrality point, using the composite channels `n` and `D` of
+charge-neutrality point, using the composite channels `nD.n` and `nD.D` of
 [tutorial 2](../tutorials/rotated-gates.md):
 
 ![Two rows, n and D, each with its own mapping](../images/s-mapping.png)
 
-1. **+ sweep channel** adds a second row to the same dimension. Row 1: `n`, mapping
-   `1.0*cos(2*pi*t)`. Row 2: `D`, mapping `0.2*sin(2*pi*t)`. With 73 points, `t` goes
+1. **+ sweep channel** adds a second row to the same dimension. Row 1: `nD.n`, mapping
+   `1.0*cos(2*pi*t)`. Row 2: `nD.D`, mapping `0.2*sin(2*pi*t)`. With 73 points, `t` goes
    once around the circle in 5° steps. Start and Stop are not used by these formulas.
 
-`n` and `D` belong to the same composite, so they are set together at every point, and
-both gate voltages follow. The result, against `n`:
+`nD.n` and `nD.D` belong to the same composite, so they are set together at every point, and
+both gate voltages follow. The result, against `nD.n`:
 
 ![Rxx around the circle](../images/s-circle.png)
 

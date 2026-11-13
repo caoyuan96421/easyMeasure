@@ -19,7 +19,7 @@ value). Parameters cannot be changed by code.
 
 ## The Actions panel
 
-*Instruments & channels → Actions* (desktop and web) lists your actions with their
+*Instruments & channels → User Actions* (a tab; desktop and web) lists your actions with their
 description and last run: finished ✔ / aborted ■ / error ✘, time and duration.
 Hover a failed run to see its error.
 
@@ -29,7 +29,7 @@ Hover a failed run to see its error.
 |---|---|
 | **▶ Run** (or Enter, or double click on the web) | run the selected action now |
 | **■ Abort** | stop the running action(s) at the next line, sleep or ramp step |
-| **Add… / Edit…** | the editor: name, description, *ask before running*, code; *insert channel name…* puts a channel name at the cursor |
+| **Add… / Edit…** | the editor: name, description, *ask before running*, code; *insert channel name…* puts a channel name at the cursor; **Check** checks the name and the code (OK checks too) |
 | **Remove**, **↑ ↓** | delete, reorder |
 
 **Add…** opens the editor:

@@ -127,8 +127,8 @@ never slows a sweep down.
 
 ## Channels
 
-Select an instrument, and its channels are listed under *Instrument channels &
-actions*. **Get** reads the selected channel:
+Select an instrument, and its channels and actions are listed under *Channels
+(hardware)*. **Get** reads the selected channel:
 
 ![The channels of a VNA](../images/t4-vna-channels.png)
 

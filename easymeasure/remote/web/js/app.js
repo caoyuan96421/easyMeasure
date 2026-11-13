@@ -3,7 +3,7 @@
 import { Connection, login, logout, session } from "./conn.js";
 import { Model } from "./model.js";
 import { h, $, btn, Tabs, splitter, modal, formDialog, confirmDialog, applyPermissions, applyQueueControls, qcan, message,
-         setStatusElement, Table, fmt } from "./ui.js";
+         setStatusElement, setConnection, Table, fmt } from "./ui.js";
 import { SetupPanel } from "./panels/setup.js";
 import { SweepEditor, RunningSweepView } from "./panels/sweep.js";
 import { QueuePanel } from "./panels/queue.js";
@@ -84,7 +84,7 @@ class App {
     this.connLabel = h("span", { class: "conn warn", text: "connecting…" });
     this.userLabel = h("span", { class: "user" });
     this.statusMsg = h("span", { class: "status-msg" });
-    setStatusElement(this.statusMsg);
+
     this.queueLabel = h("span", { class: "muted" });
     this.progress = h("progress", { max: 1, value: 0, hidden: true });
     this.rate = h("span", { class: "muted small", title: "data received from the backend" });
@@ -111,9 +111,15 @@ class App {
     this.manBox = h("div", { class: "side-box man" }, h("div", { class: "side-title", text: "Manual" }), this.manual.el);
     this.side = h("aside", { class: "pane side" }, this.monBox, splitter(this.monBox, { vertical: false, key: "side" }), this.manBox);
     this.logBox = h("section", { class: "logpane" }, this.log.el);
+    setStatusElement(this.statusMsg, (lvl, text) => this.log.addLocal(lvl, text));
+    setConnection(this.conn);
     this.workspace = h("main", { class: "workspace" }, left, splitter(left, { key: "left" }), right,
       splitter(right, { key: "right" }), this.side);
 
+    const setupMenu = this._menu("Setup", [
+      ["Save setup…", () => this.setup.saveSetup(), null, "get_setup"],
+      ["Load setup…", () => this.setup.loadSetup(), null, "load_setup"],
+    ]);
     const viewMenu = this._menu("View", [
       ["Monitor", () => this._toggle(this.monBox, "show_monitor"), () => !this.monBox.hidden],
       ["Manual", () => this._toggle(this.manBox, "show_manual"), () => !this.manBox.hidden],
@@ -137,7 +143,7 @@ class App {
       h("span", { class: "sep" }),
       btn("Add slide to PPT", () => this._ppt(), { cmd: "make_ppt", title: "append a slide for the running / last sweep" }),
       btn("Open data…", () => this.browseRuns(), { cmd: "list_runs" }),
-      viewMenu, backendMenu,
+      setupMenu, viewMenu, backendMenu,
       h("span", { class: "grow" }), this.userLabel,
       btn("Log out", () => this._logout()));
     const footer = h("footer", { class: "statusbar" }, this.statusMsg, h("span", { class: "grow" }), this.rate, this.queueLabel, this.progress);

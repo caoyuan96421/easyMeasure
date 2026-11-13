@@ -192,7 +192,7 @@ which keeps the channel lists short with many instruments.
 
 **Actions** (`ACTIONS = [ActionSpec("reset", ...)]`, implemented by `_action_reset()`):
 commands without arguments such as trigger, reset, auto-phase. Run them from the GUI
-(*Instrument channels & actions → Run action*), the API (`run_action(ref="dmm.reset")`),
+(*Channels (hardware) → Run action*), the API (`run_action(ref="dmm.reset")`),
 or scripts and sweep hooks (`action('dmm.reset')`; the sweep editor has a *+ action*
 button that appends this to the pre/post hook). Actions are guarded like every other
 call but never retried automatically (a trigger must not fire twice); afterwards the
@@ -221,8 +221,9 @@ several variables, whose names you choose:
                {"name": "U",   "min": 0,    "max": 0.5, "unit": "V"}],
  "targets": {"VL": "U + eps", "VR": "U - eps", "Vg": "piecewise(U < 0.1, 0, 2*U)"}}
 ```
-Each variable (`eps`, `U`) is a channel of its own, with its own minimum,
-maximum, unit and ramp rate. Reading one returns the value it was last set to
+Each variable is a channel of its own, named after its composite (`gates.eps`,
+`gates.U`; the composite's own target formulas use the short names), with its
+own minimum, maximum, unit and ramp rate. Reading one returns the value it was last set to
 (NaN while it has never been set). Setting one recomputes the targets that
 depend on it, using the other variables' last values. Before every target has
 all of its variables, set them together: `set_many({...})` in scripts and the
@@ -423,9 +424,15 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   picked automatically, then the others, ones in use, and the driver's suggestions
   such as its built-in emulator — or type any address; **Refresh** scans again,
   *ask \*IDN?* identifies GPIB / USB / LAN instruments while scanning), inspect raw channels (with their allowed values and the *last
-  value* read or set — nothing is read just to fill the table), define aliases and
-  composites and **Actions** (below), save/load setups, *Driver wizard…* for new
-  command-based instruments. Setting channels by hand is the **Manual** panel.
+  value* read or set — nothing is read just to fill the table) and actions in the
+  first row; below it, tabs for **Channels (aliased)**, **Channels (composite)**
+  (a multivariate composite lists its variables below it), **User Actions** and
+  **Parameters**, which can be dragged into another order but not closed. The page
+  fits the window without a scroll bar; messages go to the status bar (errors stay
+  until the next message) and the Log. Every formula or code field has a **Check**
+  button, and OK checks first. *Setup* menu: save/load/merge setups; *Driver
+  wizard…* for new command-based instruments. Setting channels by hand is the
+  **Manual** panel.
 * **Sweep editor** – any number of dimensions; save/load JSON, load from a data
   file, validate against the backend, queue. Each dimension is laid out in the order
   of one point (numbered steps: actions, set swept channels, pre-sample delay, record,

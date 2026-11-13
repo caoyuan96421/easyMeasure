@@ -739,6 +739,12 @@ export class LogPanel {
 
   _min() { return LEVELS[this.level.value] || 20; }
 
+  /** A message of this window (the status line's), kept in the Log too. */
+  addLocal(level, text) {
+    const name = { error: "ERROR", warning: "WARNING", debug: "DEBUG" }[level] || "INFO";
+    this._add({ levelno: LEVELS[name] || 20, level: name, logger: "web", msg: text, t: Date.now() / 1000 });
+  }
+
   async reload() {
     try {
       const rows = await this.conn.request("recent_logs", { n: 1500, min_level: this._min() });

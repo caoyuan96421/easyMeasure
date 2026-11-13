@@ -14,15 +14,19 @@ A parameter is either:
 
 ## Defining parameters
 
-In *Instruments & channels*, under **Parameters**, click **Add…**:
+In *Instruments & channels*, on the **Parameters** tab, click **Add…**:
 
 ![Defining a parameter](../images/t2-parameter.png)
 
 1. **Name**: letters, digits and `_`; not the name of a channel, a composite or a
    function such as `sin`.
-2. **Defined by**: *Value*, or *Formula of other parameters*.
-3. The **value** (or the formula).
-4. **Unit** and an optional description, shown as tooltips.
+2. **Value or formula**: type a number (`0.6`, `1e6`) for a value, anything else
+   for a formula of other parameters (`Ct/Cb`). The line below says which it took.
+3. **Unit** and an optional description, shown as tooltips.
+
+**Check** asks the backend what the parameter would be, without defining it: its
+value, or why it is refused (an unknown name, a circle, a mapping it would break).
+**OK** checks first and keeps the dialog open if the check fails.
 
 The table lists every parameter with its present value, its formula, and what uses
 it:
@@ -95,6 +99,9 @@ is wrong (a circle, an unknown name) is reported and left out, and the rest load
     ```python
     c.call("define_parameter", name="Cb", value=0.6, unit="1e12 cm^-2/V")
     c.call("define_parameter", name="ratio", formula="Ct/Cb")
+    c.call("define_parameter", name="Ct", definition="1.2")   # as typed: a number or a formula
+    c.call("check_parameter", name="k", definition="ratio * 2")
+    # {'name': 'k', 'formula': 'ratio * 2', 'current': 4.0, 'warnings': []}   nothing defined
     c.call("set_parameter", name="Cb", value=0.58)       # formulas follow
     c.call("read_channel", name="ratio")
     c.call("list_parameters")

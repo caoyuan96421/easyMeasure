@@ -68,6 +68,7 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
 
 With `replace=False`, the setup is added to what is there instead of replacing it.
 
-Older setups whose composites have no `type`, with `targets` as formulas of `x`, still
-load. Each becomes a multivariate write whose variable has the composite's name, and
-a note is added to the problems.
+A composite needs its `type`. The variables of a `multi` composite are channels named
+after it: above, `gates.eps` and `gates.U`. Setups written before this naming used the
+bare variable names in sweeps, scripts and other formulas; rename them there
+(`eps` → `gates.eps`).

@@ -12,12 +12,12 @@ alias. That way nothing is ever set without limits.
 ## Making an alias
 
 In *Instruments & channels*, select the instrument, then its channel, and click
-**Make alias…**. Or, in the *Aliases* list, click **Add…** and choose the target
+**Make alias…**. Or, on the **Channels (aliased)** tab, click **Add…** and choose the target
 channel there.
 
 ![The alias dialog](../images/qs-alias-vbg.png)
 
-The aliases appear in the *Aliases* list, and from then on in every channel list:
+The aliases appear in the *Channels (aliased)* table, and from then on in every channel list:
 sweeps, Monitor, Manual, plots.
 
 ![The alias list](../images/qs-aliases.png)

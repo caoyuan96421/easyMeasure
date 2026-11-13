@@ -58,8 +58,8 @@ lock-in's output:
 **Two aliases.** Make an alias of `lockin.X` named `Vxx` (unit V), and one of
 `ilockin.X` named `I` (unit A).
 
-**Rxx as a composite read.** Select the old alias `Rxx` and click **Remove**. Then,
-under **Composites**, click **Add…**:
+**Rxx as a composite read.** On the **Channels (aliased)** tab, select the old alias `Rxx`
+and click **Remove**. Then, on the **Channels (composite)** tab, click **Add…**:
 
 ![A composite read: Rxx = Vxx / I](../images/t2-read.png)
 
@@ -83,14 +83,14 @@ than typing them into formulas, give each a name as a **parameter**. When you co
 down the next device, or calibrate the capacitances better from a Landau fan, you
 change the number in one place.
 
-In *Instruments & channels*, under **Parameters**, click **Add…**:
+In *Instruments & channels*, on the **Parameters** tab, click **Add…**:
 
 ![A parameter: the back-gate capacitance](../images/t2-parameter.png)
 
 1. Name `Cb`.
-2. Defined by *Value*.
-3. Value `0.6`.
-4. Unit `1e12 cm^-2/V` (and a description, if you like).
+2. **Value or formula**: `0.6`. A number is a value; the line below says so.
+3. Unit `1e12 cm^-2/V` (and a description, if you like).
+4. **Check** shows `✔ Cb = 0.6`; **OK** checks again and saves it.
 
 Add the others the same way:
 
@@ -103,18 +103,18 @@ Add the others the same way:
 
 ![The parameters](../images/t2-parameters.png)
 
-A parameter can also be a formula of other parameters (*Defined by: Formula*), such
-as `Ct/Cb`. Parameters are constants: they can be changed here or in the Manual panel,
+A parameter can also be a formula of other parameters: type `Ct/Cb` instead of a
+number. Parameters are constants: they can be changed here or in the Manual panel,
 but never by a sweep or a script. Every data file records their values. See
 [Parameters](../guide/parameters.md).
 
 ## 4. The composite channel n, D
 
-On *Instruments & channels*, under **Composites**, click **Add…** again:
+On the **Channels (composite)** tab, click **Add…** again:
 
 ![A multivariate composite: n and D drive Vbg and Vtg](../images/t2-composite.png)
 
-1. **Type**: *Multivariate write*. You set variables, and the hardware follows.
+1. Name `nD`; **Type**: *Multivariate write*. You set variables, and the hardware follows.
 2. **Variables**: one row each, using *Add variable*.
 
     | Name | Min | Max | Unit | Description |
@@ -122,7 +122,8 @@ On *Instruments & channels*, under **Composites**, click **Add…** again:
     | `n` | -4 | 4 | 1e12 cm^-2 | carrier density |
     | `D` | -0.45 | 0.45 | V/nm | displacement field |
 
-    Each variable gets its own limits, unit and, optionally, a ramp rate.
+    Each variable gets its own limits, unit and, optionally, a ramp rate. Outside
+    this editor, a variable is called after its composite: `nD.n` and `nD.D`.
 3. **Targets**: one line per gate, `channel = formula of the variables` (and of
    parameters):
 
@@ -131,31 +132,33 @@ On *Instruments & channels*, under **Composites**, click **Add…** again:
     Vtg = (n - n0 - D/kD) / (2*Ct)
     ```
 
-    This is the pair of equations above, written with the parameters.
+    This is the pair of equations above, written with the parameters. Here, inside
+    the composite, the variables go by their short names `n` and `D`.
 
 4. **Out of range**: what to do with a combination of `n` and `D` that would need a
    gate voltage beyond its ±10 V limit. Leave it at *Skip the point* (see
    [below](#6-sweep-n-and-d)).
 5. **Check** asks the backend whether everything is right without saving anything:
    the names, the formulas, and that the targets exist and can be set. It answers
-   `✔ defines n, D`.
+   `✔ defines nD.n, nD.D`. **OK** checks again before it saves.
 
-**OK**, and the composite appears in the list next to `Rxx`, with the last values of
-its variables:
+**OK**, and the composite appears in the table next to `Rxx`, with a row for each of
+its variables below it, `↳ nD.n` and `↳ nD.D`, by the names you use from now on:
 
 ![The composites table](../images/t2-composites.png)
 
-`n` and `D` are now channels like `Vbg`: you can set them, sweep them and record them.
+`nD.n` and `nD.D` are now channels like `Vbg`: you can set them, sweep them and record them.
 Whenever one of them is set:
 
 * both gate voltages are computed;
-* everything is checked against **all** limits: the limits of `n` and `D`, and also
+* everything is checked against **all** limits: the limits of `nD.n` and `nD.D`, and also
   the ±10 V of `Vbg` and `Vtg`;
 * both gates then ramp **together**, each within its own ramp rate.
 
 ## 5. Set n and D by hand
 
-The **Manual** panel now has a group **nD**, with `n` and `D` indented below it.
+The **Manual** panel now has a group **nD**, with `n` and `D` (short for `nD.n` and
+`nD.D`) indented below it.
 Neither has been set yet, so neither has a value. Setting `n` alone would need a
 value of `D` to compute the gates, and there is none. The panel shows this:
 
@@ -185,7 +188,7 @@ In the **Sweep editor**, sweep the *variables*:
 ![Sweeping n (dimension 1) at each D (dimension 2)](../images/t2-sweep.png)
 
 1. Two dimensions.
-2. Dimension 1: `n` from −4 to 4 in 101 points, snake scan. Dimension 2: `D` from
+2. Dimension 1: `nD.n` from −4 to 4 in 101 points, snake scan. Dimension 2: `nD.D` from
    −0.45 to 0.45 in 31 points.
 3. Record `Rxx`.
 4. *Sweep → Validate* computes all 3131 combinations, converts each to gate voltages and
@@ -210,7 +213,7 @@ reach, and an empty corner where they can't. *Error* is for when every point mus
 be measured. *Clamp* suits cases where running into the limit is harmless and the
 nearest reachable value is good enough.
 
-`n` is swept in dimension 1 and `D` in dimension 2, but the gates never see one
+`nD.n` is swept in dimension 1 and `nD.D` in dimension 2, but the gates never see one
 without the other. At every point, `n` and `D` are set together, so a new value of
 `D` doesn't move the gates with the old `n` from the end of the previous line.
 
@@ -224,8 +227,8 @@ $V_{bg}$ would have exceeded 10 V. The same measurement plotted against $V_{bg}$
 $V_{tg}$ would show the same feature along a tilted line.
 
 !!! tip "Sweeping two things in one dimension"
-    You can also put **both** `n` and `D` in the same dimension, e.g. `n` from −2 to 2
-    and `D` from −0.3 to 0.3 together. That is a diagonal cut through the $(n, D)$
+    You can also put **both** `nD.n` and `nD.D` in the same dimension, e.g. `nD.n` from
+    −2 to 2 and `nD.D` from −0.3 to 0.3 together. That is a diagonal cut through the $(n, D)$
     plane. Variables of one composite swept in the same dimension are set together at
     every point. With a formula for each, the path can be any curve, such as a circle
     around $n = D = 0$: see [Custom sweeps](../scripting/custom-sweeps.md#a-path-through-the-n-d-plane).

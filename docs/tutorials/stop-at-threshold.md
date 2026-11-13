@@ -82,8 +82,8 @@ gate sweep at the leakage threshold while stepping the field.
 ## 4. One-click actions of your own
 
 Some things you do again and again: bring both gates to zero, switch outputs off, ramp
-the magnet down. Make each one a button. On *Instruments & channels*, under
-**Actions**, click **Add…**:
+the magnet down. Make each one a button. On *Instruments & channels*, on the
+**User Actions** tab, click **Add…**:
 
 ![A user action: both gates to zero](../images/t3-user-action.png)
 
@@ -97,6 +97,8 @@ the magnet down. Make each one a button. On *Instruments & channels*, under
 
     `set_many` sets several channels together, each with its limits and ramp rate.
 * **ask before running**: tick it for actions that should be confirmed first.
+* **Check** checks the code without running it: a syntax error, or a channel in quotes
+  that does not exist. **OK** checks too.
 
 Select it and click **▶ Run** (or press Enter):
 

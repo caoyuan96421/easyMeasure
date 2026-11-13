@@ -24,16 +24,45 @@ The read-only *Running sweep* view can be shown from the *View* menu.
 
 ![Instruments & channels](../images/qs-instruments.png)
 
+The page fits the window without a scroll bar. The first row holds:
+
 * **Instruments**: Add…, Edit…, Reconnect, Disconnect, Remove, and
   *Driver wizard…*. The Add dialog's address list shows the ports found on the
   backend computer that fit the driver (see [Instruments](instruments.md#adding-an-instrument)).
-* **Instrument channels & actions**: the selected instrument's channels, with their
+* **Channels (hardware)**: the selected instrument's channels, with their
   allowed values and the *last value* read or set (nothing is read just to fill the
-  table). Buttons: *Make alias…*, *Get*, *Set…* for configuration channels, and *Run action*.
-* **Aliases** and **Composites**: definitions with their last values; Add… / Edit…
-  open the editors (see [Aliases](aliases.md), [Composites](composites.md)).
-* **Actions**: your [user actions](user-actions.md).
-* The **Setup** menu: *Save setup… / Load setup… / Merge setup…*.
+  table), and its actions. Buttons: *Make alias…*, *Get*, *Set…* for configuration
+  channels, and *Run action*.
+
+Below them, four tabs:
+
+* **Channels (aliased)**: the [aliases](aliases.md), with their limits and last values.
+* **Channels (composite)**: the [composite channels](composites.md). A multivariate
+  composite is followed by a row per variable, under the name it goes by everywhere
+  else (`↳ nD.n`), with its range and last value.
+* **User Actions**: your [user actions](user-actions.md).
+* **Parameters**: the setup's [parameters](parameters.md).
+
+Drag a tab to change their order; the order is remembered. The splitter between the
+two rows moves too.
+
+The **Setup** menu has *Save setup… / Load setup… / Merge setup…*.
+
+### Messages
+
+What a button did, or why it was refused, is shown in the window's **status bar**
+at the bottom, not in the page: errors in red stay until the next message, the rest
+clear after 10 seconds. Every message is also written to the **Log** dock, so
+nothing is lost when the next one comes.
+
+### Checking what you type
+
+Every field that takes a formula or code has a **Check** button: parameters, composite
+channels, user actions, point actions and the script editor. Check asks the backend,
+without saving anything: are the names known, is there a circle, does the code
+compile, do the channels it quotes exist? *OK* (or *Add to queue*) checks first, and
+a dialog closes only when the check passes. Warnings (a channel that does not exist
+yet, say) are shown in orange but do not stop you.
 
 ## Sweep editor
 

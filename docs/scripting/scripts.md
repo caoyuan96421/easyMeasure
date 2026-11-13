@@ -25,6 +25,10 @@ Open the **Queue** tab. At the bottom is the **Script** editor.
 3. A name for the queue and the log. Opening a file uses the file name.
 4. **Add script to queue**. Then **Start** the queue (at the top of the tab), as for a
    sweep. **Run now** puts it at the front of the queue and starts it at once.
+5. **Check** looks at the script without running it: a syntax error is shown with its
+   line, and a channel name in quotes that does not exist (`get('Vbgg')`) is a warning.
+   *Add script to queue* and *Run now* check first, and refuse a script that does not
+   compile.
 
 The script:
 
@@ -73,7 +77,7 @@ Everything here is available without `import`:
 |---|---|
 | `get('Rxx')` | read a channel: an alias, a composite variable, or `instrument.channel` |
 | `set('Vbg', 1.0)` | set a channel, with its limits and ramp rate. Waits until the ramp is done |
-| `set_many({'n': 0, 'D': 0.2})` | set several at once; needed for the variables of one composite |
+| `set_many({'nD.n': 0, 'nD.D': 0.2})` | set several at once; needed for the variables of one composite |
 | `set_raw('bg.voltage', 0)` | set an instrument channel directly, **without** limits or ramps |
 | `sleep(2)` | wait 2 s (abortable) |
 | `wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600)` | check every 0.2 s until it is true, for at most `timeout` s. Returns `False` on timeout |
@@ -163,7 +167,7 @@ use only 90 % of that.
 The first sweep is the leakage sweep of [tutorial 3](../tutorials/stop-at-threshold.md),
 with its point action written into the dictionary as `"hooks"`. Its last measured
 point is the last finite (not `nan`) value. The map then sweeps the composite channels
-`n` and `D` of [tutorial 2](../tutorials/rotated-gates.md), with the D range computed
+`nD.n` and `nD.D` of [tutorial 2](../tutorials/rotated-gates.md), with the D range computed
 from the safe gate voltage.
 
 ## Scripts and the rest of easyMeasure
