@@ -364,9 +364,9 @@ class DataSet:
                     arr[idx] = out
             for name in (errors or {}):
                 self.errors[name] = self.errors.get(name, 0) + 1
+            if k == 0 and not self.filled[0][idx]:
+                self.points += 1         # a point applied twice (a resync) counts once
             self.filled[k][idx] = True
-            if k == 0:
-                self.points += 1
             self.last_index = (k, idx)
             self.last_by_dim[k] = idx
 

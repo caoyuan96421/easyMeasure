@@ -159,6 +159,8 @@ export class LiveDataView extends DataView {
         hdr.file = data.path;
         this.run = data.run;
         this.setDataset(new DataSet(hdr));
+        // a continued run: its data so far come from the backend
+        if (data.progress && data.progress.done) this.resync();
       } else if (kind === "sweep_point") {
         if (!this.ds || data.run !== this.run) { this.resync(); return; }
         this.ds.applyPoint(data.k, data.i, data.v || {}, data.e, !!data.skip);

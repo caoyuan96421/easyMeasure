@@ -1065,8 +1065,11 @@ class SweepRunner:
                         self.run_number, abort["run"], abort["status"],
                         (": " + abort["error"]) if abort["error"] else "",
                         self.dataset.points, self.dataset.total_points, self.path)
+        # a continuation starts with the points of the aborted run: the progress
+        # starts there, and a viewer loads them (run_snapshot) before the new points
         self._emit("sweep_start", {"run": self.run_number, "path": str(self.path),
-                                   "header": header})
+                                   "header": header, "progress": self.progress(),
+                                   "continues": abort["run"] if abort else None})
         log.info("run %d (%s) started: shape %s -> %s", self.run_number, self.d["name"],
                  self.shape, self.path)
         self.status = "running"

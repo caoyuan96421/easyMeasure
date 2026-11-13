@@ -239,6 +239,10 @@ def test_tray_controller(app, demo, tmp_path):
         assert ctl.pause_act.isEnabled() and ctl.abort_act.isEnabled()
         assert be_idle(app, demo, ctl)
         assert not make_icon("running").isNull()
+        # a continued run: the progress starts where the aborted one stopped
+        ctl._on_event("sweep_start", {"run": 99, "header": {"name": "cont"},
+                                      "progress": {"done": 30, "total": 60}})
+        assert "run 99 cont (50%)" in ctl.status_text()
         srv.stop()
         assert pump(app, 5, lambda: ctl.state == "offline")
         assert "not reachable" in ctl.status_text()
@@ -1585,12 +1589,22 @@ def test_continue_an_aborted_run(app, gui, monkeypatch):
     def fake_exec(dlg):
         seen["text"] = continue_dialog.describe(dlg.info)
         assert dlg.wait.value() == 0 and dlg.rerun_pre.isChecked()
-        dlg.wait.setValue(0.2)
+        dlg.wait.setValue(1.5)
         dlg.rerun_pre.setChecked(False)
         dlg.start = True
         return continue_dialog.ContinueDialog.Accepted
     monkeypatch.setattr(continue_dialog.ContinueDialog, "exec", fake_exec)
+    n0 = DataSet.load(first["path"]).points
     qp.continue_btn.click()
+    # while it waits before measuring again: the measured points are shown, and the
+    # progress starts from them
+    live = w.live
+    assert pump(app, 10, lambda: live.run != first["run"] and live.ds is not None and
+                live.ds.points == n0)
+    assert live.ds.status == "running" and not np.isnan(live.ds.data["I"][0])
+    assert live.progress.value() == int(100 * n0 / 12) > 0
+    assert w.progress.isVisible() and w.progress.value() == n0 and w.progress.maximum() == 12
+    assert "%d/12 points" % n0 in live.title.text()
     assert pump(app, 20, lambda: len(be.queue_state()["history"]) >= 2 and
                 be.queue_state()["state"] == "idle" and
                 be.queue_state()["history"][-1].get("continues_run") == first["run"])
@@ -1598,7 +1612,8 @@ def test_continue_an_aborted_run(app, gui, monkeypatch):
     fin = be.queue_state()["history"][-1]
     assert fin["status"] == "finished"
     ds = DataSet.load(fin["path"])
-    assert ds.points == 12 and ds.header["aborts"][0]["wait"] == 0.2
+    assert ds.points == 12 and ds.header["aborts"][0]["wait"] == 1.5
+    assert pump(app, 5, lambda: live.ds.points == 12)
     assert ds.header["aborts"][0]["rerun_pre"] is False
     # a finished run cannot be continued
     pump(app, 0.3)

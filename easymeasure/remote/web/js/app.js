@@ -211,10 +211,12 @@ class App {
   }
 
   _event(kind, data) {
-    if (kind === "sweep_point" && data && data.progress) {
+    // a continued run starts where the aborted one stopped
+    if ((kind === "sweep_point" || kind === "sweep_start") && data && data.progress) {
       const p = data.progress;
       if (p.total) { this.progress.hidden = false; this.progress.max = p.total; this.progress.value = p.done; }
-    } else if (kind === "sweep_end") {
+    }
+    if (kind === "sweep_end") {
       this.progress.hidden = true;
       if (data) message(data.status === "finished" || data.status === "terminated" ? "info" : "warning", `run ${data.run} ${data.status} ${data.error || ""}`);
     } else if (kind === "sweep_start") this.dataTabs.show(this.tLive);

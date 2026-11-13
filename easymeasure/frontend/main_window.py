@@ -574,7 +574,8 @@ class MainWindow(QMainWindow):
         apply_queue_controls(self.queue_actions, q)
 
     def _on_event(self, kind, data):
-        if kind == "sweep_point" and isinstance(data, dict):
+        if kind in ("sweep_start", "sweep_point") and isinstance(data, dict):
+            # a continued run starts where the aborted one stopped
             p = data.get("progress") or {}
             if p.get("total"):
                 self.progress.setVisible(True)
@@ -586,7 +587,7 @@ class MainWindow(QMainWindow):
                 self._message("info" if data.get("status") in ("finished", "terminated") else "warning",
                               "run %s %s %s" % (data.get("run"), data.get("status"),
                                                 data.get("error") or ""))
-        elif kind == "sweep_start":
+        if kind == "sweep_start":
             self.data_tabs.setCurrentWidget(self.live)
 
     # ------------------------------------------------------------------ lock --

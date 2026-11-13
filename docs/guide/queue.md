@@ -97,7 +97,10 @@ What you get:
   can be continued again. Its new file carries all the earlier aborts, and the data
   stay contiguous.
 
-The data window lists the aborts under *Details*.
+While a continued run goes on, the live data view, the GUI and web status bars and the
+tray show the points measured before the abort together with the new ones. The progress
+starts at the breakpoint, not at zero, and the time remaining comes from the rate since
+the run was continued. The data window lists the aborts under *Details*.
 
 A run cannot be continued when it finished or was terminated with `end_sweep()`.
 It also cannot be continued when a channel it sweeps or records no longer exists.

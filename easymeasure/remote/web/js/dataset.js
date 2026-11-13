@@ -137,8 +137,8 @@ export class DataSet {
       }
     }
     for (const name of Object.keys(errors || {})) this.errors[name] = (this.errors[name] || 0) + 1;
+    if (k === 0 && !this.filled[0][fi]) this.points++;   // applied twice (a resync): once
     this.filled[k][fi] = 1;
-    if (k === 0) this.points++;
     this.lastIndex = [k, idx];
     this.lastByDim[k] = idx;
     this.version++;

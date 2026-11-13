@@ -71,8 +71,17 @@ def test_continued_twice_equals_an_uninterrupted_run(demo):
     i0, i1 = info["next_index"]
     assert info["next_setpoints"]["Vg"] == pytest.approx(0.1 * i1)
     abort_after(be, 16)
+    starts = []
+    be.add_listener(lambda kind, data: kind == "sweep_start" and starts.append(
+        (data, be.run_snapshot())))
     be.continue_sweep(first["path"], wait=0.3, start=True)
     second = last(be)
+    # it starts where the aborted run stopped: the progress, and the data a viewer loads
+    ev, snap = starts[0]
+    assert ev["progress"]["done"] == info["points"] and ev["progress"]["total"] == 24
+    assert ev["progress"]["eta"] is None and ev["continues"] == first["run"]
+    assert snap["running"] and snap["points"] == info["points"]
+    assert DataSet.from_snapshot(snap).filled[0].sum() == info["points"]
     assert second["status"] == "aborted" and second["path"] != first["path"]
     sums[second["path"]] = digest(second["path"])
     be.continue_sweep(second["path"], wait=0.0, rerun_pre=False, start=True)

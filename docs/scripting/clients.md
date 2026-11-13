@@ -59,7 +59,7 @@ The backend pushes events. By default a client gets only the small status events
 | event | data |
 |---|---|
 | `queue` | the queue state (same as `queue_state`) |
-| `sweep_start`, `sweep_end` | run number, path; header (start) or status, error, footer (end) |
+| `sweep_start`, `sweep_end` | run number, path; header and progress (start) or status, error, footer (end). A [continued run](../guide/queue.md#continuing-an-aborted-sweep) starts with progress `done` > 0 and `continues` (the run it continues); `run_snapshot` gives its data so far |
 | `sweep_paused`, `sweep_resumed`, `sweep_warning` | run state, warning text |
 | `item_end` | a queue item finished (sweep or script) |
 | `user_action` | a user action started / ended |

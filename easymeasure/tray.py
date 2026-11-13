@@ -154,7 +154,7 @@ class TrayController:
         elif kind == "sweep_start" and isinstance(data, dict):
             hdr = data.get("header") or {}
             self.run = {"run": data.get("run"), "name": hdr.get("name", "")}
-            self.progress = None
+            self.progress = data.get("progress")     # a continued run: not from 0
             self._update()
         elif kind in ("sweep_point", "sweep_progress") and isinstance(data, dict):
             self.progress = data.get("progress")

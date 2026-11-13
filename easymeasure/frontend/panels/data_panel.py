@@ -303,6 +303,9 @@ class LiveDataView(DataView):
                 hdr["file"] = data.get("path")
                 self.run = data["run"]
                 self.set_dataset(DataSet(hdr))
+                if (data.get("progress") or {}).get("done"):
+                    # a continued run: its data so far come from the backend
+                    self.resync()
             elif kind == "sweep_point":
                 if self.ds is None or data.get("run") != self.run:
                     self.resync()

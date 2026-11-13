@@ -703,7 +703,7 @@ def test_web_continue_an_aborted_run(browser, gw, demo):
     assert "stopped by the test" in text and "new data file" in text and "Next point" in text
     assert page.input_value("dialog.modal .continue-wait") == "0"
     assert page.is_checked("dialog.modal .continue-rerun")
-    page.fill("dialog.modal .continue-wait", "0.25")
+    page.fill("dialog.modal .continue-wait", "1.5")
     page.click("dialog.modal button:text-is('Add to queue')")
     page.wait_for_function("!document.querySelector('dialog.modal')")
     for _ in range(100):
@@ -712,12 +712,25 @@ def test_web_continue_an_aborted_run(browser, gw, demo):
         time.sleep(0.05)
     q = demo.queue_state()
     assert q["state"] == "idle" and q["queued"][0]["name"] == "web_cont (continued)"
+    n0 = DataSet.load(first["path"]).points
     demo.queue_start()
+    # while it waits before measuring again: the measured points are shown, and the
+    # progress starts from them
+    page.wait_for_function("""(n0) => {
+        const t = document.querySelector('.dv-title');
+        const bar = document.querySelector('footer.statusbar progress');
+        return t && t.textContent.includes(`[running]`) && t.textContent.includes(`${n0}/10 points`)
+            && !bar.hidden && bar.value === n0 && bar.max === 10; }""", arg=n0, timeout=10000)
+    assert demo.queue_state()["state"] == "running"
+    assert page.evaluate("document.querySelector('.dataview progress').value") == \
+        pytest.approx(100 * n0 / 10)
     assert demo.queue.wait_idle(30)
+    page.wait_for_function("document.querySelector('.dv-title').textContent.includes('10/10 points')",
+                           timeout=10000)
     fin = demo.queue_state()["history"][-1]
     assert fin["status"] == "finished" and fin["continues_run"] == first["run"]
     ds = DataSet.load(fin["path"])
-    assert ds.points == 10 and ds.header["aborts"][0]["wait"] == 0.25
+    assert ds.points == 10 and ds.header["aborts"][0]["wait"] == 1.5
     # the data view lists the abort
     page.click(".panel.queue td:text-is('web_cont (continued)')")
     page.click(".panel.queue button:has-text('Open data')")
