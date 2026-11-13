@@ -450,7 +450,10 @@ log at the bottom. The read-only *Running sweep* view can be shown from the *Vie
   shows the executing definition read-only.
 * **Queue** – controls (enabled by what the queue can do now), queued items
   (reorder/remove), history (*Rerun selected* queues the same sweep/script again,
-  *Open data* opens its file), script editor. *Copy to sweep editor* on a queued or
+  *Continue…* goes on with an aborted or failed sweep from the first point it did
+  not measure, after a wait you choose: into a new file that holds the old data and
+  the new data, with every abort listed in its header; *Open data* opens its file),
+  script editor. *Copy to sweep editor* on a queued or
   finished sweep loads its definition into the editor; on a script the button reads
   *Copy to script editor* and fills the script editor.
 * **Live data / data files** – N-D plot grid: choose X and Y among all sweep and

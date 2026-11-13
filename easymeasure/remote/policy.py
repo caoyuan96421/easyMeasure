@@ -37,12 +37,12 @@ VIEW = {
     "ping", "get_state", "get_settings", "list_drivers", "list_resources", "list_instruments",
     "read_channel", "channel_info", "list_channels", "monitor_list", "monitor_history",
     "validate_sweep", "queue_state", "current_run", "run_snapshot", "list_runs", "load_run",
-    "read_run_header", "get_setup", "save_setup", "recent_logs", "list_clients",
+    "read_run_header", "continue_info", "get_setup", "save_setup", "recent_logs", "list_clients",
     "list_user_actions", "ramp_state", "list_parameters", "check_code",
 }
 OPERATE = {
     "write_channel", "set_many", "stop_ramps", "monitor_add", "monitor_remove",
-    "queue_add", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
+    "queue_add", "continue_sweep", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
     "queue_options", "pause", "resume", "abort", "abort_all", "make_ppt",
     "connect_instrument", "disconnect_instrument", "reconnect_instrument",
     # user actions: running one (write_channel) runs code an admin wrote; defining one
@@ -135,9 +135,11 @@ def _has_code(definition) -> bool:
 
 def restrictions(role: str) -> list:
     """What the backend must refuse for this role in every request (it knows the
-    channels; the gateway does not): ``raw_writes`` - writing an instrument's own
-    channels (``write_channel``, ``set_many``, the channels a queued sweep writes)."""
-    return [] if LEVEL.get(role, -1) >= 2 else ["raw_writes"]
+    channels and the data files; the gateway does not): ``raw_writes`` - writing an
+    instrument's own channels (``write_channel``, ``set_many``, the channels a queued
+    sweep writes); ``code`` - continuing a run whose sweep has hook code (the
+    gateway checks the code of the sweeps it is sent itself)."""
+    return [] if LEVEL.get(role, -1) >= 2 else ["raw_writes", "code"]
 
 
 def check(role: str, cmd: str, args: dict, data_roots: Iterable[str]) -> dict:
@@ -170,7 +172,7 @@ def check(role: str, cmd: str, args: dict, data_roots: Iterable[str]) -> dict:
         if not _inside(p, roots):
             raise Denied("%s: only files inside the data directory are accessible remotely" % cmd)
 
-    if cmd in ("load_run", "read_run_header"):
+    if cmd in ("load_run", "read_run_header", "continue_info", "continue_sweep"):
         path_ok("path", required=True)
     elif cmd == "save_setup":
         if args.get("path"):

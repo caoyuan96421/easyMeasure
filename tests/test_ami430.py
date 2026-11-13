@@ -271,12 +271,20 @@ def test_a_user_action_waiting_on_the_magnet_is_aborted(backend):
                                           "timeout=60)\n")
     import threading
     out = {}
-    t = threading.Thread(target=lambda: out.update(r=backend.write_channel("ramp_up")))
+
+    def run():
+        # aborted by the fault (a result), or failed on it (written: an error)
+        try:
+            out["status"] = backend.write_channel("ramp_up")["status"]
+        except Exception as exc:
+            out["status"], out["error"] = "error", str(exc)
+    t = threading.Thread(target=run)
     t.start()
     wait(lambda: emu.mode == "ramp", what="ramp")
     emu.quench("test")
     t.join(20)
-    assert not t.is_alive() and out["r"]["status"] in ("aborted", "error"), out
+    assert not t.is_alive() and out["status"] in ("aborted", "error"), out
+    assert "QUENCH" in out.get("error", "QUENCH"), out
 
 
 def test_quench_while_a_sweep_reads_the_magnet_is_not_a_nan(backend):

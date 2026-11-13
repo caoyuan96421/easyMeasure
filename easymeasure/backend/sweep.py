@@ -15,7 +15,7 @@ Definition (JSON-compatible dict)::
          "post_delay": 0.0,                 # after recording
          "snake": false,                    # alternate direction on each pass
          "record_after_inner": false,       # (outer dims) record after the inner loop
-         "hooks": {"pre_record": {"enabled": true, "code": "action('dmm.trigger')"}}},
+         "hooks": {"pre_record": {"enabled": true, "code": "set('dmm.trigger')"}}},
         {"points": 21, "sweep": [{"channel": "Vb", "start": -0.3, "stop": 0.3}],
          "record": ["T"]}
       ],
@@ -532,6 +532,75 @@ def validate_against(d: dict, channels, after_pre: bool = False,
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
+# -- continuing an aborted run --------------------------------------------------------
+#: runs that can be continued: stopped before their end
+CONTINUABLE = ("aborted", "error", "incomplete")
+
+
+def run_order(shape, snakes):
+    """The innermost indices ``(i0, i1, …)`` in the order a sweep visits them (snake
+    dimensions reverse on every other pass)."""
+    passes = [0] * len(shape)
+
+    def loop(k, outer):
+        rev = snakes[k] and passes[k] % 2 == 1
+        passes[k] += 1
+        for i in (range(shape[k] - 1, -1, -1) if rev else range(shape[k])):
+            idx = (i,) + outer
+            if k == 0:
+                yield idx
+            else:
+                yield from loop(k - 1, idx)
+    if shape:
+        yield from loop(len(shape) - 1, ())
+
+
+def point_done(ds, k: int, idx: tuple) -> bool:
+    """Whether the point *idx* of dimension *k* and everything under it was measured
+    (or skipped) in *ds*."""
+    f = ds.filled
+    if not f[k][idx]:
+        return False
+    return all(bool(f[j][(slice(None),) * (k - j) + idx].all()) for j in range(k))
+
+
+def continuation_info(path) -> dict:
+    """Where a run stopped and where a continuation would go on: ``{continuable,
+    reason, status, error, run, name, points, total, ended, last_index, next_index,
+    next_setpoints, aborts, definition}``."""
+    from .storage import DataSet as _DS
+    ds = _DS.load(path)
+    h = ds.header
+    footer = ds.footer or {}
+    status = footer.get("status") if ds.footer else "incomplete"
+    d = normalize_definition(h["definition"])
+    snakes = [bool(dim.get("snake")) for dim in d["dimensions"]]
+    nxt = next((idx for idx in run_order(ds.shape, snakes) if not ds.filled[0][idx]), None)
+    sp = {}
+    if nxt is not None:
+        setp = compute_setpoints(d)
+        for k, i in enumerate(nxt):
+            for name, arr in setp[k].items():
+                v = np.asarray(arr)[i]
+                sp[name] = float(v) if np.ndim(v) == 0 and np.asarray(v).dtype.kind in "fiu" \
+                    else (v.tolist() if hasattr(v, "tolist") else v)
+    outer_left = any(not ds.filled[k].all() for k in ds.filled)
+    out = {"status": status, "error": footer.get("error") or "", "run": h.get("run"),
+           "name": d["name"], "points": ds.points, "total": ds.total_points,
+           "ended": footer.get("ended"), "path": str(path),
+           "last_index": None if ds.last_index is None else
+           {"dimension": ds.last_index[0] + 1, "index": list(ds.last_index[1])},
+           "next_index": None if nxt is None else list(nxt), "next_setpoints": sp,
+           "aborts": list(h.get("aborts") or []), "definition": d}
+    if status not in CONTINUABLE:
+        out.update(continuable=False, reason="the run %s: there is nothing to continue" % status)
+    elif nxt is None and not outer_left:
+        out.update(continuable=False, reason="every point was measured")
+    else:
+        out.update(continuable=True, reason="")
+    return out
+
+
 class RunControl:
     """Pause / abort flags shared between the queue and running work."""
 
@@ -632,8 +701,16 @@ class SweepRunner:
     def __init__(self, definition: dict, channels, control: RunControl, path,
                  run_number: int, emit: Callable[[str, dict], None],
                  script_runner: Optional[Callable[[str, str], None]] = None,
-                 fsync_interval: float = 0.5, extra_header: Optional[dict] = None):
+                 fsync_interval: float = 0.5, extra_header: Optional[dict] = None,
+                 resume: Optional[dict] = None):
+        """*resume* continues an aborted run: ``{"source": its data file, "wait": s
+        after setting the channels to the first point not measured, "rerun_pre": run
+        the pre-sweep settings again}``.  The new file starts with everything the old
+        one recorded (which stays as it is), its header lists every abort
+        (``aborts``), and the points already measured are not visited again."""
         self.d = normalize_definition(definition)
+        self.resume = dict(resume) if resume else None
+        self._resume_wait: Optional[float] = None
         self.channels = channels
         self.control = control
         self.path = path
@@ -831,7 +908,13 @@ class SweepRunner:
             self._set(c["channel"], c["value"])
         if phase == "pre":
             vals, errs = self._record(p["record"]) if p["record"] else ({}, {})
-            self._store_phase("pre", vals, errs)
+            if self.resume:      # the original pre-sweep values stay; these are logged
+                if vals or errs:
+                    ev = {"event": "pre_rerun", "t": time.time(), "v": vals, "e": errs}
+                    self._journal(EVENT, ev, sync=True)
+                    self.dataset.events.append(ev)
+            else:
+                self._store_phase("pre", vals, errs)
         if phase == "post":
             self._hook("post")
 
@@ -898,10 +981,60 @@ class SweepRunner:
         hdr.update(self.extra_header)
         return hdr
 
+    def _resume_header(self) -> tuple:
+        """The header of a continuation, the old run's frames to copy and the abort."""
+        from .storage import DataSet as _DS, iter_frames
+        src = Path(self.resume["source"])
+        old = _DS.load(src)
+        h0 = old.header
+        footer = old.footer or {}
+        try:
+            mtime = src.stat().st_mtime
+        except OSError:
+            mtime = None
+        abort = {"run": h0.get("run"), "file": str(src),
+                 "status": footer.get("status") if old.footer else "incomplete",
+                 "error": footer.get("error") or ("" if old.footer else
+                                                  "the data file has no end (the backend "
+                                                  "stopped during the run)"),
+                 "ended": footer.get("ended") or mtime, "points": old.points,
+                 "total": old.total_points,
+                 "last_index": None if old.last_index is None else
+                 {"dimension": old.last_index[0] + 1, "index": list(old.last_index[1])},
+                 "continued": time.time(), "continued_as": self.run_number,
+                 "wait": float(self.resume.get("wait") or 0.0),
+                 "rerun_pre": bool(self.resume.get("rerun_pre", True)),
+                 "parameters": self._parameters_snapshot()}
+        header = {k: v for k, v in h0.items() if k not in ("file", "status")}
+        header.update(run=self.run_number, status="running", continued_from=str(src),
+                      first_run=h0.get("first_run", h0.get("run")),
+                      aborts=list(h0.get("aborts") or []) + [abort])
+        # the time spent measuring so far: @elapsed goes on from there
+        t0, t1 = h0.get("continued") or h0.get("started"), abort["ended"]
+        header["elapsed_before"] = float(h0.get("elapsed_before") or 0.0) + \
+            (max(0.0, t1 - t0) if t0 and t1 else 0.0)
+        header["continued"] = abort["continued"]
+        header.update(self.extra_header)
+        frames = [(t, o) for t, o in iter_frames(src) if t not in (HEADER, FOOTER)]
+        return header, frames, abort
+
     def run(self) -> str:
         """Run the sweep; returns final status (finished/aborted/error)."""
         self.t_start = time.time()
-        header = self.build_header()
+        frames, abort = [], None
+        if self.resume:
+            try:
+                header, frames, abort = self._resume_header()
+            except Exception as exc:
+                self.status, self.error = "error", "cannot continue %s: %s" % (
+                    self.resume.get("source"), exc)
+                log.error("run %d: %s", self.run_number, self.error)
+                self._emit("sweep_end", {"run": self.run_number, "status": self.status,
+                                         "error": self.error, "path": str(self.path)})
+                return self.status
+            self.t_start -= header["elapsed_before"]
+        else:
+            header = self.build_header()
         self.dataset = DataSet(header)
         try:
             self.journal = JournalWriter(self.path, self.fsync_interval)
@@ -912,6 +1045,26 @@ class SweepRunner:
                                      "error": self.error, "path": str(self.path)})
             return self.status
         self._journal(HEADER, header, sync=True)
+        if self.resume:
+            # everything the aborted run recorded, then where and why it stopped
+            for ftype, obj in frames:
+                self._journal(ftype, obj)
+                try:
+                    self.dataset.apply_frame(ftype, obj)
+                except Exception as exc:
+                    log.warning("run %d: frame of the aborted run skipped: %s",
+                                self.run_number, exc)
+            self._journal(EVENT, dict(abort, event="aborted"), sync=True)
+            self.dataset.events.append(dict(abort, event="aborted"))
+            cont = {"event": "continued", "t": time.time(), "wait": abort["wait"],
+                    "rerun_pre": abort["rerun_pre"], "points": self.dataset.points}
+            self._journal(EVENT, cont, sync=True)
+            self.dataset.events.append(cont)
+            self._resume_wait = abort["wait"]
+            log.warning("run %d continues run %s (%s%s) from %d of %d points; data file %s",
+                        self.run_number, abort["run"], abort["status"],
+                        (": " + abort["error"]) if abort["error"] else "",
+                        self.dataset.points, self.dataset.total_points, self.path)
         self._emit("sweep_start", {"run": self.run_number, "path": str(self.path),
                                    "header": header})
         log.info("run %d (%s) started: shape %s -> %s", self.run_number, self.d["name"],
@@ -919,13 +1072,16 @@ class SweepRunner:
         self.status = "running"
         main_error: Optional[BaseException] = None
         try:
-            self._phase("pre")
-            if _pre_configured(self.d, self.channels):
-                # the pre-sweep constants changed instrument settings (and maybe their
-                # channel lists): make sure the sweep still makes sense before point 1
-                validate_against(self.d, self.channels, after_pre=True,
-                                 abort_check=self.control.check)
-            self._value_axes()
+            rerun_pre = not self.resume or bool(self.resume.get("rerun_pre", True))
+            if rerun_pre:
+                self._phase("pre")
+                if _pre_configured(self.d, self.channels):
+                    # the pre-sweep constants changed instrument settings (and maybe
+                    # their channel lists): make sure the sweep still makes sense
+                    validate_against(self.d, self.channels, after_pre=True,
+                                     abort_check=self.control.check)
+            if not self.resume:
+                self._value_axes()
             self._loop(len(self.shape) - 1, ())
             self.status = "finished"
         except EndSweep:
@@ -973,6 +1129,8 @@ class SweepRunner:
                   "points": self.dataset.points, "read_failures": self.read_failures,
                   "skipped_points": self.skipped_points,
                   "out_of_range_skipped": self.out_of_range_skipped}
+        if self.resume:
+            footer["aborts"] = len(self.dataset.header.get("aborts") or [])
         if self.out_of_range_skipped:
             log.info("run %d: %d point%s skipped because a composite would be out of range",
                      self.run_number, self.out_of_range_skipped,
@@ -1001,6 +1159,13 @@ class SweepRunner:
         for pos, i in enumerate(order):
             self.control.check(on_pause=self._on_pause)
             idx = (i,) + outer
+            if self.resume and point_done(self.dataset, k, idx):
+                # measured before the abort: not visited again; the inner dimensions
+                # count the passes they made, so snake scans keep their direction
+                for j in range(k):
+                    self._pass_counts[j] += int(np.prod(self.shape[j + 1:k], dtype=np.int64))
+                continue
+            again = self.resume is not None and bool(self.dataset.filled[k][idx])
             sp = {name: self.setpoints[k][name][i] for name in sweep_names}
             ctx = {"k": k, "i": i, "index": idx,
                    "setpoints": {n: (float(v) if np.ndim(v) == 0 else v) for n, v in sp.items()}}
@@ -1034,13 +1199,16 @@ class SweepRunner:
                         self._set_many(values)
                 if hooks:
                     self._point_hook(k, "post_sweep", ctx)
+                if not again and (k == 0 or not dim["record_after_inner"]):
+                    self._settle_after_resume()   # this point records next
                 if dim["pre_delay"]:
                     self.control.sleep(dim["pre_delay"])
-                if not dim["record_after_inner"] or k == 0:
+                if (not dim["record_after_inner"] or k == 0) and not again:
                     self._record_event(k, idx, dim, ctx)
                 if k > 0:
                     self._loop(k - 1, idx)      # a skip in there belongs to the inner dim
-                if dim["record_after_inner"] and k > 0:
+                if dim["record_after_inner"] and k > 0 and not again:
+                    self._settle_after_resume()
                     self._record_event(k, idx, dim, ctx)
             except _OutOfRangeSkip:
                 self.out_of_range_skipped += 1
@@ -1054,6 +1222,17 @@ class SweepRunner:
                 for j in rest:
                     self._skip_point(k, (j,) + outer, quiet=True)
                 break
+
+    def _settle_after_resume(self) -> None:
+        """The first point a continuation measures: every sweep channel is set to it
+        now; wait the time the user asked for before recording."""
+        if self._resume_wait is None:
+            return
+        if self._resume_wait > 0:
+            log.info("run %d: waiting %g s before measuring again", self.run_number,
+                     self._resume_wait)
+            self.control.sleep(self._resume_wait)
+        self._resume_wait = None
 
     def _skip_point(self, k: int, idx: tuple, quiet: bool = False) -> None:
         """skip_point() was called: store the point as skipped (its data stay NaN, its
@@ -1110,6 +1289,14 @@ class SweepRunner:
         ds = self.dataset
         done = ds.points if ds is not None else 0
         total = ds.total_points if ds is not None else 0
+        if self.resume and ds is not None:      # the rate of this continuation
+            n0 = next((e.get("points", 0) for e in reversed(ds.events)
+                       if e.get("event") == "continued"), 0)
+            t0 = self.dataset.header.get("continued") or self.t_start
+            dt = time.time() - t0
+            eta = dt / (done - n0) * (total - done) if done > n0 else None
+            return {"done": done, "total": total, "elapsed": time.time() - self.t_start,
+                    "eta": eta}
         elapsed = time.time() - self.t_start if self.t_start else 0.0
         eta = elapsed / done * (total - done) if done else None
         return {"done": done, "total": total, "elapsed": elapsed, "eta": eta}

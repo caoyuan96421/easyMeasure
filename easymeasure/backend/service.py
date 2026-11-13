@@ -34,7 +34,8 @@ from .runqueue import RunQueue
 from .scripting import ScriptRunner
 from .storage import DataSet, DataStore, export_hdf5, read_header
 from .user_actions import UserAction, UserActions
-from .sweep import RunControl, SweepRunner, compute_setpoints, normalize_definition, validate_against
+from .sweep import (RunControl, SweepRunner, compute_setpoints, continuation_info,
+                    normalize_definition, validate_against)
 
 log = get_logger("backend")
 
@@ -68,7 +69,8 @@ class Backend:
         "define_user_action", "remove_user_action", "move_user_action",
         "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
-        "validate_sweep", "queue_add", "queue_remove", "queue_move", "queue_clear",
+        "validate_sweep", "queue_add", "continue_info", "continue_sweep", "queue_remove",
+        "queue_move", "queue_clear",
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
@@ -527,6 +529,22 @@ class Backend:
         """Send a command to an instrument without reading a reply (admin only remotely)."""
         self.instruments.get(instrument).raw_write(command)
 
+    def refuse_restricted(self, cmd: str, args: dict, restrict) -> None:
+        """What the gateway asks the backend to refuse for a remote operator:
+        ``raw_writes`` (:meth:`refuse_raw_writes`) and ``code`` (continuing a run
+        whose sweep has hook code: running code needs the admin role)."""
+        if "code" in restrict and cmd == "continue_sweep":
+            from ..remote.policy import _has_code
+            try:
+                d = read_header(args.get("path"))["definition"]
+            except Exception:
+                d = None                            # refused by continue_sweep itself
+            if d is not None and _has_code(d):
+                raise ChannelError("this sweep has hook code: continuing it runs that code, "
+                                   "which needs the admin role")
+        if "raw_writes" in restrict:
+            self.refuse_raw_writes(cmd, args)
+
     def refuse_raw_writes(self, cmd: str, args: dict) -> None:
         """Refuse a request that would write an instrument's own channel
         (``instrument.channel``, settings too; not its actions): what the gateway asks
@@ -538,8 +556,14 @@ class Backend:
         elif cmd == "set_many":
             vals = args.get("values")
             names = list(vals) if isinstance(vals, dict) else []
-        elif cmd == "queue_add":
+        elif cmd in ("queue_add", "continue_sweep"):
             item = args.get("item")
+            if cmd == "continue_sweep":
+                try:
+                    item = {"kind": "sweep",
+                            "definition": read_header(args.get("path"))["definition"]}
+                except Exception:
+                    return                          # refused by continue_sweep itself
             if isinstance(item, dict) and item.get("kind") == "sweep":
                 try:
                     d = normalize_definition(copy.deepcopy(item.get("definition") or {}))
@@ -768,7 +792,8 @@ class Backend:
             runner = SweepRunner(d, self.channels, self.control, path, run, self.emit,
                                  script_runner=self.scripts.run,
                                  fsync_interval=float(self.settings.get("fsync_interval", 0.5)),
-                                 extra_header={"queue_item": item.get("id")})
+                                 extra_header={"queue_item": item.get("id")},
+                                 resume=item.get("continue"))
             self.runner = runner
         item["run"] = run
         item["path"] = str(path)
@@ -885,6 +910,47 @@ class Backend:
         the item id."""
         if item.get("kind") == "sweep":
             validate_against(normalize_definition(item.get("definition") or {}), self.channels)
+        return self.queue.add(item, start=start, position=position)
+
+    def continue_info(self, path: str) -> dict:
+        """Where an aborted run stopped and where continuing it would go on:
+        ``{continuable, reason, status, error, run, name, points, total, ended,
+        last_index, next_index, next_setpoints, aborts}``."""
+        self._check_continuable_path(path)
+        info = continuation_info(path)
+        info.pop("definition", None)
+        return info
+
+    def _check_continuable_path(self, path: str) -> None:
+        p = Path(path)
+        if p.suffix.lower() != ".emj" or not p.exists():
+            raise EasyMeasureError("%s: not a data file (.emj) of this computer" % path)
+        cur = self.runner
+        if cur is not None and Path(cur.path) == p:
+            raise EasyMeasureError("%s is the run being measured" % p.name)
+
+    def continue_sweep(self, path: str, wait: float = 0.0, rerun_pre: bool = True,
+                       start: bool = False, position: Optional[int] = None) -> int:
+        """Queue the continuation of an aborted (or failed, or interrupted) run.  It
+        writes a **new** data file that starts with everything the old one recorded
+        (the old file is not touched), goes on from the first point not measured -
+        setting every sweep channel to it, then waiting *wait* seconds - and lists
+        every abort in its header (``aborts``) and as events.  *rerun_pre*: run the
+        pre-sweep settings and hook again first (their recordings are kept as an
+        event; the original pre-sweep values stay).  Returns the queue item id."""
+        self._check_continuable_path(path)
+        info = continuation_info(path)
+        if not info["continuable"]:
+            raise EasyMeasureError("run %s cannot be continued: %s" % (info["run"], info["reason"]))
+        wait = float(wait)
+        if not 0 <= wait <= 7 * 24 * 3600:
+            raise EasyMeasureError("wait must be 0 … 604800 s")
+        d = info["definition"]
+        validate_against(d, self.channels)
+        item = {"kind": "sweep", "definition": d, "name": "%s (continued)" % d["name"],
+                "continue": {"source": str(Path(path)), "wait": wait,
+                             "rerun_pre": bool(rerun_pre)},
+                "continues_run": info["run"]}
         return self.queue.add(item, start=start, position=position)
 
     def queue_remove(self, item_id: int) -> None:

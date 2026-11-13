@@ -28,8 +28,12 @@ checksum:
 * **header**: the full sweep definition, every setpoint, units, metadata;
 * **point**: the values recorded at one point;
 * **phase**: pre/post recordings;
-* **event**: status changes, notes;
-* **footer**: final status, points, skipped points, read failures.
+* **event**: status changes, notes, and the `aborted` / `continued` events of a
+  [continued run](queue.md#continuing-an-aborted-sweep);
+* **footer**: final status, points, skipped points, read failures, aborts.
+
+A continued run is a new file that starts with the frames of the run it continues.
+Its header lists every earlier abort under `aborts`.
 
 Every frame is flushed immediately and `fsync`-ed every `fsync_interval` (0.5 s,
 see [settings](../reference/settings.md)). After a crash or a power cut, the file

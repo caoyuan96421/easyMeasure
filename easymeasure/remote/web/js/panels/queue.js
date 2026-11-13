@@ -1,6 +1,6 @@
 // Run queue: state, queued items, history (rerun, open data), scripts.
 
-import { h, Table, btn, bar, group, clock, confirmDialog, qcan, codeChecker } from "../ui.js";
+import { h, Table, btn, bar, group, clock, confirmDialog, qcan, codeChecker, modal, fmt } from "../ui.js";
 
 const SCRIPT_HELP = `# Script API: get(name), set(name, value) - any channel; set('dmm.reset') runs an action - sleep(s),
 # log(msg), run_sweep(definition), instrument(name) ...
@@ -26,12 +26,16 @@ export class QueuePanel {
       { key: "ended", label: "Ended", fmt: (v) => clock(v) },
       { key: "run", label: "Run / error", fmt: (_, r) => (r.error ? r.error : r.run !== undefined && r.run !== null ? `run ${r.run}` : "") }],
       { onActivate: (r) => this._openData(r), empty: "no history yet",
-        onSelect: () => this._copyLabel(this.copyHist, this.history.current()) });
+        onSelect: () => this._histSelected() });
     this.copyQueued = btn("Copy to sweep editor", () => this._copy(this.queued.current()),
       { title: "copy the selected item into the sweep (or script) editor" });
     this.copyHist = btn("Copy to sweep editor", () => this._copy(this.history.current()),
       { title: "copy the selected item into the sweep (or script) editor" });
     this.copyQueued.disabled = this.copyHist.disabled = true;
+    this.continueBtn = btn("⏵ Continue…", () => this._continue(), { cmd: "continue_sweep",
+      title: "continue the selected aborted (or failed) sweep from the first point it did not measure, into a new data file" });
+    this.continueBtn.classList.add("continue-btn");
+    this.continueBtn.disabled = true;
     this.history.keyOf = (r) => r.id;
     this.scriptName = h("input", { value: "script", class: "w-chan" });
     this.script = h("textarea", { class: "code", rows: 8, spellcheck: false });
@@ -54,6 +58,7 @@ export class QueuePanel {
         this.copyQueued)),
       group("History", this.history.el, bar(
         btn("⟳ Rerun selected", () => this._rerun(), { cmd: "queue_add", title: "queue the selected sweep or script again and start" }),
+        this.continueBtn,
         this.copyHist,
         btn("Open data", () => this._openData(this.history.current()), { cmd: "load_run" }))),
       group("Script (admin)", this.script, bar(h("span", { text: "Name" }), this.scriptName,
@@ -78,7 +83,50 @@ export class QueuePanel {
     this.queued.set(q.queued || []);
     this.history.set((q.history || []).slice().reverse());
     this._copyLabel(this.copyQueued, this.queued.current());
-    this._copyLabel(this.copyHist, this.history.current());
+    this._histSelected();
+  }
+
+  _histSelected() {
+    const r = this.history.current();
+    this._copyLabel(this.copyHist, r);
+    this.continueBtn.disabled = !(r && r.kind === "sweep" && r.path && ["aborted", "error"].includes(r.status)) ||
+      !this.conn.can("continue_sweep");
+  }
+
+  /** Where the run stopped, why, where it goes on; how long to wait before measuring again. */
+  async _continue() {
+    const r = this.history.current();
+    if (!r || !r.path) return;
+    let info;
+    try { info = await this.conn.request("continue_info", { path: r.path }); } catch (e) { this.say(e.message, true); return; }
+    if (!info.continuable) { this.say(`run ${info.run} cannot be continued: ${info.reason}`, true); return; }
+    const when = info.ended ? new Date(info.ended * 1000).toLocaleString() : "?";
+    const why = info.error || (info.status === "aborted" ? "aborted by the user" : "");
+    const sp = Object.entries(info.next_setpoints || {}).map(([k, v]) => `${k} = ${typeof v === "number" ? fmt(v, 6) : v}`).join(", ");
+    const n = (info.aborts || []).length;
+    const wait = h("input", { type: "number", min: 0, step: "any", value: "0", class: "continue-wait" });
+    const rerun = h("input", { type: "checkbox", checked: true, class: "continue-rerun" });
+    const body = h("div", { class: "continue-dialog" },
+      h("p", {}, h("b", { text: `Run ${info.run}` }), ` (${info.name}) stopped: `, h("b", { text: info.status }),
+        why ? ` — ${why}` : "", `, at ${when}.`),
+      h("p", { text: `${info.points} of ${info.total} points were measured; they are copied into a new data file ` +
+        "(the old file stays as it is) and the run goes on from the first point not measured." }),
+      info.next_index ? h("p", { text: `Next point: index [${info.next_index.join(", ")}]${sp ? ": " + sp : ""}.` }) : "",
+      n ? h("p", { text: `It was continued ${n} time${n === 1 ? "" : "s"} before; every abort is kept in the data file.` }) : "",
+      h("div", { class: "form" },
+        h("label", { text: "Wait after setting the channels (s)" }), wait,
+        h("span", {}), h("label", { class: "check" }, rerun, " run the pre-sweep settings and hook again first")));
+    const how = await modal(`Continue run ${info.run}`, body,
+      [["Cancel", null], ["Add to queue", "queue"], ["Continue now", "start"]], {
+        onOk: async (v) => {
+          const w = Number(wait.value);
+          if (!Number.isFinite(w) || w < 0) throw new Error("the wait must be a number of seconds ≥ 0");
+          const id = await this.conn.request("continue_sweep",
+            { path: r.path, wait: w, rerun_pre: rerun.checked, start: v === "start" });
+          this.say(`continuation of run ${info.run} queued as item #${id}${v === "start" ? " and started" : ""}`);
+          return v;
+        } });
+    return how;
   }
 
   /** The copy button says where the selected item goes (sweep or script editor). */

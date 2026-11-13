@@ -409,8 +409,8 @@ class Server:
             try:
                 if not isinstance(args, dict):
                     raise ProtocolError("args must be a dict")
-                if "raw_writes" in restrict:      # a remote operator (set by the gateway)
-                    self.backend.refuse_raw_writes(cmd, args)
+                if restrict:                      # a remote operator (set by the gateway)
+                    self.backend.refuse_restricted(cmd, args, restrict)
                 if client.name.startswith("web:") and cmd in _local_only():
                     # defence in depth: the gateway already refuses these
                     raise ProtocolError("%s is only available on the backend computer" % cmd)

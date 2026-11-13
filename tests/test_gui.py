@@ -1472,7 +1472,7 @@ def test_setup_and_sweep_menus(app, gui):
         ["Save setup…", "Load setup…", "Merge setup…"]
     texts = [a.text() for a in w.sweep_menu.actions() if not a.isSeparator()]
     assert texts == ["New", "Load…", "Load from data file…", "Save…", "Validate",
-                     "Add to queue", "Add && start"]
+                     "Add to queue", "Add && start", "Continue an aborted run…"]
     # no buttons left for them in the panels
     btns = [b.text() for b in w.setup_panel.findChildren(QPushButton)] + \
         [b.text() for b in w.editor.findChildren(QPushButton)]
@@ -1553,3 +1553,56 @@ def test_check_buttons_on_code_and_formula_fields(app, gui):
     qp.script.setPlainText("log('hi')")
     qp._add_script(False)
     assert pump(app, 5, lambda: len(be.queue_state()["queued"]) == n + 1)
+
+
+def test_continue_an_aborted_run(app, gui, monkeypatch):
+    w, be, _, _ = gui
+    from easymeasure.frontend import continue_dialog
+    d = {"name": "cont_gui", "dimensions": [
+        {"points": 12, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.11}], "record": ["I"],
+         "pre_delay": 0.02}]}
+    fired = []
+
+    def cb(kind, data):
+        if kind == "sweep_point" and not fired and data["progress"]["done"] >= 4:
+            fired.append(1)
+            be.queue.abort("stopped by the test")
+    be.add_listener(cb)
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(30)
+    first = be.queue_state()["history"][-1]
+    assert first["status"] == "aborted"
+    qp = w.queue_panel
+    assert pump(app, 5, lambda: qp.history.rowCount() >= 1)
+    assert not qp.continue_btn.isEnabled()
+    rows = [qp.history.item(r, 2).text() for r in range(qp.history.rowCount())]
+    qp.history.selectRow(rows.index("cont_gui"))
+    pump(app, 0.1)
+    assert qp.continue_btn.isEnabled()
+    # the dialog: where it stopped, the wait (0 s by default), the pre-sweep rerun
+    seen = {}
+
+    def fake_exec(dlg):
+        seen["text"] = continue_dialog.describe(dlg.info)
+        assert dlg.wait.value() == 0 and dlg.rerun_pre.isChecked()
+        dlg.wait.setValue(0.2)
+        dlg.rerun_pre.setChecked(False)
+        dlg.start = True
+        return continue_dialog.ContinueDialog.Accepted
+    monkeypatch.setattr(continue_dialog.ContinueDialog, "exec", fake_exec)
+    qp.continue_btn.click()
+    assert pump(app, 20, lambda: len(be.queue_state()["history"]) >= 2 and
+                be.queue_state()["state"] == "idle" and
+                be.queue_state()["history"][-1].get("continues_run") == first["run"])
+    assert "stopped by the test" in seen["text"] and "new data file" in seen["text"]
+    fin = be.queue_state()["history"][-1]
+    assert fin["status"] == "finished"
+    ds = DataSet.load(fin["path"])
+    assert ds.points == 12 and ds.header["aborts"][0]["wait"] == 0.2
+    assert ds.header["aborts"][0]["rerun_pre"] is False
+    # a finished run cannot be continued
+    pump(app, 0.3)
+    rows = [qp.history.item(r, 2).text() for r in range(qp.history.rowCount())]
+    qp.history.selectRow(rows.index("cont_gui (continued)"))
+    pump(app, 0.1)
+    assert not qp.continue_btn.isEnabled()

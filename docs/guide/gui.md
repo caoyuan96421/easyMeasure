@@ -82,7 +82,8 @@ policies and metadata are below.
 
 The **Sweep** menu works on the sweep in the editor: *New*, *Load… / Save…* (JSON),
 *Load from data file…* (the definition of a stored run), *Validate* (limit-checks every
-setpoint), *Add to queue* and *Add & start*.
+setpoint), *Add to queue* and *Add & start*. *Continue an aborted run…* picks a run of
+the data folder and [continues it](queue.md#continuing-an-aborted-sweep).
 
 ## Queue
 
@@ -93,7 +94,8 @@ The queue panel has:
 * the controls: Start, Pause, Resume, Abort, Abort all and Stop after current,
   enabled by what the queue can do now;
 * the queued items, which can be reordered and removed;
-* the history: *Rerun selected*, *Open data*, and *Copy to sweep / script editor*;
+* the history: *Rerun selected*, *Continue…* (an aborted or failed sweep, from where it
+  stopped), *Open data*, and *Copy to sweep / script editor*;
 * a script editor.
 
 See [The run queue](queue.md).

@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("aiohttp")
 sync_api = pytest.importorskip("playwright.sync_api")
 
+from easymeasure.backend.storage import DataSet  # noqa: E402
 from test_remote import GW, PW, gw, gw_factory, home, server  # noqa: F401  (fixtures)
 
 
@@ -669,5 +670,60 @@ def test_web_setup_layout_tabs_and_checks(browser, gw, demo):
     page.fill(".panel.queue textarea.code", "x = get('Vg')")
     page.click(".script-check")
     page.wait_for_selector(".panel.queue .check-info.ok:has-text('valid Python')", timeout=10000)
+    assert not errors, errors
+    page.context.close()
+
+
+def test_web_continue_an_aborted_run(browser, gw, demo):
+    errors = []
+    d = {"name": "web_cont", "dimensions": [
+        {"points": 10, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.09}], "record": ["I"],
+         "pre_delay": 0.02}]}
+    fired = []
+
+    def cb(kind, data):
+        if kind == "sweep_point" and not fired and data["progress"]["done"] >= 3:
+            fired.append(1)
+            demo.queue.abort("stopped by the test")
+    demo.add_listener(cb)
+    demo.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert demo.queue.wait_idle(30)
+    first = demo.queue_state()["history"][-1]
+    assert first["status"] == "aborted"
+    page = open_page(browser, gw, "olga", errors)          # an operator may continue
+    page.click(".tab:has-text('Queue')")
+    btn = ".panel.queue .continue-btn"
+    page.wait_for_selector(".panel.queue td:text-is('web_cont')")
+    assert page.is_disabled(btn)
+    page.click(".panel.queue td:text-is('web_cont')")
+    assert not page.is_disabled(btn)
+    page.click(btn)
+    page.wait_for_selector("dialog.modal .continue-dialog")
+    text = page.text_content("dialog.modal .continue-dialog")
+    assert "stopped by the test" in text and "new data file" in text and "Next point" in text
+    assert page.input_value("dialog.modal .continue-wait") == "0"
+    assert page.is_checked("dialog.modal .continue-rerun")
+    page.fill("dialog.modal .continue-wait", "0.25")
+    page.click("dialog.modal button:text-is('Add to queue')")
+    page.wait_for_function("!document.querySelector('dialog.modal')")
+    for _ in range(100):
+        if demo.queue_state()["queued"]:
+            break
+        time.sleep(0.05)
+    q = demo.queue_state()
+    assert q["state"] == "idle" and q["queued"][0]["name"] == "web_cont (continued)"
+    demo.queue_start()
+    assert demo.queue.wait_idle(30)
+    fin = demo.queue_state()["history"][-1]
+    assert fin["status"] == "finished" and fin["continues_run"] == first["run"]
+    ds = DataSet.load(fin["path"])
+    assert ds.points == 10 and ds.header["aborts"][0]["wait"] == 0.25
+    # the data view lists the abort
+    page.click(".panel.queue td:text-is('web_cont (continued)')")
+    page.click(".panel.queue button:has-text('Open data')")
+    page.wait_for_function("document.body.textContent.includes('abort 1: run %s aborted (stopped by the test)')"
+                           % first["run"], timeout=10000)
+    page.click(".panel.queue td:text-is('web_cont (continued)')")
+    assert page.is_disabled(btn)
     assert not errors, errors
     page.context.close()

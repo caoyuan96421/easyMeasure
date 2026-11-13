@@ -95,9 +95,13 @@ export class DataView {
     this.title.textContent = `Run ${hd.run ?? "?"} – ${hd.name || ""}   [${ds.status}]   ${ds.points}/${ds.totalPoints} points${errs ? `   ${errs} read errors` : ""}`;
     if (this.live) {
       this.progress.value = 100 * ds.points / (ds.totalPoints || 1);
-      if (hd.started && ds.status === "running" && ds.points) {
-        const el = Date.now() / 1000 - hd.started;
-        this.eta.textContent = `elapsed ${fmtTime(el)}, remaining ~${fmtTime(el / ds.points * (ds.totalPoints - ds.points))}`;
+      // a continued run: the rate since it was continued
+      const ab = hd.aborts || [];
+      const p0 = ab.length ? ab[ab.length - 1].points || 0 : 0;
+      const t0 = hd.continued || hd.started;
+      if (t0 && ds.status === "running" && ds.points > p0) {
+        const el = Date.now() / 1000 - t0;
+        this.eta.textContent = `elapsed ${fmtTime(el)}, remaining ~${fmtTime(el / (ds.points - p0) * (ds.totalPoints - ds.points))}`;
       } else if (ds.status !== "running") this.eta.textContent = "";
     }
   }
@@ -110,6 +114,10 @@ export class DataView {
     if (Object.keys(ds.pre).length) lines.push("pre: " + JSON.stringify(short(ds.pre)));
     if (Object.keys(ds.post).length) lines.push("post: " + JSON.stringify(short(ds.post)));
     if (ds.footer) lines.push("footer: " + JSON.stringify(toJSONable(ds.footer)));
+    const when = (t) => (t ? new Date(t * 1000).toLocaleString() : "?");
+    (ds.header.aborts || []).forEach((a, i) => lines.push(`abort ${i + 1}: run ${a.run} ${a.status}` +
+      `${a.error ? ` (${a.error})` : ""} at ${when(a.ended)} after ${a.points} of ${a.total} points; ` +
+      `continued ${when(a.continued)} (wait ${a.wait || 0} s) as run ${a.continued_as}`));
     lines.push("", JSON.stringify(toJSONable(ds.header.definition || {}), null, 2));
     this.details.textContent = lines.join("\n");
   }

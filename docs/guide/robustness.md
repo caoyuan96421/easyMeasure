@@ -112,6 +112,9 @@ After clearing the fault on the instrument, start the queue again by hand.
   crash it loads up to the last fraction of a second.
 * If the disk fails mid-run, the sweep keeps running in memory and the error is
   reported.
+* An aborted or crashed sweep can be [continued](queue.md#continuing-an-aborted-sweep)
+  from the first point it did not measure. The run goes into a new file that holds
+  the old data and the new data together, and lists every abort.
 * PowerPoint slides that cannot be written to the target go to a `_pending` file.
 
 ## Seeing it work

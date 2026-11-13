@@ -218,10 +218,13 @@ class DataView(QWidget):
             ("  &nbsp; %d read errors" % sum(ds.errors.values())) if ds.errors else ""))
         if self.live:
             self.progress.setValue(int(100 * ds.points / total))
-            started = h.get("started")
-            if started and ds.status == "running" and ds.points:
+            # a continued run: the rate since it was continued
+            aborts = h.get("aborts") or []
+            p0 = aborts[-1].get("points", 0) if aborts else 0
+            started = h.get("continued") or h.get("started")
+            if started and ds.status == "running" and ds.points > p0:
                 el = time.time() - started
-                rem = el / ds.points * (total - ds.points)
+                rem = el / (ds.points - p0) * (total - ds.points)
                 self.eta.setText("elapsed %s, remaining ~%s" % (_fmt_t(el), _fmt_t(rem)))
             elif ds.status != "running":
                 self.eta.setText("")
@@ -243,6 +246,16 @@ class DataView(QWidget):
                                        for k, v in ds.post.items()})
         if ds.footer:
             lines.append("footer: %s" % ds.footer)
+        for n, a in enumerate(ds.header.get("aborts") or [], 1):
+            lines.append("abort %d: run %s %s%s at %s after %s of %s points; continued %s "
+                         "(wait %g s) as run %s" % (
+                             n, a.get("run"), a.get("status"),
+                             (" (%s)" % a["error"]) if a.get("error") else "",
+                             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(a["ended"]))
+                             if a.get("ended") else "?", a.get("points"), a.get("total"),
+                             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(a["continued"]))
+                             if a.get("continued") else "?", a.get("wait") or 0,
+                             a.get("continued_as")))
         lines.append("")
         lines.append(json.dumps(to_jsonable(d), indent=2))
         self.details.setPlainText("\n".join(lines))

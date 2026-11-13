@@ -340,6 +340,13 @@ class MainWindow(QMainWindow):
             self.sweep_menu.addAction(act)
             act.triggered.connect(lambda _=False: self._show_tab(self.editor))
             self.lock_group.addAction(act)
+        self.sweep_menu.addSeparator()
+        act = QAction("Continue an aborted run…", self)
+        act.setToolTip("pick a data file of an aborted or failed run and go on from where it "
+                       "stopped (also the selected run in Queue → History: ⏵ Continue…)")
+        act.triggered.connect(self.continue_from_file)
+        self.sweep_menu.addAction(act)
+        self.lock_group.addAction(act)
         b = self.menuBar().addMenu("&Backend")
         for text, fn in (("Start backend", self.start_backend), ("Reconnect", self._reconnect),
                          ("Restart backend…", self.restart_backend),
@@ -627,6 +634,25 @@ class MainWindow(QMainWindow):
         i = self.data_tabs.addTab(view, os.path.basename(path))
         self.data_tabs.setTabToolTip(i, path)
         self.data_tabs.setCurrentIndex(i)
+
+    def continue_from_file(self):
+        """Sweep → Continue an aborted run…: choose one of the recent runs."""
+        from .panels.queue_panel import continue_run
+
+        def got(runs):
+            if not runs:
+                self._message("info", "no runs found")
+                return
+            items = ["%s   (%s)" % (r["name"], time.strftime("%Y-%m-%d %H:%M",
+                                                             time.localtime(r["mtime"])))
+                     for r in runs]
+            item, ok = QInputDialog.getItem(self, "Continue a run", "Run:", items, 0, False)
+            if ok:
+                continue_run(self, self.conn, runs[items.index(item)]["path"],
+                             lambda t: self._message("error" if t.startswith("✘") else "info",
+                                                     t.lstrip("✘ ")))
+        self.conn.request("list_runs", {"limit": 300}, on_ok=got,
+                          on_err=lambda e: self._message("error", e))
 
     def browse_runs(self):
         def got(runs):

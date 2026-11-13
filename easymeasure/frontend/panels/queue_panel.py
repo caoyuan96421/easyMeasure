@@ -22,6 +22,32 @@ SCRIPT_HELP = ("# get(name), set(name, value) - any channel; set('dmm.reset') ru
                "# state (persistent dict), np, math, time\n")
 
 
+def continuable(item) -> bool:
+    """A history item that can be continued: a sweep stopped before its end."""
+    return bool(item) and item.get("kind") == "sweep" and bool(item.get("path")) and \
+        item.get("status") in ("aborted", "error")
+
+
+def continue_run(parent, conn, path: str, say) -> None:
+    """Ask the backend where the run in *path* stopped, ask the user how to go on,
+    then queue the continuation."""
+    from ..continue_dialog import ContinueDialog
+
+    def got(info):
+        if not info.get("continuable"):
+            say("✘ run %s cannot be continued: %s" % (info.get("run"), info.get("reason")))
+            return
+        dlg = ContinueDialog(info, parent)
+        if dlg.exec() != ContinueDialog.Accepted:
+            return
+        v = dlg.values()
+        conn.request("continue_sweep", v,
+                     on_ok=lambda i: say("continuation of run %s queued as #%s%s" % (
+                         info.get("run"), i, " and started" if v["start"] else "")),
+                     on_err=lambda e: say("✘ %s" % e))
+    conn.request("continue_info", {"path": path}, on_ok=got, on_err=lambda e: say("✘ %s" % e))
+
+
 def apply_queue_controls(buttons: dict, q: dict) -> None:
     """Enable the queue buttons {command: widget} by what the queue can do now."""
     can = q.get("can") or {}
@@ -99,6 +125,10 @@ class QueuePanel(QWidget):
         self.rerun_btn = QPushButton("⟳ Rerun selected")
         self.rerun_btn.setToolTip("queue the selected sweep or script again (same definition) and start")
         self.rerun_btn.clicked.connect(self._rerun)
+        self.continue_btn = QPushButton("⏵ Continue…")
+        self.continue_btn.setToolTip("continue the selected aborted (or failed) sweep from the "
+                                     "first point it did not measure, into a new data file")
+        self.continue_btn.clicked.connect(self._continue)
         self.open_btn = QPushButton("Open data")
         self.open_btn.setToolTip("open the data file of the selected run")
         self.open_btn.clicked.connect(self._open_data)
@@ -109,6 +139,7 @@ class QueuePanel(QWidget):
         self._hist_selection()
         hb = FlowLayout()
         hb.addWidget(self.rerun_btn)
+        hb.addWidget(self.continue_btn)
         hb.addWidget(self.copy_hist)
         hb.addWidget(self.open_btn)
         hb.addStretch(1)
@@ -271,7 +302,13 @@ class QueuePanel(QWidget):
             (it.get("kind") == "sweep" and bool(it.get("definition"))) or
             (it.get("kind") == "script" and it.get("code") is not None)))
         self.open_btn.setEnabled(it is not None and bool(it.get("path")))
+        self.continue_btn.setEnabled(continuable(it))
         self._copy_label(self.copy_hist, it)
+
+    def _continue(self):
+        it = self._selected_history()
+        if continuable(it):
+            continue_run(self, self.conn, it["path"], self.msg.setText)
 
     def _rerun(self):
         it = self._selected_history()
