@@ -42,7 +42,8 @@ module).
   and colormaps, sliders for extra dimensions), a monitor panel, and automatic
   PowerPoint slides at the end of every run.
 * **Ready-made hardware drivers** (Keithley 2400, Keysight B2901/B2902, SR830/SR850,
-  HP 34401A, NI USB-6211, Yokogawa 7651, HP 4145/4155), each tested against an emulator built from the
+  HP 34401A, NI USB-6211, Yokogawa 7651, HP 4145/4155, Agilent E8358A PNA network
+  analyzer, AMI 430 magnet supply), each tested against an emulator built from the
   instrument's programming manual; mode switches rename channels and change units
   and the front ends follow. A **Driver Wizard** builds drivers for other
   command-based instruments from a form (templates, init script, try-it).
@@ -508,6 +509,7 @@ callback, files load and slides render in worker threads.
 | `ni63xx` | NI USB-63xx X Series DAQ: USB-6341/6343/6346/6349/6351/6353/6356/6361/6363/6366 (NI-DAQmx) | channels follow *`model`* (auto = as reported): `ai0…` (8–32), vector `ai`, `ao0…` (2–4), digital lines `dio0…` (port 0: 8 or 32) and `pfi0…15`, `ctr0…3`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`*, *`ao_range`*; actions `reset_counters`, `release_digital` |
 | `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
 | `hp4145` | HP 4145A/B, HP 4155/4156 in 4145 syntax (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
+| `e8358a` | Agilent / Keysight E8358A PNA network analyzer (E8356A / E8357A too) | traces `S11`, `S21`, `S12`, `S22` (dB) with `…_phase`, `…_re`, `…_im`, axis `frequencies`; `power`, `sweep_time`; *`f_start`*, *`f_stop`*, *`f_center`*, *`f_span`*, *`points`*, *`if_bandwidth`*, *`sweep_type`*, *`averaging`*, *`average_count`*, *`output`*, *`correction`*; actions `single_sweep`, `continuous`, `preset` |
 
 **Source-measure units.** In `Voltage` mode `voltage` is the source (read/write) and
 `current` is measured (read-only); the compliance is the current limit `Icompliance`

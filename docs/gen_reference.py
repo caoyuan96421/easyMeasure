@@ -61,8 +61,8 @@ INTERFACE_NAMES = {
 ROLE = {0: "viewer", 1: "operator", 2: "admin", None: "local only"}
 
 HARDWARE_ORDER = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a",
-                  "yokogawa7651", "hp4145", "ami430", "ni6211", "ni63xx", "cygnus16430",
-                  "scpi_generic"]
+                  "yokogawa7651", "hp4145", "e8358a", "ami430", "ni6211", "ni63xx",
+                  "cygnus16430", "scpi_generic"]
 
 KIND = {
     "keithley2400": "Source-measure unit", "keysight_b2901": "Source-measure unit",
@@ -71,13 +71,13 @@ KIND = {
     "hp4145": "Semiconductor parameter analyzer", "ni6211": "Multifunction DAQ",
     "ni63xx": "Multifunction DAQ (X Series)", "cygnus16430": "8-channel supply",
     "scpi_generic": "Any SCPI instrument (configured by options)",
-    "ami430": "Superconducting magnet supply",
+    "ami430": "Superconducting magnet supply", "e8358a": "Vector network analyzer",
 }
 
 SHORT_NAME = {"keithley2400": "smu", "keysight_b2901": "smu", "keysight_b2902": "smu2",
               "sr830": "lockin", "hp34401a": "dmm", "yokogawa7651": "src", "hp4145": "spa",
               "ni6211": "daq", "ni63xx": "daq", "cygnus16430": "cyg", "scpi_generic": "inst",
-              "ami430": "magnet"}
+              "ami430": "magnet", "e8358a": "vna"}
 
 COMMAND_GROUPS = [
     ("Connection and state", ["ping", "get_state", "get_settings", "set_settings", "shutdown",
