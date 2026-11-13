@@ -108,6 +108,20 @@ def test_averaging_reverse_parameters_and_preset(backend):
     ref = np.asarray(be.read_channel("vna.S12_re"))              # same averaged sweep
     assert emu.triggers == 2
     assert np.std(quiet - ref) < np.std(noisy - s12) / 3         # averaged: less noise
+    # delete_traces: every measurement goes (the user's too), the settings stay; then
+    # only what is read is measured - S21 alone: no reverse sweep
+    be.write_channel("vna.delete_traces")
+    assert emu.meas == {} and be.read_channel("vna.points") == 101
+    be.read_channel("vna.S21")
+    assert emu.meas == {"EM_S21": "S21"} and emu._directions() == 1
+    # ... also as the first pre-sweep constant
+    emu.meas["CH1_S22_1"] = "S22"                                # made at the front panel
+    be.queue_add({"kind": "sweep", "definition": {"name": "s21", "dimensions": [
+        {"points": 2, "record": ["vna.S21"]}],
+        "pre": {"constants": [{"channel": "vna.delete_traces"}]}}}, start=True)
+    assert be.queue.wait_idle(30)
+    assert be.queue_state()["history"][-1]["status"] == "finished"
+    assert emu.meas == {"EM_S21": "S21"}
     # preset: the analyzer starts over; the measurements are created again
     be.write_channel("vna.preset")
     assert emu.meas == {}

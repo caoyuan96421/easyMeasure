@@ -19,7 +19,10 @@ One sweep per point
     it: recording ``S21`` and ``S21_phase`` at a point costs one sweep, not two.
     The next reading of a channel already read starts the next sweep.  The analyzer
     then stays in HOLD, showing the last sweep; the ``continuous`` action lets it
-    sweep freely again (for looking at the front panel).  A sweep that has not
+    sweep freely again (for looking at the front panel).  Every measurement on the
+    analyzer is swept, also ones made at its front panel: the ``delete_traces``
+    action (a first pre-sweep constant) removes them all, settings unchanged, so a
+    sweep measures only what it records.  A sweep that has not
     ended after ``3 × sweep time × sweeps + sweep_timeout`` s is an error.
 
 Settings
@@ -102,8 +105,12 @@ class E8358A(SCPIInstrument):
                    "next readings use it", timeout=600.0),
         ActionSpec("continuous", "let the analyzer sweep continuously (front panel); the "
                    "next reading goes back to single sweeps"),
-        ActionSpec("preset", "factory preset (SYSTem:FPReset): every setting to default, the "
-                   "measurements are created again when read"),
+        ActionSpec("delete_traces", "delete every measurement (trace) on the analyzer, the "
+                   "settings stay; the next sweep measures only what is read (a first pre-sweep "
+                   "constant: no stray S12 / S22 adding a reverse sweep)"),
+        ActionSpec("preset", "factory preset (SYSTem:FPReset): every setting to its default - "
+                   "e.g. 0 dBm with RF on - and no measurements; delete_traces keeps the "
+                   "settings"),
     ]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, timeout=10.0, channel=1,
                            parameters="", sweep_timeout=30.0, poll_interval=0.05)
@@ -304,6 +311,11 @@ class E8358A(SCPIInstrument):
 
     def _action_continuous(self):
         self.w("SENS%d:SWE:MODE CONT" % self.ch)
+        self._fresh()
+
+    def _action_delete_traces(self):
+        self.checked("CALC%d:PAR:DEL:ALL" % self.ch)
+        self.measured = {}
         self._fresh()
 
     def _action_preset(self):
