@@ -73,8 +73,10 @@ export class Model {
     return this.channelList().filter(pred)
       .sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9)).map((c) => c.name);
   }
-  /** channels with a value that can be written (not actions) */
+  /** channels with a value that can be written (not actions); an instrument's own
+   *  channels only if this session may write them (not remote operators) */
   writableChannels(numericOnly = false, hardware = true) {
+    if (this.conn && this.conn.canWriteRaw && !this.conn.canWriteRaw()) hardware = false;
     return this._names((c) => c.writable && !["action", "user_action"].includes(c.kind) &&
       !(numericOnly && c.dtype === "str") && (hardware || !["hardware", "config"].includes(c.kind)));
   }

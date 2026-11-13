@@ -512,6 +512,29 @@ def test_roles_enforced_end_to_end(gw, demo):
             assert ei.value.kind == "PermissionError", cmd
         assert not os.path.exists("/tmp/pwned")
         assert demo.channels.info("Vg")["max"] == 2.0           # limits unchanged
+        # an instrument's own channels (written without limits): not for operators,
+        # by no route; reading them and running instrument actions is fine
+        assert "raw_writes" in o.welcome.get("restrict", []) and not a.welcome.get("restrict")
+        assert o.call("read_channel", name="src.V1") == pytest.approx(0.1)
+        raw_sweeps = [
+            {"name": "r", "dimensions": [{"points": 2, "sweep": [
+                {"channel": "src.V1", "start": 0, "stop": 5}]}]},
+            {"name": "r", "dimensions": [{"points": 2}],
+             "pre": {"constants": [{"channel": "dmm.nplc", "value": 10}]}},
+            {"name": "r", "dimensions": [{"points": 2}],
+             "post": {"constants": [{"channel": "src.not_yet", "value": 1}]}}]
+        for cmd, args in (("write_channel", {"name": "src.V1", "value": 5}),
+                          ("write_channel", {"name": "dmm.nplc", "value": 10}),
+                          ("set_many", {"values": {"Vg": 0.2, "src.V2": 5}}),
+                          *(("queue_add", {"item": {"kind": "sweep", "definition": d}})
+                            for d in raw_sweeps)):
+            with pytest.raises(RemoteError, match="own channel") as ei:
+                o.call(cmd, **args)
+        assert demo.channels.get("src.V2") == 0.0 and demo.channels.get("src.V1") < 1
+        assert demo.read_channel("dmm.nplc") != 10
+        # the admin may
+        a.call("write_channel", name="src.V2", value=0.5)
+        assert demo.channels.get("src.V2") == 0.5
         for cmd in ("start_tray", "remote_stop", "remote_set_user"):
             with pytest.raises(RemoteError) as ei:
                 a.call(cmd)

@@ -36,6 +36,7 @@ export class Connection {
     this.connected = false;
     this.welcome = null;
     this.allowed = new Set();
+    this.restrict = new Set();
     this.role = null;
     this.user = null;
     this._retry = 1000;
@@ -52,6 +53,8 @@ export class Connection {
     }
   }
   can(cmd) { return this.allowed.has(cmd); }
+  /** may this session write an instrument's own channels (instrument.channel)? */
+  canWriteRaw() { return !this.restrict.has("raw_writes"); }
 
   start() {
     this._stopped = false;
@@ -107,6 +110,8 @@ export class Connection {
     } else if (t === "welcome") {
       this.welcome = msg;
       this.allowed = new Set(msg.allowed || []);
+      /** what the backend refuses for this role: "raw_writes" (an instrument's own channels) */
+      this.restrict = new Set(msg.restrict || []);
       this.role = msg.role;
       this.user = msg.user;
       this.connected = true;

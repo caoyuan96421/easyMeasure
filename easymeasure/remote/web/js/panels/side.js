@@ -396,7 +396,8 @@ export class ManualPanel {
     this.actSig = null;
     this.params = new Map();
     this.paramHost = h("div", { class: "man-params" });
-    this.el = h("div", { class: "panel manual" }, bar(this.filter, h("label", { class: "check" }, this.settings, " settings"),
+    this.settingsLabel = h("label", { class: "check" }, this.settings, " settings");
+    this.el = h("div", { class: "panel manual" }, bar(this.filter, this.settingsLabel,
       h("label", { class: "check" }, this.ramp, " ramp")), this.stopBtn, this.actionsBar, this.host, this.paramHost, this.status);
     app.model.on("state", (st) => this._state(st));
     app.model.on("ramps", (act) => this.showRamps(act));
@@ -425,7 +426,7 @@ export class ManualPanel {
     const out = [];
     for (const a of this.app.model.aliases()) if (a.writable && (a.dtype === "str" || !(a.shape && a.shape.length))) out.push(a);
     for (const v of this.app.model.virtualChannels()) if (v.writable) out.push(v);
-    if (this.settings.checked) {
+    if (this.settings.checked && this.conn.canWriteRaw()) {
       for (const i of this.app.model.instruments()) {
         for (const c of i.channels || []) {
           if (c.config && (c.access || "rw").includes("w") && (c.dtype === "str" || !(c.shape && c.shape.length))) {
@@ -530,6 +531,7 @@ export class ManualPanel {
   }
 
   _state() {
+    this.settingsLabel.hidden = !this.conn.canWriteRaw();   // remote operators: aliases only
     this._showActions();
     this._showParams();
     const chans = this._channels();

@@ -403,11 +403,14 @@ class Server:
         rid = msg.get("id")
         cmd = msg.get("cmd")
         args = msg.get("args") or {}
+        restrict = msg.get("restrict") or []
 
         def run():
             try:
                 if not isinstance(args, dict):
                     raise ProtocolError("args must be a dict")
+                if "raw_writes" in restrict:      # a remote operator (set by the gateway)
+                    self.backend.refuse_raw_writes(cmd, args)
                 if client.name.startswith("web:") and cmd in _local_only():
                     # defence in depth: the gateway already refuses these
                     raise ProtocolError("%s is only available on the backend computer" % cmd)

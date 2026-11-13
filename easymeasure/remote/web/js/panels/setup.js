@@ -432,6 +432,10 @@ export class SetupPanel {
     if (!ref) { this.say("select a channel", true); return; }
     const c = this.raw.current();
     if (!(c.access || "rw").includes("w")) { this.say(`${ref} is read-only`, true); return; }
+    if (!this.conn.canWriteRaw()) {
+      this.say(`${ref}: an instrument's own channel is written without limits; set it through its alias (admin role needed)`, true);
+      return;
+    }
     let current = "";
     try { current = await this.conn.request("read_channel", { name: ref }); this._noteValue(ref, current); } catch (e) { /* unknown */ }
     if (c.allowed && c.allowed.length) {

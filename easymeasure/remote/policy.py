@@ -6,11 +6,15 @@ Three roles, each including the rights of the one before:
     Watch everything: state, monitor, live and stored data, logs, queue.  Reads
     channels (an instrument query) but changes nothing.
 ``operator``
-    Run measurements within the configured setup: write channels (alias limits
-    and ramp rates are always enforced by the backend; channels of instruments are
-    written as they are), run instrument actions and the user actions an admin
-    defined (writing them), set parameters, monitor channels, queue / start /
-    pause / abort sweeps, add PPT slides, reconnect instruments.  Cannot run Python code (scripts, sweep hooks), change
+    Run measurements within the configured setup: write channels (aliases,
+    composite channels, parameters: their limits and ramp rates are always
+    enforced by the backend), run instrument actions and the user actions an admin
+    defined (writing them), monitor channels, queue / start / pause / abort sweeps,
+    add PPT slides, reconnect instruments.  Not the instruments' own channels
+    (``instrument.channel``, settings too): they are written without limits, so
+    setting or sweeping them - directly, as a sweep channel or a constant - needs
+    the admin role (:data:`RESTRICT`; the backend refuses it, it knows which names
+    are those channels).  Reading them is fine.  Cannot run Python code (scripts, sweep hooks), change
     instruments, aliases or their limits, send raw instrument commands, change
     backend settings or touch files outside the data directory.
 ``admin``
@@ -127,6 +131,13 @@ def _has_code(definition) -> bool:
             if str(code or "").strip():
                 return True
     return False
+
+
+def restrictions(role: str) -> list:
+    """What the backend must refuse for this role in every request (it knows the
+    channels; the gateway does not): ``raw_writes`` - writing an instrument's own
+    channels (``write_channel``, ``set_many``, the channels a queued sweep writes)."""
+    return [] if LEVEL.get(role, -1) >= 2 else ["raw_writes"]
 
 
 def check(role: str, cmd: str, args: dict, data_roots: Iterable[str]) -> dict:

@@ -861,7 +861,7 @@ account key is kept in `<home>/remote/tls/acme/`.
 | role | may |
 |---|---|
 | `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
-| `operator` | + set channels and config channels (alias limits and ramp rates always apply), run instrument actions and user actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
+| `operator` | + write aliases, composite channels and parameters (limits and ramp rates always apply), run instrument actions and user actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments; **not** an instrument's own channels (`src.V1`, settings): those are written without limits, so the backend refuses an operator's write, sweep or sweep constant on them |
 | `admin` | + scripts and sweep hook code (Python on the backend computer = full control), Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
 
 Operators cannot run code: sweeps with pre/post hook code are refused for them, and

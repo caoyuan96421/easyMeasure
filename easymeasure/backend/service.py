@@ -527,6 +527,40 @@ class Backend:
         """Send a command to an instrument without reading a reply (admin only remotely)."""
         self.instruments.get(instrument).raw_write(command)
 
+    def refuse_raw_writes(self, cmd: str, args: dict) -> None:
+        """Refuse a request that would write an instrument's own channel
+        (``instrument.channel``, settings too; not its actions): what the gateway asks
+        for remote operators.  Checked here because the backend knows which names are
+        those channels."""
+        names: list = []
+        if cmd == "write_channel":
+            names = [args.get("name")]
+        elif cmd == "set_many":
+            vals = args.get("values")
+            names = list(vals) if isinstance(vals, dict) else []
+        elif cmd == "queue_add":
+            item = args.get("item")
+            if isinstance(item, dict) and item.get("kind") == "sweep":
+                try:
+                    d = normalize_definition(copy.deepcopy(item.get("definition") or {}))
+                except Exception:
+                    return                          # refused by queue_add itself
+                names = [x["channel"] for dim in d["dimensions"] for x in dim.get("sweep", [])]
+                names += [c["channel"] for ph in ("pre", "post") for c in d[ph]["constants"]]
+        insts = set(self.instruments.names())
+        raw = []
+        for n in names:
+            if not isinstance(n, str):
+                continue
+            k = self.channels.kind(n)
+            if k in ("hardware", "config") or (
+                    k is None and "." in n and n.split(".", 1)[0] in insts):
+                raw.append(n)
+        if raw:
+            raise ChannelError("%s: an instrument's own channel is written without limits; "
+                               "remote operators set it through its alias (writing it needs "
+                               "the admin role)" % ", ".join(dict.fromkeys(raw)))
+
     def channel_info(self, name: str) -> dict:
         """What a channel is: ``kind`` (hardware, config, action, alias, variable, map,
         read, parameter, user_action, special), ``access`` (r, w, rw), dtype, shape,

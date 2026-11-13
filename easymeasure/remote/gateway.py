@@ -296,6 +296,7 @@ class Bridge:
                 "type": "welcome", "gateway": __version__, "version": welcome.get("version"),
                 "code_stamp": welcome.get("code_stamp"), "user": s.user, "role": s.role,
                 "allowed": policy.allowed_commands(s.role),
+                "restrict": policy.restrictions(s.role),
                 "session_expires": s.created + gw.cfg["session_max_days"] * 86400,
                 "limits": {"max_msg_bytes": gw.cfg["max_msg_bytes"], "rate": gw.cfg["rate"],
                            "max_in_flight": gw.cfg["max_in_flight"]},
@@ -419,7 +420,11 @@ class Bridge:
             if level and level >= 1 or cmd in _AUDIT_READS:
                 log.info("cmd %s %s %s", self.name, cmd, _summary(args))
             try:
-                frame = codec.encode({"type": "req", "id": rid, "cmd": cmd, "args": args})
+                req = {"type": "req", "id": rid, "cmd": cmd, "args": args}
+                restrict = policy.restrictions(self.session.role)
+                if restrict:
+                    req["restrict"] = restrict
+                frame = codec.encode(req)
             except ProtocolError as exc:
                 await self._reply(rid, str(exc), "ProtocolError")
                 return

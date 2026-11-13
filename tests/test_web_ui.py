@@ -171,7 +171,14 @@ def test_web_settings_combos_and_mode_switch(browser, gw, demo):
     demo.add_instrument("smu", "keithley2400", "SIM::webk24")
     demo.add_instrument("hp", "hp34401a", "SIM::webhp")
     errors = []
+    # an operator does not get the instruments' own channels (written without limits)
     page = open_page(browser, gw, "olga", errors)
+    page.wait_for_selector(".man-row:has-text('Vg')", timeout=10000)
+    assert page.locator(".man-row", has_text="smu.mode").count() == 0
+    assert not page.locator(".panel.manual label.check:has-text('settings')").is_visible()
+    assert page.evaluate("""() => document.querySelectorAll('.man-row').length""") > 0
+    page.context.close()
+    page = open_page(browser, gw, "ada", errors)
     row = page.locator(".man-row", has_text="smu.mode").first
     sel = row.locator("select")
     page.wait_for_function("""() => { const r = [...document.querySelectorAll('.man-row')]
