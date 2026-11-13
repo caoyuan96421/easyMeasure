@@ -36,7 +36,23 @@ def describe(info: dict) -> str:
     if n:
         lines.append("It was continued %d time%s before; every abort is kept in the data file."
                      % (n, "" if n == 1 else "s"))
+    lines += ["<span style='color:#c80'>%s</span>" % t for t in warnings(info)]
     return "<br><br>".join(lines)
+
+
+def warnings(info: dict) -> list:
+    """Continuing this file once more would measure the same points again."""
+    out = []
+    by = info.get("continued_by") or []
+    if by:
+        out.append("⚠ This run was already continued (as run %s). Continuing it again measures "
+                   "its remaining points once more, into another file; to go on with the newest "
+                   "data, continue run %s instead." % (", ".join(str(r["run"]) for r in by),
+                                                       by[-1]["run"]))
+    if info.get("queued_as"):
+        out.append("⚠ Its continuation is already in the queue (#%s)."
+                   % ", #".join(str(i) for i in info["queued_as"]))
+    return out
 
 
 class ContinueDialog(QDialog):

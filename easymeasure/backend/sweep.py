@@ -1026,8 +1026,10 @@ class SweepRunner:
             try:
                 header, frames, abort = self._resume_header()
             except Exception as exc:
-                self.status, self.error = "error", "cannot continue %s: %s" % (
-                    self.resume.get("source"), exc)
+                src = Path(str(self.resume.get("source")))
+                why = "the file is gone (deleted or moved?)" if isinstance(
+                    exc, FileNotFoundError) else "%s: %s" % (type(exc).__name__, exc)
+                self.status, self.error = "error", "cannot continue %s: %s" % (src.name, why)
                 log.error("run %d: %s", self.run_number, self.error)
                 self._emit("sweep_end", {"run": self.run_number, "status": self.status,
                                          "error": self.error, "path": str(self.path)})

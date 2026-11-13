@@ -9,6 +9,7 @@ arguments and returns JSON/codec-serialisable data.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 import threading
@@ -20,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from ..common import paths
+from ..common.codec import to_jsonable
 from ..common.errors import (ChannelError, DriverError, EasyMeasureError, RampStopped,
                              SweepDefinitionError)
 from . import setup_io
@@ -51,6 +53,18 @@ DEFAULT_SETTINGS = {
     "remote_access": False,      # start the internet gateway with the backend
     "folders_confirmed": False,  # the GUI asked for the data folder / PowerPoint file once
 }
+
+
+def _same_file(a, b) -> bool:
+    """Whether two paths name the same file (relative, symlinked, case on Windows)."""
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return str(a) == str(b)
+
+
+def _canon(d) -> str:
+    return json.dumps(to_jsonable(d), sort_keys=True, default=str)
 
 
 class Backend:
@@ -785,6 +799,8 @@ class Backend:
 
     def _execute_sweep_item(self, definition: dict, item: dict) -> dict:
         d = normalize_definition(definition)
+        if item.get("continue"):
+            self._check_continuation_item(d, item)
         # re-check limits right before running (abortable: a big map takes a moment)
         validate_against(d, self.channels, abort_check=self.control.check)
         with self._run_lock:
@@ -804,7 +820,26 @@ class Backend:
                 self.runner = None
                 self.last_dataset = runner.dataset
         self._post_run(runner)
+        if not Path(path).exists():          # nothing was written (a continuation that
+            item["path"] = None              # could not start, a full disk ...)
+            return {"status": status, "run": run, "path": None, "error": runner.error}
         return {"status": status, "run": run, "path": str(path), "error": runner.error}
+
+    def _check_continuation_item(self, d: dict, item: dict) -> None:
+        """Right before a queued continuation runs: its source file is still there,
+        readable, unfinished and the same run as when it was queued."""
+        src = item["continue"]["source"]
+        try:
+            info = self._continuation(src)
+        except EasyMeasureError as exc:
+            raise EasyMeasureError("cannot continue run %s: %s" % (item.get("continues_run"), exc))
+        if not info["continuable"]:
+            raise EasyMeasureError("cannot continue run %s: %s" % (info["run"], info["reason"]))
+        if _canon(info["definition"]) != _canon(d) or \
+                (item.get("continues_run") is not None and info["run"] != item["continues_run"]):
+            raise EasyMeasureError("cannot continue run %s: the file %s changed since the "
+                                   "continuation was queued" % (item.get("continues_run"),
+                                                                Path(src).name))
 
     def _script_run_sweep(self, definition: dict):
         """``run_sweep()`` from a script: run nested in the script's thread; returns the
@@ -916,18 +951,51 @@ class Backend:
         """Where an aborted run stopped and where continuing it would go on:
         ``{continuable, reason, status, error, run, name, points, total, ended,
         last_index, next_index, next_setpoints, aborts}``."""
-        self._check_continuable_path(path)
-        info = continuation_info(path)
+        info = self._continuation(path)
         info.pop("definition", None)
+        # continued before: going on from this file again measures the same points again
+        info["continued_by"] = self._continued_by(path)
+        info["queued_as"] = self._queued_continuations(path)
         return info
 
-    def _check_continuable_path(self, path: str) -> None:
+    def _continuation(self, path: str) -> dict:
+        """``continuation_info`` of a data file that exists, can be read and is not
+        the run being measured."""
         p = Path(path)
-        if p.suffix.lower() != ".emj" or not p.exists():
-            raise EasyMeasureError("%s: not a data file (.emj) of this computer" % path)
+        if p.suffix.lower() != ".emj":
+            raise EasyMeasureError("%s: only a data file (.emj) can be continued" % p.name)
+        if not p.is_file():
+            raise EasyMeasureError("%s: no such data file (deleted or moved?)" % path)
         cur = self.runner
-        if cur is not None and Path(cur.path) == p:
+        if cur is not None and _same_file(cur.path, p):
             raise EasyMeasureError("%s is the run being measured" % p.name)
+        try:
+            return continuation_info(p)
+        except EasyMeasureError:
+            raise
+        except Exception as exc:          # a damaged file, or not a sweep's
+            raise EasyMeasureError("%s cannot be read: %s: %s" % (p.name, type(exc).__name__, exc))
+
+    def _continued_by(self, path: str, limit: int = 500) -> list:
+        """The runs of the data folder that continued the file *path*."""
+        out = []
+        for r in self.store.list_runs(limit):
+            try:
+                h = read_header(r["path"]) or {}
+            except Exception:
+                continue
+            src = h.get("continued_from")
+            if src and _same_file(src, path):
+                out.append({"run": h.get("run"), "path": r["path"]})
+        return sorted(out, key=lambda r: r["run"] or 0)
+
+    def _queued_continuations(self, path: str) -> list:
+        """Queue item ids (waiting or running) that continue the file *path*."""
+        q = self.queue.describe()
+        items = list(q["queued"]) + ([q["current"]] if q["current"] else [])
+        return [it["id"] for it in items
+                if (it.get("continue") or {}).get("source") and
+                _same_file(it["continue"]["source"], path)]
 
     def continue_sweep(self, path: str, wait: float = 0.0, rerun_pre: bool = True,
                        start: bool = False, position: Optional[int] = None) -> int:
@@ -938,10 +1006,13 @@ class Backend:
         every abort in its header (``aborts``) and as events.  *rerun_pre*: run the
         pre-sweep settings and hook again first (their recordings are kept as an
         event; the original pre-sweep values stay).  Returns the queue item id."""
-        self._check_continuable_path(path)
-        info = continuation_info(path)
+        info = self._continuation(path)
         if not info["continuable"]:
             raise EasyMeasureError("run %s cannot be continued: %s" % (info["run"], info["reason"]))
+        dup = self._queued_continuations(path)
+        if dup:
+            raise EasyMeasureError("run %s: its continuation is already in the queue (#%s)"
+                                   % (info["run"], dup[0]))
         wait = float(wait)
         if not 0 <= wait <= 7 * 24 * 3600:
             raise EasyMeasureError("wait must be 0 … 604800 s")

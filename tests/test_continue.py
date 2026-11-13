@@ -3,6 +3,7 @@ file stays as it is), goes on from the first point not measured, and lists every
 abort; after any number of aborts the data are the data of an uninterrupted run."""
 
 import hashlib
+import os
 import struct
 import time
 from pathlib import Path
@@ -134,8 +135,10 @@ def test_what_cannot_be_continued(demo):
     assert not be.continue_info(done["path"])["continuable"]
     with pytest.raises(EasyMeasureError, match="nothing to continue"):
         be.continue_sweep(done["path"])
-    with pytest.raises(EasyMeasureError, match="not a data file"):
+    with pytest.raises(EasyMeasureError, match="no such data file"):
         be.continue_sweep("/no/such/file.emj")
+    with pytest.raises(EasyMeasureError, match="only a data file"):
+        be.continue_info(done["path"].replace(".emj", ".h5"))
     # a run whose channels are gone cannot go on either
     abort_after(be, 3)
     be.queue_add({"kind": "sweep", "definition": definition()}, start=True)
@@ -191,3 +194,124 @@ def test_continuing_with_skipped_points_and_record_before_inner(demo):
     assert ds.skipped == ref.skipped
     frames = [o for f, o in iter_frames(ds.header["file"]) if f == POINT and o["k"] == 1]
     assert len(frames) == 4                         # the outer records: once each
+
+
+def files(be):
+    return sorted(str(p) for p in Path(be.store.root).glob("*/*.emj"))
+
+
+def aborted_run(be, n=7):
+    if not be.channels.exists("gates.eps"):
+        setup(be)
+    abort_after(be, n)
+    be.queue_add({"kind": "sweep", "definition": definition()}, start=True)
+    ab = last(be)
+    assert ab["status"] == "aborted"
+    return ab
+
+
+def test_the_file_deleted_after_queueing(demo):
+    be = demo
+    ab = aborted_run(be)
+    be.continue_sweep(ab["path"])
+    before = [f for f in files(be) if f != ab["path"]]
+    os.remove(ab["path"])
+    be.queue_start()
+    it = last(be)
+    # an error that says why; no data file left behind, nothing to open or continue
+    assert it["status"] == "error" and "no such data file" in it["error"], it
+    assert "cannot continue run %s" % ab["run"] in it["error"]
+    assert it.get("path") is None and files(be) == before
+    with pytest.raises(EasyMeasureError, match="no such data file"):
+        be.continue_info(ab["path"])
+    # the race the check cannot see: gone between the check and the copy
+    raw_runner = be.__class__._check_continuation_item
+    try:
+        be.__class__._check_continuation_item = lambda self, d, item: os.remove(
+            item["continue"]["source"])
+        ab2 = aborted_run(be)
+        be.continue_sweep(ab2["path"], start=True)
+        it = last(be)
+    finally:
+        be.__class__._check_continuation_item = raw_runner
+    assert it["status"] == "error" and "the file is gone" in it["error"], it
+    assert it.get("path") is None
+
+
+def test_damaged_or_foreign_files(demo):
+    be = demo
+    ab = aborted_run(be)
+    raw = Path(ab["path"]).read_bytes()
+    for name, content, why in (("empty", b"", "not an easyMeasure journal"),
+                               ("garbage", b"hello" * 50, "not an easyMeasure journal"),
+                               ("magic", MAGIC, "contains no header"),
+                               ("torn", raw[:len(MAGIC) + 40], "contains no header")):
+        p = Path(ab["path"]).with_name(name + ".emj")
+        p.write_bytes(content)
+        for f in (be.continue_info, be.continue_sweep):
+            with pytest.raises(EasyMeasureError, match=why):
+                f(str(p))
+    assert not be.queue_state()["queued"]
+    # a torn last frame (a crash while writing it): the rest goes on
+    p = Path(ab["path"]).with_name("tail.emj")
+    p.write_bytes(raw[:-7])
+    info = be.continue_info(str(p))
+    assert info["continuable"] and info["status"] == "incomplete"
+
+
+def test_the_file_replaced_after_queueing(demo):
+    be = demo
+    ab = aborted_run(be)
+    d = definition()
+    d["dimensions"][0]["points"] = 5                   # another sweep, same file name
+    abort_after(be, 3)
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    other = last(be)
+    be.continue_sweep(ab["path"])
+    Path(ab["path"]).write_bytes(Path(other["path"]).read_bytes())
+    be.queue_start()
+    it = last(be)
+    assert it["status"] == "error" and "changed since the continuation was queued" in it["error"]
+    assert it.get("path") is None
+
+
+def test_continuing_twice_and_chains_with_files_gone(demo):
+    be = demo
+    ab = aborted_run(be)
+    sid = be.continue_sweep(ab["path"])
+    # queued once: not twice (the second would measure the same points again)
+    with pytest.raises(EasyMeasureError, match="already in the queue"):
+        be.continue_sweep(ab["path"])
+    assert be.continue_info(ab["path"])["queued_as"] == [sid]
+    # aborted during the wait before measuring again: nothing new, continued again
+    fired = []
+
+    def cb(kind, data):
+        if kind == "sweep_start" and data.get("continues") and not fired:
+            fired.append(1)
+            be.queue.abort("stopped while waiting")
+    be.add_listener(cb)
+    be.queue_remove(sid)
+    be.continue_sweep(ab["path"], wait=5, start=True)
+    second = last(be)
+    assert second["status"] == "aborted" and second["path"]
+    ds2 = DataSet.load(second["path"])
+    assert ds2.points == DataSet.load(ab["path"]).points
+    # continued before: allowed again, but said
+    info = be.continue_info(ab["path"])
+    assert info["continuable"] and [r["run"] for r in info["continued_by"]] == [second["run"]]
+    # the files of the earlier aborts can go: the latest file holds all the data
+    os.remove(ab["path"])
+    be.continue_sweep(second["path"], start=True)
+    fin = last(be)
+    ds = DataSet.load(fin["path"])
+    assert ds.status == "finished" and ds.points == 24
+    assert [a["file"] for a in ds.header["aborts"]] == [ab["path"], second["path"]]
+    assert ds.header["aborts"][1]["error"].endswith("stopped while waiting")
+    # deleted while the continuation runs: it has its copy already
+    ab3 = aborted_run(be)
+    be.add_listener(lambda kind, data: kind == "sweep_start" and data.get("continues") ==
+                    ab3["run"] and os.path.exists(ab3["path"]) and os.remove(ab3["path"]))
+    be.continue_sweep(ab3["path"], start=True)
+    fin3 = last(be)
+    assert fin3["status"] == "finished" and DataSet.load(fin3["path"]).points == 24

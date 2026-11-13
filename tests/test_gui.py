@@ -1615,6 +1615,9 @@ def test_continue_an_aborted_run(app, gui, monkeypatch):
     assert ds.points == 12 and ds.header["aborts"][0]["wait"] == 1.5
     assert pump(app, 5, lambda: live.ds.points == 12)
     assert ds.header["aborts"][0]["rerun_pre"] is False
+    # continued already: said when it is continued again
+    again = continue_dialog.describe(be.continue_info(first["path"]))
+    assert "already continued (as run %s)" % fin["run"] in again
     # a finished run cannot be continued
     pump(app, 0.3)
     rows = [qp.history.item(r, 2).text() for r in range(qp.history.rowCount())]

@@ -106,6 +106,23 @@ A run cannot be continued when it finished or was terminated with `end_sweep()`.
 It also cannot be continued when a channel it sweeps or records no longer exists.
 Continuing also refuses the file of the run that is going on now.
 
+Files that go missing or change:
+
+* **A file that is deleted, moved or damaged** cannot be continued, and the dialog
+  says so. A file whose last frame was cut off by a crash is not damaged in this
+  sense: it continues from its last complete point.
+* **A file deleted or replaced after its continuation was queued.** The item checks the
+  file again right before it runs. If the file is gone or is now a different run, the
+  item ends with an *error* that says why. It writes no data file.
+* **Once the continuation has started, the old file is no longer needed.** It has
+  been copied. The files of earlier aborts can also be deleted, because the newest
+  file holds all the data. Their names stay in `aborts` as a record.
+* **The same file cannot be queued for continuation twice.** If it was continued
+  before, the dialog warns that continuing it again measures the remaining points a
+  second time. To go on with the newest data, continue the newest run instead.
+* **An abort during the wait, before any new point,** leaves a new file with the same
+  data and one more entry in `aborts`. It can be continued like any other.
+
 ??? example "From Python"
 
     ```python

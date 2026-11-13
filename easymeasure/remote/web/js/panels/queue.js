@@ -8,6 +8,20 @@ const SCRIPT_HELP = `# Script API: get(name), set(name, value) - any channel; se
 
 const info = (r) => r.kind === "sweep" ? (r.shape || []).join("×") : r.kind === "script" ? `${(r.code || "").split("\n").length} lines` : "";
 
+/** Continuing this file once more would measure the same points again. */
+export function continueWarnings(info) {
+  const out = [];
+  const by = info.continued_by || [];
+  if (by.length) {
+    const runs = by.map((r) => r.run).join(", ");
+    out.push(`⚠ This run was already continued (as run ${runs}). Continuing it again measures its ` +
+      `remaining points once more, into another file; to go on with the newest data, continue run ` +
+      `${by[by.length - 1].run} instead.`);
+  }
+  if ((info.queued_as || []).length) out.push(`⚠ Its continuation is already in the queue (#${info.queued_as.join(", #")}).`);
+  return out;
+}
+
 export class QueuePanel {
   constructor(app) {
     this.app = app;
@@ -113,6 +127,7 @@ export class QueuePanel {
         "(the old file stays as it is) and the run goes on from the first point not measured." }),
       info.next_index ? h("p", { text: `Next point: index [${info.next_index.join(", ")}]${sp ? ": " + sp : ""}.` }) : "",
       n ? h("p", { text: `It was continued ${n} time${n === 1 ? "" : "s"} before; every abort is kept in the data file.` }) : "",
+      ...continueWarnings(info).map((t) => h("p", { class: "warn continue-warning", text: t })),
       h("div", { class: "form" },
         h("label", { text: "Wait after setting the channels (s)" }), wait,
         h("span", {}), h("label", { class: "check" }, rerun, " run the pre-sweep settings and hook again first")));

@@ -738,5 +738,13 @@ def test_web_continue_an_aborted_run(browser, gw, demo):
                            % first["run"], timeout=10000)
     page.click(".panel.queue td:text-is('web_cont (continued)')")
     assert page.is_disabled(btn)
+    # continued already: said when it is continued again
+    page.click(".panel.queue td:text-is('web_cont')")
+    page.click(btn)
+    page.wait_for_selector("dialog.modal .continue-warning")
+    assert "already continued (as run %s)" % fin["run"] in page.text_content(
+        "dialog.modal .continue-warning")
+    page.click("dialog.modal button:text-is('Cancel')")
+    page.wait_for_function("!document.querySelector('dialog.modal')")
     assert not errors, errors
     page.context.close()
