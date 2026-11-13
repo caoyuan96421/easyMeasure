@@ -266,12 +266,12 @@ def test_quench_in_effect_when_connecting_is_reported(backend):
 
 def test_a_user_action_waiting_on_the_magnet_is_aborted(backend):
     h, emu = add_magnet(backend, time_scale=5.0, rate=0.5)
-    backend.define_user_action("ramp up", "set_raw('mag.field', 3.0)\n"
+    backend.define_user_action("ramp_up", "set('mag.field', 3.0)\n"
                                           "wait_until(lambda: get('mag.status') == 'HOLDING', "
                                           "timeout=60)\n")
     import threading
     out = {}
-    t = threading.Thread(target=lambda: out.update(r=backend.run_user_action("ramp up")))
+    t = threading.Thread(target=lambda: out.update(r=backend.write_channel("ramp_up")))
     t.start()
     wait(lambda: emu.mode == "ramp", what="ramp")
     emu.quench("test")

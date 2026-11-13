@@ -139,26 +139,31 @@ Select an instrument, and its channels and actions are listed under *Channels
 | Type, Shape | `float` or `str`; `()` for a single number, `(401,)` for a 401-point trace |
 | Allowed values | for settings with a fixed list of values |
 
-Instrument channels, `instrument.channel`, can be read anywhere: sweeps, monitor,
-scripts. To **set** a measurement channel, give it an [alias](aliases.md) with
-**Make alias…**. The alias carries the limits and ramp rate.
+Instrument channels, `instrument.channel`, are channels like all the others: read
+and written anywhere (sweeps, the monitor, scripts, composite formulas), as far as
+their access allows. **Set…** writes the selected one. A write to an instrument
+channel is plain: no limits, no ramp. For a gate or a magnet, give the channel an
+[alias](aliases.md) with **Make alias…** and use the alias: it carries the limits and
+the ramp rate.
 
 ??? example "From Python"
 
     ```python
-    c.call("read_channel", name="lockin.X")              # raw reference: instrument.channel
+    c.call("read_channel", name="lockin.X")
+    c.call("write_channel", name="bg.voltage", value=0.0)  # as it is: no limits, no ramp
     c.call("channel_info", name="lockin.X")
-    # {'name': 'lockin.X', 'kind': 'raw', 'dtype': 'float', 'shape': [], 'readable': True,
-    #  'writable': False, 'unit': 'V', 'config': False, 'choices': None}
+    # {'name': 'lockin.X', 'kind': 'hardware', 'access': 'r', 'readable': True,
+    #  'writable': False, 'dtype': 'float', 'shape': [], 'unit': 'V', 'config': False,
+    #  'instrument': 'lockin', 'choices': None, …}
     ```
 
 ### Configuration channels
 
-Settings such as a range, a time constant or an output switch are set directly with
-**Set…** (or in the Manual panel, with *settings* ticked). They are never aliased or
-swept, which keeps the channel lists short. In a sweep, set them as **constants** in
-the pre-sweep or post-sweep settings (see [Sweeps](sweeps.md#pre-and-post-phases)), so
-every data file records how the instrument was set.
+Settings such as a range, a time constant or an output switch are channels of
+`kind` `config`, set with **Set…** (or in the Manual panel, with *settings* ticked).
+In a sweep, set them as **constants** in the pre-sweep or post-sweep settings (see
+[Sweeps](sweeps.md#pre-and-post-phases)), so every data file records how the
+instrument was set.
 
 ??? example "From Python"
 
@@ -195,16 +200,19 @@ something else. This applies, for example, to `dmm.Vdc` after the meter was swit
 ## Actions
 
 Instrument actions, such as *auto phase*, *reset* or *preset*, are listed below the
-channels. Select one and click **▶ Run action**. In scripts and point actions:
-`action('lockin.auto_gain')`. Actions are guarded like
-every other call but never retried automatically, because a trigger must not fire twice.
-Afterwards the cached values of that instrument's aliases are discarded, so the
-next ramp reads back where the instrument really is.
+channels. An action is a write-only channel, `instrument.action`, without a value:
+writing it runs it. Select one and click **▶ Run action**; in scripts and point
+actions: `set('lockin.auto_gain')`; in a sweep: a pre- or post-sweep constant with no
+value. Actions are guarded like every other call but never retried automatically,
+because a trigger must not fire twice. Afterwards the cached values of that
+instrument's aliases are discarded, so the next ramp reads back where the instrument
+really is.
 
 ??? example "From Python"
 
     ```python
-    c.call("run_action", ref="lockin.auto_phase")
+    c.call("write_channel", name="lockin.auto_phase")
+    c.call("read_channel", name="lockin.auto_phase")   # refused: an action has no value
     ```
 
 ## Talking to the instrument directly

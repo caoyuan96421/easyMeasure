@@ -12,10 +12,17 @@ The few differences are listed at the end.
 
 ## Channels
 
+Every channel is read with `get` and written with `set`, whatever its kind: an
+alias, a composite channel (`nD.n`), a parameter, a user action, `@time`, or a
+channel, setting or action of an instrument (`dmm.V`, `lockin.sensitivity`,
+`dmm.reset`). Its access (r, w, rw) is respected: `get` of an action or `set` of a
+read-only channel raises.
+
 ### `get(name)`
 
-Read an alias, a composite channel, `instrument.channel`, `@time` or `@elapsed`.
-Returns a float, a numpy array or a string.
+Read any readable channel: an alias, a composite channel, a parameter,
+`instrument.channel`, `@time` or `@elapsed`. Returns a float, a numpy array or a
+string.
 
 ```python
 I = get('I')
@@ -23,32 +30,34 @@ spec = get('spectrum')          # numpy array
 mode = get('dmm.mode')          # 'Vdc'
 ```
 
-### `set(name, value, ramp=True)`
+### `set(name, value=None, ramp=True)`
 
-Protected write to an alias, composite variable, mapping or configuration channel.
-Limits are checked first, and with `ramp` the value is approached at the ramp rate(s).
-The call waits for the end of the ramp and returns the value set.
+Write any writable channel. An alias or composite channel keeps its limits (checked
+first) and, with `ramp`, is approached at the ramp rate(s); a channel of an
+instrument is written as it is (no limits, no ramp); a value parameter takes the
+value. Writing an action runs it; it needs no value. The call waits for the end of
+the ramp (or of the action) and returns the value set.
 
 ```python
 set('Vg', 0.25)
 set('Vg', 0, ramp=False)        # jump
 set('lockin.sensitivity', '1e-3')
+set('bg.voltage', 0)            # the instrument's channel: no limits, no ramp
+set('Cb', 0.6)                  # a value parameter
+set('lockin.auto_gain')         # an instrument action
+set('gates_to_zero')            # a user action
 ```
 
 ### `set_many({name: value, …}, ramp=True)`
 
 Set several channels together, e.g. all variables of a composite (required for
 their first setting). Everything is limit-checked before anything is written, and
-the ramp moves all of them together. Returns the hardware values set.
+the ramp moves all of them together. Parameters are set first, actions run last.
+Returns every value set.
 
 ```python
-set_many({'eps': 0.0, 'U': 0.3})
+set_many({'gates.eps': 0.0, 'gates.U': 0.3})
 ```
-
-### `set_raw('instrument.channel', value)`
-
-An **unprotected** write to an instrument channel: no alias limits, no ramp. Use it
-for channels that have no alias, with care.
 
 ## Waiting
 
@@ -73,10 +82,6 @@ line anyway.
 
 ## Instruments
 
-### `action('instrument.action')`
-
-Run an instrument action, e.g. `action('lockin.auto_gain')`.
-
 ### `instrument(name)`
 
 A guarded proxy of the instrument:
@@ -85,8 +90,6 @@ A guarded proxy of the instrument:
 |---|---|
 | `.raw_query(cmd)` | send a command, return the reply |
 | `.raw_write(cmd)` | send a command |
-| `.read(channel)` | read a channel of this instrument |
-| `.action(name)` | run an action |
 | `.call(method, *args, **kwargs)` | call a driver method, guarded |
 | `.state` | `connected`, `disconnected`, `error` … |
 
@@ -101,7 +104,6 @@ log(smu.raw_query('*IDN?'))
 |---|---|---|
 | `run_sweep(definition)` | run a sweep synchronously and return its data: a [`DataSet`](api/easymeasure/backend/storage.md) with `.status` (`finished`, `aborted`, `error`, `terminated`), `.data`, `.setpoints`, `.value_axes`, `.path` | queued scripts |
 | `load_sweep(path)` | a sweep definition (a dict) from a `.json` file saved by the sweep editor, or from a data file (`.emj`, `.h5`); change it, then `run_sweep()` it | everywhere |
-| `user_action(name)` | run a user action; its errors stop the caller | user actions |
 | `skip_point()`, `skip_line()`, `end_sweep()` | [flow control](../guide/point-actions.md#flow-control) | point actions |
 
 ## Output and state

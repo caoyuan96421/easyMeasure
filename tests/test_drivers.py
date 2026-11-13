@@ -95,7 +95,7 @@ def test_keithley2400_voltage_mode(k24):
     assert be.read_channel("smu.sense") == "4-wire" and e.out.rsen
     be.write_channel("smu.terminals", "rear")
     assert be.read_channel("smu.terminals") == "REAR"
-    be.run_action("smu.beep")
+    be.write_channel("smu.beep")
     assert clean(e)
 
 
@@ -119,7 +119,7 @@ def test_keithley2400_mode_switch(k24):
     assert be.read_channel("Vs") == pytest.approx(1.0)               # 1 mA × 1 kΩ
     be.write_channel("Is", 5e-3, ramp=False)
     assert be.read_channel("Vs") == pytest.approx(2.0)               # voltage compliance
-    with pytest.raises(ChannelError, match="not writable"):
+    with pytest.raises(ChannelError, match="read-only"):
         be.write_channel("Vs", 1.0)
     with pytest.raises(ChannelError, match="Vcompliance"):
         be.read_channel("smu.Icompliance")
@@ -253,7 +253,7 @@ def test_sr830_family(backend, model):
     assert be.read_channel("f") == pytest.approx(77.7)
     be.write_channel("G", -0.8, ramp=False)
     assert be.read_channel("li.aux_in2") == pytest.approx(-0.4)   # loop-back cable
-    be.channels.set_raw("li.phase", 400)           # raw write (scripts); wraps to ±180
+    be.channels.set("li.phase", 400)           # raw write (scripts); wraps to ±180
     assert be.read_channel("li.phase") == pytest.approx(40.0)
     # every setting round-trips through all of its values
     for c in ("sensitivity", "time_constant", "rolloff", "coupling", "ground", "line_filter",
@@ -280,18 +280,18 @@ def test_sr830_family(backend, model):
     # external reference: frequency becomes read-only
     be.write_channel("li.reference", "External")
     assert not h.spec("frequency").writable
-    with pytest.raises(ChannelError, match="not writable"):
+    with pytest.raises(ChannelError, match="read-only"):
         be.write_channel("f", 10.0)
     be.write_channel("li.reference", "Internal")
     be.write_channel("f", 10.0, ramp=False)
     # auto functions wait until the instrument is done
-    be.run_action("li.auto_phase")
+    be.write_channel("li.auto_phase")
     assert abs(be.read_channel("li.Y")) < 1e-12
-    be.run_action("li.auto_gain")
-    be.run_action("li.auto_reserve")
+    be.write_channel("li.auto_gain")
+    be.write_channel("li.auto_reserve")
     assert be.read_channel("li.sensitivity") == "1 mV"
     with pytest.raises(ChannelError, match="sine_out"):
-        be.channels.set_raw("li.sine_out", 6)
+        be.channels.set("li.sine_out", 6)
     assert clean(e)
 
 
@@ -378,7 +378,7 @@ def test_ni6211_channels_and_loopback(daq):
     with pytest.raises(LimitError):
         be.write_channel("Vg", 8)
     with pytest.raises(ChannelError, match="±10"):
-        be.channels.set_raw("daq.ao1", 11)
+        be.channels.set("daq.ao1", 11)
     be.define_alias(name="Trig", target="daq.do1")
     be.write_channel("Trig", 1)
     assert be.read_channel("daq.di1") == 1.0 and be.read_channel("daq.do1") == 1.0
@@ -387,7 +387,7 @@ def test_ni6211_channels_and_loopback(daq):
     c0 = be.read_channel("daq.ctr0")
     time.sleep(0.03)
     assert be.read_channel("daq.ctr0") > c0
-    be.run_action("daq.reset_counters")
+    be.write_channel("daq.reset_counters")
     assert be.read_channel("daq.ctr0") < 20
 
 
@@ -535,7 +535,7 @@ def test_yokogawa7651(backend):
     be.define_alias(name="Iy", target="yk.current")
     be.write_channel("Iy", 2e-3, ramp=False)
     assert e.range == 5 and be.read_channel("Iy") == pytest.approx(2e-3)
-    be.run_action("yk.zero")
+    be.write_channel("yk.zero")
     assert e.value == 0.0
     assert e.unknown == []
 
@@ -619,15 +619,15 @@ def test_hp4145_user_mode_smus(pa):
     with pytest.raises(ChannelError, match="not available at 0.05 A"):
         be.write_channel("pa.Vcompliance2", 50)       # at 50 mA only up to 40 V
     # voltage sources and voltmeters
-    be.channels.set_raw("pa.vs1", 3.3)
+    be.channels.set("pa.vs1", 3.3)
     assert be.read_channel("pa.vm1") == pytest.approx(3.3)
     with pytest.raises(ChannelError, match="±20 V"):
-        be.channels.set_raw("pa.vs2", 25)
+        be.channels.set("pa.vs2", 25)
     be.write_channel("pa.integration", "long")
     assert e.it == 3
     be.write_channel("pa.output2", "OFF")
     assert e.smu[2].mode is None and e.log[-1] == "DS2"
-    be.run_action("pa.disable_all")
+    be.write_channel("pa.disable_all")
     assert e.smu[1].mode is None
     assert e.unknown == [] and e.errors == []
 

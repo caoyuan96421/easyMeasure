@@ -191,7 +191,7 @@ HOOKS = [("pre_sweep", "Pre-sweep action", "before the swept channels are set"),
          ("post_record", "Post-record action", "right after recording (also sees 'values')")]
 HOOK_HELP = ("# Python, runs at every point of this dimension.  Names: k (dimension), i (index),\n"
              "# index (this and outer indices), setpoints {channel: value}%s; get, set, action,\n"
-             "# sleep, log, state ... (as in scripts).  e.g.  action('dmm.trigger')\n"
+             "# sleep, log, state ... (as in scripts).  e.g.  set('dmm.trigger')\n"
              "# skip_point() / skip_line() / end_sweep(): like continue / break / exit")
 #: special actions offered first in every per-point action: (label, code, explanation)
 FLOW_ACTIONS = [
@@ -260,7 +260,7 @@ class HookEditor(QGroupBox):
             if t and not t.endswith("\n"):
                 t += "\n"
             flow = {label: code for label, code, _ in FLOW_ACTIONS}
-            line = flow.get(ref) or "action(%r)" % ref
+            line = flow.get(ref) or "set(%r)" % ref
             self.code.setPlainText(t + line + "\n")
 
     def set_read_only(self, ro: bool) -> None:
@@ -531,7 +531,7 @@ class PhaseEditor(QWidget):
         super().__init__(parent)
         self.phase = phase
         self.consts = QTableWidget(0, 2)
-        self.consts.setHorizontalHeaderLabels(["Channel", "Value (number or text)"])
+        self.consts.setHorizontalHeaderLabels(["Channel", "Value (number or text; empty for an action)"])
         self.consts.horizontalHeader().setStretchLastSection(True)
         self.consts.setColumnWidth(0, 160)
         self.channels: List[str] = []
@@ -549,7 +549,7 @@ class PhaseEditor(QWidget):
         from ..display import register_font
         register_font(self.hook, 1.0, monospace=True)
         self.hook.setPlaceholderText(
-            "# Python executed %s the sweep, e.g.\n# action('dmm.reset')\n# set('Tset', 4.2)\n"
+            "# Python executed %s the sweep, e.g.\n# set('dmm.reset')\n# set('Tset', 4.2)\n"
             "# sleep(1)\n# log('ready, T = %%g' %% get('T'))"
             % ("before" if phase == "pre" else "after"))
         self.action_box = QComboBox()
@@ -608,7 +608,7 @@ class PhaseEditor(QWidget):
         text = self.hook.toPlainText()
         if text and not text.endswith("\n"):
             text += "\n"
-        self.hook.setPlainText(text + "action(%r)\n" % ref)
+        self.hook.setPlainText(text + "set(%r)\n" % ref)
 
     def add_const(self, entry: Optional[dict] = None):
         entry = entry or {}
@@ -619,7 +619,8 @@ class PhaseEditor(QWidget):
         cb.addItems(self.channels)
         cb.setEditText(entry.get("channel", ""))
         self.consts.setCellWidget(r, 0, cb)
-        self.consts.setItem(r, 1, QTableWidgetItem(str(entry.get("value", ""))))
+        v = entry.get("value")
+        self.consts.setItem(r, 1, QTableWidgetItem("" if v is None else str(v)))
 
     def set_channels(self, writable, readable, choices=None):
         self.channels = writable
@@ -641,10 +642,13 @@ class PhaseEditor(QWidget):
             txt = self.consts.item(r, 1).text().strip() if self.consts.item(r, 1) else ""
             if not ch:
                 continue
-            try:
-                val = float(txt)
-            except ValueError:
-                val = txt
+            if txt == "":
+                val = None                  # an action: run, no value
+            else:
+                try:
+                    val = float(txt)
+                except ValueError:
+                    val = txt
             consts.append({"channel": ch, "value": val})
         return {"constants": consts, "record": self.record.checked(),
                 "hook": self.hook.toPlainText()}
@@ -792,14 +796,13 @@ class SweepEditor(QWidget):
         w, r = self._channel_lists()
         for d in self.dims:
             d.set_channels(w, r)
-        # pre/post constants and one-off records may also use configuration channels
+        # pre/post constants may also be text channels and actions (run, no value)
         m = self.model
-        wall = (m.writable_channels() + m.config_channels(writable=True)) if m else []
-        rall = (r + m.config_channels()) if m else r
+        wall = (m.writable_channels() + m.action_channels()) if m else []
         ch = m.channel_choices() if m else {}
-        self.pre.set_channels(wall, rall, ch)
-        self.post.set_channels(wall, rall, ch)
-        acts = m.actions() if m else []
+        self.pre.set_channels(wall, r, ch)
+        self.post.set_channels(wall, r, ch)
+        acts = m.action_channels() if m else []
         self.pre.set_actions(acts)
         self.post.set_actions(acts)
         for d in self.dims:
@@ -821,7 +824,7 @@ class SweepEditor(QWidget):
         ed = DimensionEditor()
         w, r = self._channel_lists()
         ed.set_channels(w, r)
-        ed.set_actions(self.model.actions() if self.model else [])
+        ed.set_actions(self.model.action_channels() if self.model else [])
         if d:
             ed.load(d)
         ed.points.valueChanged.connect(self._relabel)

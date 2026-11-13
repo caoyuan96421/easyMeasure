@@ -5,9 +5,12 @@ An **alias** gives one instrument channel a short name and carries its
 to the instrument, so the same source can be a gate limited to ±10 V in one setup and
 a heater limited to 5 V in another.
 
-Instrument channels can be read anywhere under their full name (`lockin.X`). To
-**set** a measurement channel, in a sweep, the Manual panel or a script, it needs an
-alias. That way nothing is ever set without limits.
+Instrument channels can be read and written anywhere under their full name
+(`lockin.X`, `bg.voltage`), but such a write is plain: no limits, no ramp. Set what
+needs protection (gates, magnets, heaters) through an alias: then nothing is set
+beyond its limits or faster than its ramp rate, in a sweep, the Manual panel or a
+script. Any channel of an instrument can be aliased, settings too. The alias' access
+is the channel's (*read-only* removes writing).
 
 ## Making an alias
 

@@ -75,15 +75,14 @@ Everything here is available without `import`:
 
 | name | does |
 |---|---|
-| `get('Rxx')` | read a channel: an alias, a composite variable, or `instrument.channel` |
-| `set('Vbg', 1.0)` | set a channel, with its limits and ramp rate. Waits until the ramp is done |
+| `get('Rxx')` | read any channel: an alias, a composite channel, a parameter, `instrument.channel` |
+| `set('Vbg', 1.0)` | write any channel. An alias keeps its limits and ramp rate (waits until the ramp is done); `set('bg.voltage', 0)` writes the instrument's channel as it is |
 | `set_many({'nD.n': 0, 'nD.D': 0.2})` | set several at once; needed for the variables of one composite |
-| `set_raw('bg.voltage', 0)` | set an instrument channel directly, **without** limits or ramps |
+| `set('vna.preset')`, `set('gates_to_zero')` | run an action (of an instrument, or a user action) |
 | `sleep(2)` | wait 2 s (abortable) |
 | `wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600)` | check every 0.2 s until it is true, for at most `timeout` s. Returns `False` on timeout |
 | `run_sweep(definition)` | run a sweep, wait for it, return its data (below) |
 | `load_sweep(path)` | a sweep saved with *Sweep → Save…*, or the sweep of a data file, as a dictionary |
-| `action('vna.preset')` | run an instrument action |
 | `instrument('vna').raw_query('*IDN?')` | talk to an instrument directly |
 | `log('text')`, `print(...)` | write to the log |
 | `state` | a dictionary kept between scripts and user actions |

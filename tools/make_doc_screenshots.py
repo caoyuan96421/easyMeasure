@@ -698,7 +698,7 @@ def tutorial_threshold(be, w):
     tab(w, "Instruments")
 
     def fill_ua(d):
-        d.name.setText("gates to zero")
+        d.name.setText("gates_to_zero")
         d.description.setText("ramp both gates to 0 V")
         d.code.setPlainText("set_many({'Vbg': 0, 'Vtg': 0})\nprint('both gates at 0 V')")
     expect(sp_mod.UserActionDialog, fill_ua, "t3-user-action",
@@ -713,7 +713,7 @@ def tutorial_threshold(be, w):
     pump(1.0)
     save(w, "t3-actions-panel", [sp.uact, sp.uact_run], ["1", "2"], crop=w.left_tabs)
     mp = w.manual
-    pump(3, lambda: "gates to zero" in mp.action_buttons)
+    pump(3, lambda: "gates_to_zero" in mp.action_buttons)
     pump(0.5)
     # the actions bar stays on top; scroll the channel list down to the parameters
     area = next(a for a in mp.findChildren(QScrollArea) if a.widget() is mp.host)
@@ -722,7 +722,7 @@ def tutorial_threshold(be, w):
     bar.setValue(bar.maximum())
     area.horizontalScrollBar().setValue(0)
     pump(0.5)
-    save(w, "t3-manual-actions", [mp.action_buttons["gates to zero"], mp.params["Cb"]["label"]],
+    save(w, "t3-manual-actions", [mp.action_buttons["gates_to_zero"], mp.params["Cb"]["label"]],
          ["1", "2"], crop=w.manual)
 
 

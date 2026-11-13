@@ -60,20 +60,19 @@ class Backend:
         "wizard_try", "wizard_delete",
         "add_instrument", "remove_instrument", "connect_instrument", "disconnect_instrument",
         "reconnect_instrument", "update_instrument", "list_instruments",
-        "read_channel", "write_channel", "query_channel", "raw_query", "raw_write",
-        "channel_info",
+        "read_channel", "write_channel", "raw_query", "raw_write", "channel_info",
         "define_alias", "remove_alias", "define_composite", "remove_composite", "check_composite",
         "set_many", "list_channels", "stop_ramps", "ramp_state",
-        "define_parameter", "remove_parameter", "set_parameter", "list_parameters",
+        "define_parameter", "remove_parameter", "list_parameters",
         "check_parameter", "check_code", "check_user_action",
-        "define_user_action", "remove_user_action", "move_user_action", "run_user_action",
+        "define_user_action", "remove_user_action", "move_user_action",
         "abort_user_action", "list_user_actions",
         "monitor_add", "monitor_remove", "monitor_list", "monitor_history",
         "validate_sweep", "queue_add", "queue_remove", "queue_move", "queue_clear",
         "queue_start", "queue_stop", "queue_state", "queue_options", "pause", "resume", "abort",
         "abort_all", "current_run", "run_snapshot", "list_runs", "load_run", "read_run_header",
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
-        "shutdown", "start_tray", "run_action", "remote_status", "remote_start", "remote_stop",
+        "shutdown", "start_tray", "remote_status", "remote_start", "remote_stop",
         "remote_set_user", "remote_remove_user", "remote_cert_request", "remote_cert_use",
     )
 
@@ -117,6 +116,9 @@ class Backend:
         self._run_lock = threading.Lock()
         self.queue = RunQueue(self._execute_sweep_item, self.scripts.run, self.control, self.emit)
         self.user_actions = UserActions(self._action_runner, self.emit)
+        # user actions are channels: one namespace with everything else
+        self.channels.user_actions = self.user_actions
+        self.user_actions.claim = lambda n, replace: self.channels.claim(n, "user_action", replace)
         self.ring.add_listener(self._on_log)
         self.monitor.start()
         self.started = time.time()
@@ -166,7 +168,7 @@ class Backend:
 
     def get_state(self) -> dict:
         """Everything a front end shows, in one dict: ``uptime``, ``settings``,
-        ``instruments``, ``channels`` (aliases, composites, virtual channels), ``monitor``,
+        ``instruments``, ``channels`` (see :meth:`list_channels`), ``monitor``,
         ``actions`` (user actions), ``queue``, ``current_run``, ``resources`` and
         ``ramps`` (ramps of direct writes now running, see ``ramp_state``)."""
         return {
@@ -397,11 +399,7 @@ class Backend:
         ``DAQ::Dev1``, ``SIM::…``, ``NONE``) and driver *options*.  With *connect* it is
         connected at once; a failed connection is reported in the returned description
         (``state``, ``last_error``) and retried on demand."""
-        clash = [c.name for c in self.channels.composites() if c.type == "multi" and
-                 c.name == name]
-        if clash:
-            raise ChannelError("%r is the name of a multivariate composite (its variables are "
-                               "%s.…): choose another instrument name" % (name, name))
+        self.channels.claim(name, "instrument")
         h = self.instruments.add(name, driver, address, options or {}, connect=connect)
         self._changed("instruments")
         return h.describe()
@@ -483,21 +481,27 @@ class Backend:
 
     # --------------------------------------------------------------- channels --
     def read_channel(self, name: str) -> Any:
-        """Read an alias, a composite channel or ``instrument.channel``."""
+        """Read any readable channel: ``instrument.channel``, an alias, a composite
+        channel (``gates.eps``), a parameter or ``@time``."""
         return self.channels.get(name)
 
-    def write_channel(self, name: str, value: Any, ramp: bool = True) -> Any:
-        """Set an alias, composite channel or configuration channel.  Alias limits
-        apply and, with *ramp*, the value is approached at the alias' ramp rate.
-        Measurement channels of instruments cannot be set raw (use an alias or
-        ``set_raw`` in a script).  Returns the value that was set."""
+    def write_channel(self, name: str, value: Any = None, ramp: bool = True) -> Any:
+        """Write any writable channel.  An alias keeps its limits and, with *ramp*,
+        its ramp rate (composite channels: everything they drive); a channel of an
+        instrument (``src.V1``, ``lockin.sensitivity``) is written as it is; a value
+        parameter takes the value (nothing moves); an action - of an instrument
+        (``dmm.reset``) or a user action (``zero_gates``) - runs, *value* is not
+        needed.  Returns the value set (a user action: ``{status, error, elapsed}``)."""
+        kind = self.channels.kind(name)
         with self.channels.stoppable_ramps("write_channel %s" % name):
             try:
-                return self.channels.set(name, value, ramp=ramp)
+                v = self.channels.set(name, value, ramp=ramp)
             except RampStopped:
                 v = self.channels.get(name)
                 log.info("ramp of %s stopped at %s", name, v)
-                return v
+        if kind == "parameter":
+            self._changed("channels")
+        return v.tolist() if isinstance(v, np.ndarray) else v
 
     def stop_ramps(self) -> list:
         """Stop the ramps of direct writes (``write_channel``, ``set_many``: the Manual
@@ -515,10 +519,6 @@ class Backend:
         whenever it changes."""
         return {"active": self.channels.active_ramps()}
 
-    def query_channel(self, ref: str, value: Any) -> Any:
-        """Write + read back in one transaction (limits of aliases on *ref* apply)."""
-        return self.channels.query_raw(ref, value)
-
     def raw_query(self, instrument: str, command: str) -> str:
         """Send a command to an instrument and return its reply (admin only remotely)."""
         return self.instruments.get(instrument).raw_query(command)
@@ -527,19 +527,10 @@ class Backend:
         """Send a command to an instrument without reading a reply (admin only remotely)."""
         self.instruments.get(instrument).raw_write(command)
 
-    def run_action(self, ref: str) -> None:
-        """Execute an instrument action, e.g. ``run_action(ref="dmm.reset")``."""
-        if not isinstance(ref, str) or "." not in ref:
-            raise ChannelError("action reference must be 'instrument.action'")
-        inst, name = ref.split(".", 1)
-        h = self.instruments.get(inst)
-        try:
-            h.run_action(name)
-        finally:
-            self.channels.forget_instrument(inst)
-
     def channel_info(self, name: str) -> dict:
-        """Kind, unit, limits, ramp rate, shape and writability of a channel name."""
+        """What a channel is: ``kind`` (hardware, config, action, alias, variable, map,
+        read, parameter, user_action, special), ``access`` (r, w, rw), dtype, shape,
+        unit, limits, ramp rate, allowed values."""
         return self.channels.info(name)
 
     def define_alias(self, replace: bool = False, **alias) -> dict:
@@ -614,19 +605,12 @@ class Backend:
             r["ok"] = False
             if not r["errors"]:
                 r["errors"].append(str(exc))
-        if not replace and name in {a["name"] for a in self.user_actions.describe()}:
+        try:
+            self.channels.claim(name, "user_action", replace)
+        except ChannelError as exc:
             r["ok"] = False
-            r["errors"].append("an action %r already exists" % name)
+            r["errors"].append(str(exc))
         return r
-
-    def set_parameter(self, name: str, value: float) -> float:
-        """Set the value of a value parameter (the Parameters and Manual panels).
-        Parameters computed from a formula follow; nothing is written to any
-        instrument.  Refused for a formula parameter, or if a mapping that uses the
-        parameter would no longer be invertible.  Returns the value."""
-        v = self.channels.set_parameter(name, value)
-        self._changed("channels")
-        return v
 
     def remove_parameter(self, name: str) -> None:
         """Remove a parameter (refused while a parameter formula or a composite uses
@@ -676,7 +660,8 @@ class Backend:
         self._changed("channels")
 
     def set_many(self, values: dict, ramp: bool = True) -> dict:
-        """Set several channels together (e.g. all variables of a composite)."""
+        """Write several channels together (e.g. all variables of a composite; see
+        :meth:`write_channel`).  Everything is checked before anything is written."""
         with self.channels.stoppable_ramps("set_many %s" % ", ".join(values)):
             try:
                 plan = self.channels.set_many(values, ramp=bool(ramp))
@@ -692,8 +677,8 @@ class Backend:
         return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in plan.items()}
 
     def list_channels(self) -> dict:
-        """Aliases, composites, the channels composites define (``virtual``), with
-        their last values, and the parameters."""
+        """``channels``: every channel (:meth:`channel_info` plus its ``last`` value),
+        as one list; ``aliases``, ``composites``, ``parameters``: their definitions."""
         return self.channels.describe()
 
     # ---------------------------------------------------------------- monitor --
@@ -946,11 +931,6 @@ class Backend:
         """Move a user action to *position* (0 = first) in the list."""
         self.user_actions.move(name, position)
         self._changed("actions")
-
-    def run_user_action(self, name: str) -> dict:
-        """Run a user action now (not through the queue) and wait for its end:
-        {name, status: finished / aborted / error, error, elapsed}."""
-        return self.user_actions.run(name)
 
     def abort_user_action(self, name: Optional[str] = None) -> list:
         """Abort the running user action *name* (or every running one); returns the

@@ -62,7 +62,7 @@ or of a user whose password or role changed, are closed.
 | role | may |
 |---|---|
 | `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
-| `operator` | + set channels and configuration channels (alias limits and ramp rates always apply), run instrument actions and user actions, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
+| `operator` | + write channels (aliases and composites keep their limits and ramp rates; an instrument's own channels are written as they are), set parameters, run instrument actions and user actions (writing them), monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments |
 | `admin` | + scripts and sweep hook code (Python on the backend computer = full control), user actions' code, Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
 
 Operators cannot run code:

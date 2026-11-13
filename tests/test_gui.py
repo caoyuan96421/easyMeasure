@@ -704,16 +704,16 @@ def test_actions_and_config_in_gui(app, gui):
     assert sp.raw.item(r, 1).text() == "⚙"
     sp.raw.selectRow(r)
     pump(app, 0.1)
-    assert not sp.mk_alias.isEnabled() and sp.raw_set.isEnabled()
+    assert sp.mk_alias.isEnabled() and sp.raw_set.isEnabled()      # any channel
     sp.raw.selectRow(names.index("reading"))
     pump(app, 0.1)
-    assert sp.mk_alias.isEnabled() and not sp.raw_set.isEnabled()
+    assert sp.mk_alias.isEnabled() and not sp.raw_set.isEnabled()  # read-only
     be.write_channel("dmm.nplc", 7)
     sp.act.setCurrentRow([sp.act.item(i).text() for i in range(sp.act.count())].index("reset"))
     sp._run_action()
     assert pump(app, 5, lambda: be.read_channel("dmm.nplc") == 1)
-    # aliasing a config channel is not offered
-    assert "dmm.nplc" not in w.model.aliasable_channels()
+    # every channel of an instrument can be aliased
+    assert "dmm.nplc" in w.model.aliasable_channels()
     assert "dmm.nplc" in w.model.config_channels(writable=True)
     # sweep editor: config channels in pre/post lists, actions insertable into hooks
     ed = w.editor
@@ -721,11 +721,14 @@ def test_actions_and_config_in_gui(app, gui):
     assert "lockin.sensitivity" in ed.pre.channels
     acts = [ed.pre.action_box.itemText(i) for i in range(ed.pre.action_box.count())]
     assert "dmm.reset" in acts and "lockin.auto_phase" in acts
+    assert "dmm.reset" in ed.pre.channels                # an action as a constant
     ed.pre.action_box.setCurrentText("lockin.auto_phase")
     ed.pre.append_action()
-    assert "action('lockin.auto_phase')" in ed.definition()["pre"]["hook"]
-    # sweep channel lists never contain config channels
-    assert not any(n.startswith("dmm.") for n in w.model.writable_channels())
+    assert "set('lockin.auto_phase')" in ed.definition()["pre"]["hook"]
+    # the sweep's channel lists: named channels first, then the instruments' own
+    wl = w.model.writable_channels()
+    assert "src.V1" in wl and wl.index("Vg") < wl.index("src.V1")
+    assert "dmm.reset" not in wl and "dmm.reading" not in wl
 
 
 def test_parameters_and_actions_in_the_gui(app, gui):
@@ -1362,7 +1365,7 @@ def test_user_actions_panel(app, gui, monkeypatch):
     w, be, _, _ = gui
     sp = w.setup_panel
     dlg = UserActionDialog(None, w.model.readable_channels(), [], parent=w)
-    dlg.name.setText("gates to zero")
+    dlg.name.setText("gates_to_zero")
     dlg.description.setText("Vx, Vy to 0 V")
     dlg.insert.setCurrentIndex(dlg.insert.findText("Vx"))
     dlg._insert(dlg.insert.findText("Vx"))
@@ -1370,7 +1373,7 @@ def test_user_actions_panel(app, gui, monkeypatch):
     dlg.code.setPlainText("set_many({'Vx': 0, 'Vy': 0}, ramp=False)")
     dlg._ok()
     v = dlg.result_value
-    assert v == {"name": "gates to zero", "code": "set_many({'Vx': 0, 'Vy': 0}, ramp=False)",
+    assert v == {"name": "gates_to_zero", "code": "set_many({'Vx': 0, 'Vy': 0}, ramp=False)",
                  "description": "Vx, Vy to 0 V", "confirm": False}
     bad = UserActionDialog(None, [], [], parent=w)
     bad.name.setText("x")
@@ -1381,7 +1384,7 @@ def test_user_actions_panel(app, gui, monkeypatch):
     be.define_user_action(**v)
     be.define_user_action(name="slow", code="sleep(20)", confirm=True)
     assert pump(app, 5, lambda: sp.uact.rowCount() == 2)
-    assert [sp.uact.item(r, 0).text() for r in range(2)] == ["gates to zero", "slow"]
+    assert [sp.uact.item(r, 0).text() for r in range(2)] == ["gates_to_zero", "slow"]
     be.channels.set("Vx", 0.3, ramp=False)
     sp.uact.selectRow(0)
     sp._run_uact()
@@ -1407,7 +1410,7 @@ def test_user_actions_panel(app, gui, monkeypatch):
     sp.uact.selectRow(0)
     sp._remove_uact()                                       # question answered Yes above
     assert pump(app, 5, lambda: sp.uact.rowCount() == 1)
-    assert [a["name"] for a in be.list_user_actions()] == ["gates to zero"]
+    assert [a["name"] for a in be.list_user_actions()] == ["gates_to_zero"]
 
 
 def test_merge_setup_wizard(app, gui):

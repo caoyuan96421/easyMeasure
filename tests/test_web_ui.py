@@ -454,7 +454,7 @@ def test_web_user_actions(browser, gw, demo):
     grp = lower_page(page, "actions")
     grp.locator("button:text-is('Add…')").click()
     dlg = page.locator("dialog.modal")
-    dlg.locator("input").nth(0).fill("gates to zero")
+    dlg.locator("input").nth(0).fill("gates_to_zero")
     dlg.locator("input").nth(1).fill("Vx and Vy to 0 V")
     dlg.locator("textarea").fill("set('Vx', 0\n")                  # syntax error: refused
     dlg.locator("button.primary").click()
@@ -462,7 +462,7 @@ def test_web_user_actions(browser, gw, demo):
     dlg.locator("textarea").fill("set_many({'Vx': 0, 'Vy': 0}, ramp=False)")
     dlg.locator("input[type=checkbox]").check()
     dlg.locator("button.primary").click()
-    page.wait_for_selector("td:text-is('gates to zero')", timeout=5000)
+    page.wait_for_selector("td:text-is('gates_to_zero')", timeout=5000)
     assert demo.list_user_actions()[0]["confirm"] is True
     page.context.close()
     demo.channels.set("Vx", 0.3, ramp=False)
@@ -471,7 +471,7 @@ def test_web_user_actions(browser, gw, demo):
     page.click(".tab:has-text('Instruments')")
     grp = lower_page(page, "actions")
     assert grp.locator("button:text-is('Add…')").is_disabled()       # defining is for admins
-    page.dblclick("td:text-is('gates to zero')")
+    page.dblclick("td:text-is('gates_to_zero')")
     page.click("dialog.modal button:text-is('Yes')")                 # it asks first
     t0 = time.time()
     while demo.channels.get("Vx") != 0 and time.time() - t0 < 10:

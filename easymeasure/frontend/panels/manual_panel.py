@@ -20,9 +20,9 @@ started with "Set all to zero", or by typing a value for every variable and
 clicking "Set all" (enabled once none shows NaN).
 
 The setup's **parameters** are listed in their own group: a value parameter can be
-edited (``set_parameter``; it moves no instrument), a formula parameter shows its
-value.  The **user actions** are buttons at the top: ▶ runs one, and while it runs
-its button aborts it.
+edited (it is written like any channel; it moves no instrument), a formula
+parameter shows its value.  The **user actions** are buttons at the top: ▶ runs one
+(writes it), and while it runs its button aborts it.
 
 Writes go through the backend's protected path (limits, ramp rates).  While a
 channel is still ramping, newer requests for it are coalesced: only the latest
@@ -551,8 +551,11 @@ class ManualPanel(QWidget):
             else:
                 self.message("✘ %s %s%s" % (name, st, (": " + r["error"]) if r.get("error") else ""))
             self.model.schedule_refresh()
-        self.conn.request("run_user_action", {"name": name}, on_ok=done,
-                          on_err=lambda e: self.message("✘ %s: %s" % (name, e)),
+
+        def failed(e):
+            self.message("✘ %s: %s" % (name, e))
+            self.model.schedule_refresh()
+        self.conn.request("write_channel", {"name": name}, on_ok=done, on_err=failed,
                           timeout=7 * 24 * 3600)
         self.model.schedule_refresh()
 
@@ -606,7 +609,7 @@ class ManualPanel(QWidget):
             self.message("✘ %s: %r is not a number" % (name, text))
             return
         self.message("%s → %g" % (name, value))
-        self.conn.request("set_parameter", {"name": name, "value": value},
+        self.conn.request("write_channel", {"name": name, "value": value},
                           on_ok=lambda v: (self.message("%s = %g" % (name, v)),
                                            self.model.schedule_refresh()),
                           on_err=lambda e: (self.message("✘ %s: %s" % (name, e)),

@@ -26,7 +26,7 @@ are under `hooks`:
 ```json
 {"points": 101, "sweep": [{"channel": "Vg", "start": -0.5, "stop": 0.5}],
  "record": ["I"],
- "hooks": {"pre_record":  {"enabled": true, "code": "action('dmm.trigger')"},
+ "hooks": {"pre_record":  {"enabled": true, "code": "set('dmm.trigger')"},
            "post_record": {"enabled": true,
                            "code": "if values['I'] > 1e-6: log('high at %s' % (index,))"}}}
 ```
@@ -52,7 +52,7 @@ phase still runs.
 **Trigger a meter in a triggered mode before every reading** (`pre_record`):
 
 ```python
-action('dmm.trigger')
+set('dmm.trigger')
 ```
 
 **Wait for a magnet to reach its field** (`post_sweep` of the field dimension):
@@ -87,7 +87,7 @@ whose sensitivity is a number in volts):
 
 ```python
 if abs(values['X']) > 0.9 * float(get('lockin.sensitivity')):
-    action('lockin.auto_gain')
+    set('lockin.auto_gain')
     sleep(1)
 ```
 

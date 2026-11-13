@@ -102,7 +102,7 @@ def test_model_switch_repopulates_channels(x):
 def test_analog_loopback_ranges_and_rates(x):
     be = x
     h = be.instruments.get("x")
-    be.channels.set_raw("x.ao3", 3.5)
+    be.channels.set("x.ao3", 3.5)
     assert be.read_channel("x.ai3") == pytest.approx(3.5, abs=1e-3)
     assert be.read_channel("x.ai20") == pytest.approx(2.0, abs=1e-3)
     assert be.read_channel("x.ai").shape == (32,)
@@ -125,15 +125,15 @@ def test_analog_loopback_ranges_and_rates(x):
     assert be.read_channel("x.ai5") == pytest.approx(0.5, abs=1e-3)   # 2 MS/s: one input
     # output range
     with pytest.raises(ChannelError, match="±10"):
-        be.channels.set_raw("x.ao0", 11)
-    be.channels.set_raw("x.ao0", 7)
+        be.channels.set("x.ao0", 11)
+    be.channels.set("x.ao0", 7)
     with pytest.raises(ChannelError, match="ao0 is at 7"):
         be.write_channel("x.ao_range", "±5 V")
-    be.channels.set_raw("x.ao0", 1)
+    be.channels.set("x.ao0", 1)
     be.write_channel("x.ao_range", "±5 V")
     with pytest.raises(ChannelError, match="±5"):
-        be.channels.set_raw("x.ao0", 6)
-    be.channels.set_raw("x.ao0", -4.5)
+        be.channels.set("x.ao0", 6)
+    be.channels.set("x.ao0", -4.5)
     assert be.read_channel("x.ao0") == -4.5
 
 
@@ -141,26 +141,26 @@ def test_digital_lines_and_counters(x):
     be = x
     # line K is wired to line K+16 of the 32-line port 0 (and PFI 0 to PFI 4)
     assert be.read_channel("x.dio16") == 0.0
-    be.channels.set_raw("x.dio0", 1)
+    be.channels.set("x.dio0", 1)
     assert be.read_channel("x.dio16") == 1.0 and be.read_channel("x.dio0") == 1.0
-    be.channels.set_raw("x.pfi4", 1)
+    be.channels.set("x.pfi4", 1)
     assert be.read_channel("x.pfi0") == 1.0
-    be.channels.set_raw("x.dio16", 0)                # now an output too: drives its own level
+    be.channels.set("x.dio16", 0)                # now an output too: drives its own level
     assert be.read_channel("x.dio16") == 0.0
-    be.run_action("x.release_digital")
+    be.write_channel("x.release_digital")
     assert be.instruments.get("x").driver.dout == {}
     assert be.read_channel("x.dio0") == 0.0 and be.read_channel("x.pfi0") == 0.0
     with pytest.raises(ChannelError):
-        be.channels.set_raw("x.dio3", 2)
+        be.channels.set("x.dio3", 2)
     # counters start on first reading and reserve their source PFI
     c = be.read_channel("x.ctr0")
     time.sleep(0.03)
     assert be.read_channel("x.ctr0") > c
     with pytest.raises(ChannelError, match="source of ctr0"):
-        be.channels.set_raw("x.pfi8", 1)          # counter 0's source
+        be.channels.set("x.pfi8", 1)          # counter 0's source
     assert be.read_channel("x.ctr0") > c          # still counting: no retry / recovery
-    be.channels.set_raw("x.pfi9", 1)                 # the others are free
-    be.run_action("x.reset_counters")
+    be.channels.set("x.pfi9", 1)                 # the others are free
+    be.write_channel("x.reset_counters")
     assert be.read_channel("x.ctr0") < 20
     # a recovery closes every task: driven lines come back at their level
     be.instruments.get("x").driver.recover()

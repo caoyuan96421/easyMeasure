@@ -6,9 +6,10 @@ backend describes it in ``get_state``).  The user selects items, may give them
 new names, and :meth:`SetupMerge.validate` says, per item, whether merging it
 works:
 
-* **names**: a name already used in the current setup is a conflict, unless the
-  item there is identical (then it is simply skipped); two merged items may not
-  get the same name either;
+* **names**: one namespace for everything (instruments, aliases, composites and
+  their channels, parameters, user actions): a name already used in the current
+  setup is a conflict, unless the item there is identical (then it is simply
+  skipped); two merged items may not get the same name either;
 * **dependencies**: an alias needs its instrument, a formula the channels and
   parameters it uses - selected too, or already in the current setup;
 * **consistency**: everything is checked by the backend's own rules, run here
@@ -113,6 +114,18 @@ class Item:
 # ---------------------------------------------------------------------------
 # stand-in instruments for the offline check
 # ---------------------------------------------------------------------------
+class _OfflineHandle:
+    """An instrument as the channel manager sees it, without I/O."""
+
+    def __init__(self, name: str, channels: Dict[str, ChannelSpec], actions: Dict[str, object]):
+        self.name = name
+        self.channels = channels
+        self.actions = actions
+
+    def _last_of(self, channel: str) -> dict:
+        return {"last": None, "last_t": None}
+
+
 class _OfflineInstruments:
     """What :class:`ChannelManager` needs of the instruments: ``resolve``.  An
     instrument whose channels are not known yet (a dynamic driver that was never
@@ -121,11 +134,29 @@ class _OfflineInstruments:
 
     def __init__(self):
         self.chans: Dict[str, Optional[Dict[str, ChannelSpec]]] = {}
+        self.acts: Dict[str, Dict[str, object]] = {}
 
     def names(self) -> List[str]:
         return list(self.chans)
 
-    def add(self, name: str, channels: Optional[Iterable[dict]]) -> None:
+    def get(self, name: str) -> _OfflineHandle:
+        if name not in self.chans:
+            raise ChannelError("no instrument %r" % name)
+        return _OfflineHandle(name, dict(self.chans[name] or {}), dict(self.acts.get(name, {})))
+
+    def handles(self) -> List[_OfflineHandle]:
+        return [self.get(n) for n in self.chans]
+
+    def add(self, name: str, channels: Optional[Iterable[dict]],
+            actions: Optional[Iterable[dict]] = None) -> None:
+        from ..backend.instrument import ActionSpec
+        self.acts[name] = {}
+        for a in actions or []:
+            try:
+                sp = ActionSpec.from_dict(a)
+                self.acts[name][sp.name] = sp
+            except Exception:
+                continue
         if channels is None:
             self.chans[name] = None
             return
@@ -471,7 +502,7 @@ class SetupMerge:
             for ch in _composite_provides(c):
                 chans.setdefault(ch, "a channel of the composite %s" % c.get("name"))
             chans.setdefault(c.get("name"), "the composite %s" % c.get("name"))
-        acts = {a["name"]: "the action %s" % a["name"] for a in self.current["actions"]
+        acts = {a["name"]: "the user action %s" % a["name"] for a in self.current["actions"]
                 if a.get("name")}
         return {"instruments": insts, "channels": chans, "actions": acts}
 
@@ -573,9 +604,11 @@ class SetupMerge:
         # 1. the definitions as they will be merged; identical items; name conflicts
         skip: Set[Tuple[str, str]] = set()       # selected, but already there identically
         taken: Dict[Tuple[str, str], Item] = {}  # (namespace, new name) -> merged item
+        # one namespace: instruments, channels, composites, parameters, user actions
+        cur_names["all"] = {**cur_names["instruments"], **cur_names["actions"],
+                            **cur_names["channels"]}
         for k in KINDS:
-            ns = "instruments" if k == "instruments" else "actions" if k == "actions" \
-                else "channels"
+            ns = "all"
             for it in self.items[k]:
                 if not it.selected:
                     continue
@@ -644,7 +677,7 @@ class SetupMerge:
         # 3. the backend's own rules, offline on a copy of the current setup
         inst = _OfflineInstruments()
         for i in self.current["instruments"]:
-            inst.add(i["name"], i.get("channels"))
+            inst.add(i["name"], i.get("channels"), i.get("actions"))
         cm = ChannelManager(inst)
         cur_params = []
         for p in self.current["parameters"]:

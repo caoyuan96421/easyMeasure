@@ -19,7 +19,7 @@ every default filled in.
      "snake": false,
      "record_after_inner": false,
      "label": "",
-     "hooks": {"pre_record": {"enabled": true, "code": "action('dmm.trigger')"}}},
+     "hooks": {"pre_record": {"enabled": true, "code": "set('dmm.trigger')"}}},
     {"points": 21, "sweep": [{"channel": "Vb", "start": -0.3, "stop": 0.3}],
      "record": ["T"]}
   ],
@@ -75,7 +75,9 @@ and one of:
 | `values` | the list (its length must be `points`) |
 | `mapping` (+ optional `start`, `stop`) | an [expression](expressions.md) of `i`, `N`, `t = i/(N-1)`, `start`, `stop`, `x` (the linear value) and numpy; required for vector / array channels |
 
-Text channels cannot be swept.
+Any writable channel with a number can be swept: an alias, a variable or mapping
+of a composite, a value parameter, or a channel of an instrument (written as it is,
+without limits or ramp). Text channels and actions cannot be swept.
 
 Variables of one multivariate composite are set together, also when they are swept
 in different dimensions: the outer ones are then set with the inner ones at every
@@ -89,7 +91,7 @@ counted in the validation warnings and in the footer's `out_of_range_skipped`.
 | field | type | meaning |
 |---|---|---|
 | `hook` | str | Python code (script API), run first (pre) or last (post) |
-| `constants` | list of `{channel, value}` | values set once; configuration channels are typical |
+| `constants` | list of `{channel, value}` | written once, in order; settings are typical. An action (`dmm.reset`, a user action) runs: no `value` needed |
 | `record` | list of names | channels recorded once, stored in the file's `pre` / `post` |
 
 ## Recording names

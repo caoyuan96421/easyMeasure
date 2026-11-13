@@ -206,8 +206,10 @@ def normalize_definition(d: dict) -> dict:
         p.setdefault("constants", [])
         p.setdefault("record", [])
         for c in p["constants"]:
-            if not isinstance(c, dict) or "channel" not in c or "value" not in c:
-                raise SweepDefinitionError("%s constants need channel and value" % ph)
+            if not isinstance(c, dict) or "channel" not in c:
+                raise SweepDefinitionError("%s constants need a channel (and a value, but for "
+                                           "an action)" % ph)
+            c.setdefault("value", None)
     if d.setdefault("on_read_error", "nan") not in ("nan", "abort"):
         raise SweepDefinitionError("on_read_error must be 'nan' or 'abort'")
     if d.setdefault("on_set_error", "abort") not in ("abort", "skip"):
@@ -295,13 +297,25 @@ def _instruments_of(channels, name: str) -> set:
         return set()
 
 
+def _changes_instrument(channels, ch: str) -> Optional[str]:
+    """The instrument a constant writes directly (a channel or action of it), which
+    may change its settings and channel list; None otherwise."""
+    try:
+        k = channels.kind(ch)
+    except Exception:
+        k = None
+    if k in ("hardware", "config", "action"):
+        return ch.split(".", 1)[0]
+    return None
+
+
 def _pre_configured(d: dict, channels) -> set:
-    """Instruments whose settings (configuration channels) the pre-sweep constants change."""
+    """Instruments whose settings the pre-sweep constants change (written directly)."""
     out = set()
     for c in d["pre"]["constants"]:
-        ch = c["channel"]
-        if "." in ch and not channels.is_composite(ch):   # raw: only configuration channels
-            out.add(ch.split(".", 1)[0])
+        inst = _changes_instrument(channels, c["channel"])
+        if inst:
+            out.add(inst)
     return out
 
 
@@ -358,15 +372,12 @@ def validate_against(d: dict, channels, after_pre: bool = False,
             except Exception as exc:
                 problem(ch, "sweep channel %s: %s" % (ch, exc))
                 continue
-            if info["kind"] == "raw":
-                errors.append("sweep channel %s must be an alias or composite" % ch)
-                continue
-            if info["kind"] == "parameter":
-                errors.append("sweep channel %s is a parameter: parameters are constants, set "
-                              "in the Parameters or Manual panel, not swept" % ch)
-                continue
             if not info["writable"]:
-                problem(ch, "sweep channel %s is not writable" % ch)
+                problem(ch, "sweep channel %s is read-only" % ch)
+                continue
+            if info["kind"] in ("action", "user_action"):
+                errors.append("sweep channel %s is an action: it has no value to sweep (run it "
+                              "as a constant or from a point action)" % ch)
                 continue
             if info["dtype"] == "str":
                 errors.append("string channel %s cannot be swept" % ch)
@@ -492,15 +503,19 @@ def validate_against(d: dict, channels, after_pre: bool = False,
                                     "the settings of that instrument)")
                 else:
                     errors.append(text)
-            if "." in ch and not channels.is_composite(ch):
-                changed.add(ch.split(".", 1)[0])
+            inst = _changes_instrument(channels, ch)
+            if inst:
+                changed.add(inst)
         for r in d[ph]["record"]:
             if not channels.exists(r):
                 text = "%s record channel %s does not exist" % (ph, r)
-                if _instruments_of(channels, r) & changed:
+                if _instruments_of(channels, r) & changed or \
+                        (("." in r) and r.split(".", 1)[0] in changed):
                     warnings.append(text + " (yet)")
                 else:
                     errors.append(text)
+            elif not channels.info(r)["readable"]:
+                errors.append("%s record channel %s cannot be read" % (ph, r))
         if d[ph]["hook"]:
             try:
                 compile(d[ph]["hook"], "<%s-hook>" % ph, "exec")
@@ -808,7 +823,11 @@ class SweepRunner:
             self._store_phase("post", vals, errs)
         for c in p["constants"]:
             self.control.check()
-            log.info("run %d: %s constant %s = %r", self.run_number, phase, c["channel"], c["value"])
+            if c["value"] is None:
+                log.info("run %d: %s: %s", self.run_number, phase, c["channel"])
+            else:
+                log.info("run %d: %s constant %s = %r", self.run_number, phase, c["channel"],
+                         c["value"])
             self._set(c["channel"], c["value"])
         if phase == "pre":
             vals, errs = self._record(p["record"]) if p["record"] else ({}, {})

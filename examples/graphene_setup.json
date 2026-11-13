@@ -161,7 +161,7 @@
   ],
   "actions": [
     {
-      "name": "gates to zero",
+      "name": "gates_to_zero",
       "code": "set_many({'Vbg': 0, 'Vtg': 0})\nprint('both gates at 0 V')",
       "description": "ramp both gates to 0 V",
       "confirm": false

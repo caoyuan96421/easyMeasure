@@ -694,11 +694,11 @@ class CompositeDialog(QDialog):
 
 
 ACTION_HELP = """\
-get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · set_raw('inst.ch', v)
-sleep(s) · wait_until(f, timeout) · action('inst.action') · user_action('other action')
+get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · sleep(s)
+set('inst.action') or set('other_action') runs an action · wait_until(f, timeout)
 instrument(name).raw_query(…) · print(…) / log(…) · state (a dict kept between runs) · np, math
-Limits and ramp rates of aliases and composites apply; Abort stops at the next line,
-sleep or ramp step."""
+Any channel: aliases and composites keep their limits and ramp rates, 'inst.channel' is
+written as it is; Abort stops at the next line, sleep or ramp step."""
 
 
 class UserActionDialog(QDialog):
@@ -861,7 +861,8 @@ class SetupPanel(QWidget):
         self.raw_get = QPushButton("Get")
         self.raw_get.clicked.connect(lambda: self._raw_get())
         self.raw_set = QPushButton("Set…")
-        self.raw_set.setToolTip("set a configuration channel")
+        self.raw_set.setToolTip("write the channel as it is (no limits, no ramp: an alias "
+                                "adds those)")
         self.raw_set.clicked.connect(self._raw_set)
         for b in (self.mk_alias, self.raw_get, self.raw_set):
             rb.addWidget(b)
@@ -1215,9 +1216,9 @@ class SetupPanel(QWidget):
 
     def _raw_selection(self):
         _, c = self._raw_spec()
-        self.mk_alias.setEnabled(c is not None and not c.get("config"))
+        self.mk_alias.setEnabled(c is not None)
         self.raw_get.setEnabled(c is not None and "r" in c.get("access", ""))
-        self.raw_set.setEnabled(c is not None and bool(c.get("config")) and "w" in c.get("access", ""))
+        self.raw_set.setEnabled(c is not None and "w" in c.get("access", ""))
 
     def _raw_get(self):
         inst, c = self._raw_spec()
@@ -1261,7 +1262,7 @@ class SetupPanel(QWidget):
             return
         ref = "%s.%s" % (inst, it.text())
         self.msg.setText("running %s…" % ref)
-        self.conn.request("run_action", {"ref": ref}, on_ok=self._done("%s done" % ref),
+        self.conn.request("write_channel", {"name": ref}, on_ok=self._done("%s done" % ref),
                           on_err=self._err(ref))
 
     # ------------------------------------------------------------- instruments --
@@ -1504,7 +1505,7 @@ class SetupPanel(QWidget):
             else:
                 self._err(name)("%s%s" % (st, (": " + r["error"]) if r.get("error") else ""))
             self.model.schedule_refresh()
-        self.conn.request("run_user_action", {"name": name}, on_ok=done,
+        self.conn.request("write_channel", {"name": name}, on_ok=done,
                           on_err=self._err(name), timeout=7 * 24 * 3600)
         self.model.schedule_refresh()
 
@@ -1521,7 +1522,8 @@ class SetupPanel(QWidget):
             self._edit_uact(a)
 
     def _edit_uact(self, a: Optional[dict]) -> None:
-        names = self.model.readable_channels() + self.model.config_channels(writable=True)
+        names = list(dict.fromkeys(self.model.readable_channels() + self.model.writable_channels()
+                                   + self.model.action_channels()))
         dlg = UserActionDialog(a, names, [x["name"] for x in self.model.user_actions()],
                                parent=self, conn=self.conn)
         if dlg.exec() and dlg.result_value:

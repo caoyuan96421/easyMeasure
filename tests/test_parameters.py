@@ -55,35 +55,33 @@ def test_definition_rules(demo):
     with pytest.raises(ChannelError, match="unknown name nope"):
         be.define_parameter(name="d", formula="2*nope")
     # names are unique among channels, composites and parameters
-    with pytest.raises(ChannelError, match="already a channel"):
+    with pytest.raises(ChannelError, match="already an alias"):
         be.define_parameter(name="Vg", value=1)
-    with pytest.raises(ChannelError, match="already in use"):
+    with pytest.raises(ChannelError, match="already a parameter"):
         be.define_alias(name="a", target="src.V1")
     be.define_composite(type="multi", name="G", variables=["u"], targets={"Vx": "u"})
     be.define_parameter(name="u", value=1)          # the variable is G.u: no conflict
     be.remove_parameter(name="u")
-    with pytest.raises(ChannelError, match="already a channel or composite"):
+    with pytest.raises(ChannelError, match="already a composite"):
         be.define_parameter(name="G", value=1)
     # a variable may share a parameter's name: in its composite's formulas it is the variable
     be.define_composite(type="multi", name="H", variables=["a"], targets={"Vy": "a"})
     be.set_many(values={"H.a": 0.3}, ramp=False)
     assert be.read_channel(name="Vy") == pytest.approx(0.3)
     be.remove_composite(name="H")
-    with pytest.raises(ChannelError, match="is a parameter"):
+    with pytest.raises(ChannelError, match="already a parameter"):
         be.define_composite(type="multi", name="a", variables=["x"], targets={"Vy": "x"})
     with pytest.raises(ChannelError, match="already exists"):
         be.define_parameter(name="a", value=5)
-    # not writable, not sweepable; set only as a value parameter
-    with pytest.raises(ChannelError, match="is a parameter"):
-        be.write_channel(name="a", value=1)
-    with pytest.raises(ChannelError, match="is a parameter"):
-        be.set_many(values={"a": 1})
-    with pytest.raises(Exception, match="is a parameter"):
-        be.validate_sweep(definition={"name": "s", "dimensions": [
-            {"points": 2, "sweep": [{"channel": "a", "start": 0, "stop": 1}], "record": []}]})
-    with pytest.raises(ChannelError, match="computed from its formula"):
-        be.set_parameter(name="b", value=1)
-    assert be.set_parameter(name="a", value=1.0) == 1.0
+    # a value parameter is a channel like the others: written, set together, swept
+    assert be.write_channel(name="a", value=2) == 2.0
+    assert be.set_many(values={"a": 3})["a"] == 3.0
+    assert be.validate_sweep(definition={"name": "s", "dimensions": [
+        {"points": 2, "sweep": [{"channel": "a", "start": 0, "stop": 1}], "record": ["c"]}]})["ok"]
+    assert be.channel_info(name="a")["access"] == "rw"
+    with pytest.raises(ChannelError, match="read-only"):
+        be.write_channel(name="b", value=1)
+    assert be.write_channel(name="a", value=1.0) == 1.0
     assert be.read_channel(name="c") == pytest.approx(1 + 9)        # formulas follow
     info = be.channel_info(name="b")
     assert info["kind"] == "parameter" and not info["writable"] and info["formula"] == "3*a"
@@ -106,7 +104,7 @@ def test_composites_use_parameters(demo):
     assert be.read_channel(name="Vx") == pytest.approx(0.5) and be.read_channel(name="Vy") == \
         pytest.approx(-0.25)
     # a parameter change moves nothing; the next write uses it
-    be.set_parameter(name="k", value=4.0)
+    be.write_channel(name="k", value=4.0)
     assert be.read_channel(name="Vx") == pytest.approx(0.5)
     be.set_many(values={"G.a": 0.5}, ramp=False)
     assert be.read_channel(name="Vx") == pytest.approx(1.0) and be.read_channel(name="Vy") == \
@@ -116,7 +114,7 @@ def test_composites_use_parameters(demo):
         {"points": 5, "sweep": [{"channel": "G.a", "start": 0, "stop": 1}], "record": ["Vx", "k"]}]}
     r = be.validate_sweep(definition=d)
     assert r["ok"] and "composite G: 0 of" not in str(r["warnings"])
-    be.set_parameter(name="k", value=8.0)                    # Vx = 4a: above 1 V for a > 0.25
+    be.write_channel(name="k", value=8.0)                    # Vx = 4a: above 1 V for a > 0.25
     r = be.validate_sweep(definition=d)
     assert "composite G: 3 of 5 points out of range, will be skipped" in r["warnings"]
     item, ds = _run(be, d)
@@ -143,11 +141,11 @@ def test_mappings_are_checked_again_when_a_parameter_changes(demo):
     be.write_channel(name="Vmv", value=200, ramp=False)
     assert be.read_channel(name="Vg") == pytest.approx(0.2)
     assert be.read_channel(name="Vmv") == pytest.approx(200)
-    be.set_parameter(name="gain", value=500.0)
+    be.write_channel(name="gain", value=500.0)
     assert be.read_channel(name="Vmv") == pytest.approx(100)         # read follows
     # a value that breaks the mapping is refused, and the old one stays in force
     with pytest.raises(ChannelError, match="mapping Vmv"):
-        be.set_parameter(name="gain", value=0.0)
+        be.write_channel(name="gain", value=0.0)
     assert be.channels.parameter_values()["gain"] == 500.0
     assert be.read_channel(name="Vmv") == pytest.approx(100)
     be.write_channel(name="Vmv", value=250, ramp=False)
@@ -163,20 +161,25 @@ def test_actions_scripts_and_point_actions_see_parameters(demo):
     be.define_parameter(name="Ct", formula="1.5*Cb")
     be.define_user_action(name="use", code="set('Vg', Ct - Cb)\nstate['seen'] = (Cb, params.Ct, "
                                            "params['Cb'], 'Ct' in params, dict(params))")
-    assert be.run_user_action(name="use")["status"] == "finished"
+    assert be.write_channel(name="use")["status"] == "finished"
     assert be.read_channel(name="Vg") == pytest.approx(0.3)
     cb, ct, cb2, has, allp = be.scripts.state["seen"]
     assert (cb, ct, cb2, has) == (0.6, pytest.approx(0.9), 0.6, True)
     assert allp == {"Cb": 0.6, "Ct": pytest.approx(0.9)}
-    for code in ("params.Cb = 1", "params['Cb'] = 1"):
-        be.define_user_action(name="bad", code=code, replace=True)
-        r = be.run_user_action(name="bad")
-        assert r["status"] == "error" and "Parameters or Manual panel" in r["error"]
+    # a value parameter is written like a channel, a formula parameter is read-only
+    for code in ("params.Cb = 0.7", "params['Cb'] = 0.7", "set('Cb', 0.7)"):
+        be.define_user_action(name="setp", code=code, replace=True)
+        be.write_channel(name="setp")
+        assert be.read_channel("Ct") == pytest.approx(1.05)
+        be.write_channel("Cb", 0.6)
+    be.define_user_action(name="bad", code="params.Ct = 1", replace=True)
+    with pytest.raises(ChannelError, match="read-only"):
+        be.write_channel(name="bad")
     # a name taken by the script API is not shadowed by a parameter
     be.define_parameter(name="state_", value=1.0)
     be.define_parameter(name="np_", value=2.0)
     be.define_user_action(name="ns", code="state['ok'] = (np.pi > 3, state_ + np_)", replace=True)
-    assert be.run_user_action(name="ns")["status"] == "finished"
+    assert be.write_channel(name="ns")["status"] == "finished"
     assert be.scripts.state["ok"] == (True, 3.0)
     # point actions
     d = {"name": "pa", "dimensions": [{"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.2}],
@@ -216,7 +219,7 @@ def test_setups_keep_parameters(demo, tmp_path):
 
 def test_permissions():
     assert policy.required_level("list_parameters") == 0
-    assert policy.required_level("set_parameter") == 1
+    assert policy.required_level("write_channel") == 1
     assert policy.required_level("define_parameter") == 2
     assert policy.required_level("remove_parameter") == 2
 
@@ -310,7 +313,7 @@ def test_parameters_change_while_sweeps_run(demo):
         rng = np.random.default_rng(1)
         while not stop.is_set():
             try:
-                be.set_parameter(name="g", value=float(rng.uniform(0.2, 2.0)))
+                be.write_channel(name="g", value=float(rng.uniform(0.2, 2.0)))
             except Exception as exc:                  # pragma: no cover - reported below
                 errors.append(exc)
             time.sleep(0.002)

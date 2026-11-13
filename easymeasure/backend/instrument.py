@@ -610,6 +610,9 @@ class InstrumentHandle:
         for a in acts or []:
             if not isinstance(a, ActionSpec):
                 a = ActionSpec.from_dict(a)
+            if a.name in new_c:
+                raise ChannelError("%s: %r is both a channel and an action (one name, one "
+                                   "thing: %s.%s)" % (self.name, a.name, self.name, a.name))
             new_a[a.name] = a
         # compare with what clients saw so far (the static class lists before the
         # first connect)

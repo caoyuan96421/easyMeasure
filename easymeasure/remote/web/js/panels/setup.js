@@ -19,8 +19,8 @@ function parseValue(text) {
   return t;
 }
 
-const ACTION_HELP = "get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · set_raw('inst.ch', v) · " +
-  "sleep(s) · wait_until(f, timeout) · action('inst.action') · user_action('other action') · print(…) · " +
+const ACTION_HELP = "get(name) · set(name, value[, ramp=False]) · set_many({name: value, …}) · " +
+  "set('inst.action') or set('other_action') runs an action · sleep(s) · wait_until(f, timeout) · print(…) · " +
   "state (a dict kept between runs) · np, math. Limits and ramp rates apply; Abort stops at the next line, sleep or ramp step.";
 
 function uactStatus(a) {
@@ -204,7 +204,7 @@ export class SetupPanel {
       { key: "last_error", label: "Last error" },
     ], { onSelect: () => this._showRaw(), onActivate: () => this._editInst(), empty: "no instruments" });
     this.raw = new Table([
-      { key: "name", label: "Channel" }, { key: "config", label: "Config", fmt: (v) => (v ? "⚙" : ""), title: "config channels are settings: set directly, never aliased or swept" },
+      { key: "name", label: "Channel" }, { key: "config", label: "Config", fmt: (v) => (v ? "⚙" : ""), title: "configuration channels: the instrument's settings (modes, ranges …)" },
       { key: "access", label: "Access" }, { key: "dtype", label: "Type" },
       { key: "shape", label: "Shape", fmt: (s) => (s === null || s === undefined ? "any" : s.length === 0 ? "scalar" : s.map((x) => (x === -1 ? "N" : x)).join("×")) },
       { key: "unit", label: "Unit" },
@@ -252,7 +252,7 @@ export class SetupPanel {
         btn("Edit…", () => this._editComp(this._selComp()), { cmd: "define_composite" }),
         btn("Remove", () => this._remove("remove_composite", this._selComp()), { cmd: "remove_composite" }))),
       actions: page("actions", this.uact.el, bar(
-        btn("▶ Run", () => this._runUact(this.uact.current()), { cmd: "run_user_action", title: "run the selected action now (double click works too)" }),
+        btn("▶ Run", () => this._runUact(this.uact.current()), { cmd: "write_channel", title: "run the selected action now (double click works too)" }),
         this.uactAbort = btn("■ Abort", () => this._abortUact(), { cmd: "abort_user_action", title: "stop the running action(s) at the next line, sleep or ramp step" }),
         btn("Add…", () => this._editUact(null), { cmd: "define_user_action" }),
         btn("Edit…", () => this._editUact(this.uact.current()), { cmd: "define_user_action" }),
@@ -283,8 +283,8 @@ export class SetupPanel {
       group("Channels (hardware)", this.raw.el, bar(
         btn("Make alias…", () => this._aliasFromRaw(), { cmd: "define_alias" }),
         btn("Get", () => this._rawGet(), { cmd: "read_channel" }),
-        btn("Set…", () => this._rawSet(), { cmd: "write_channel", title: "set a configuration channel" })),
-        this.actions.el, bar(btn("▶ Run action", () => this._runAction(), { cmd: "run_action" }))));
+        btn("Set…", () => this._rawSet(), { cmd: "write_channel", title: "write the channel as it is (no limits, no ramp: an alias adds those)" })),
+        this.actions.el, bar(btn("▶ Run action", () => this._runAction(), { cmd: "write_channel" }))));
     this.top.firstChild.classList.add("setup-inst");
     this.top.lastChild.classList.add("setup-hw");
     this.el = h("div", { class: "panel setup" }, this.top, splitter(this.top, { vertical: false, key: "setup", min: 120 }), this.lower.el);
@@ -431,7 +431,7 @@ export class SetupPanel {
     const ref = this._selRaw();
     if (!ref) { this.say("select a channel", true); return; }
     const c = this.raw.current();
-    if (!c.config) { this.say("use an alias to set measurement channels (limits and ramps apply)", true); }
+    if (!(c.access || "rw").includes("w")) { this.say(`${ref} is read-only`, true); return; }
     let current = "";
     try { current = await this.conn.request("read_channel", { name: ref }); this._noteValue(ref, current); } catch (e) { /* unknown */ }
     if (c.allowed && c.allowed.length) {
@@ -454,13 +454,12 @@ export class SetupPanel {
     if (!inst || !a) { this.say("select an action", true); return; }
     const ref = `${inst.name}.${a.name}`;
     this.say(`running ${ref} …`);
-    await this._do("run_action", { ref }, `${ref}: done`).catch(() => {});
+    await this._do("write_channel", { name: ref }, `${ref}: done`).catch(() => {});
   }
 
   _aliasFromRaw() {
     const ref = this._selRaw(), c = this.raw.current();
     if (!ref) { this.say("select a channel", true); return; }
-    if (c.config) { this.say("configuration channels cannot be aliased", true); return; }
     this._editAlias({ name: c.name, target: ref, unit: c.unit || "" }, true);
   }
 
@@ -557,11 +556,11 @@ export class SetupPanel {
   // ---- user actions ----------------------------------------------------------------
   async _runUact(a) {
     if (!a) { this.say("select an action", true); return; }
-    if (!this.conn.can("run_user_action")) return;
+    if (!this.conn.can("write_channel")) return;
     if (a.confirm && !(await confirmDialog("Run action", `Run ${a.name}?${a.description ? "\n\n" + a.description : ""}`))) return;
     this.say(`running ${a.name} …`);
     try {
-      const r = await this.conn.request("run_user_action", { name: a.name }, { timeout: 7 * 24 * 3600 * 1000 });
+      const r = await this.conn.request("write_channel", { name: a.name }, { timeout: 7 * 24 * 3600 * 1000 });
       if (r.status === "finished") this.say(`✔ ${a.name} done (${fmt(r.elapsed, 3)} s)`);
       else this.say(`${a.name}: ${r.status}${r.error ? ": " + r.error : ""}`, true);
     } catch (e) { this.say(`${a.name}: ${e.message}`, true); }
@@ -580,7 +579,8 @@ export class SetupPanel {
     if (!this.conn.can("define_user_action")) return;
     const existing = !!a;
     a = a || {};
-    const chans = this.model.readableChannels().concat(this.model.configChannels(true));
+    const chans = [...new Set(this.model.readableChannels().concat(this.model.writableChannels(),
+      this.model.actionChannels()))];
     const names = this.model.userActions().map((x) => x.name);
     const dict = (x) => {
       const d = { name: x.name.trim(), code: x.code, description: x.description.trim(), confirm: x.confirm };

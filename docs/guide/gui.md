@@ -31,8 +31,8 @@ The page fits the window without a scroll bar. The first row holds:
   backend computer that fit the driver (see [Instruments](instruments.md#adding-an-instrument)).
 * **Channels (hardware)**: the selected instrument's channels, with their
   allowed values and the *last value* read or set (nothing is read just to fill the
-  table), and its actions. Buttons: *Make alias…*, *Get*, *Set…* for configuration
-  channels, and *Run action*.
+  table), and its actions. Buttons: *Make alias…*, *Get*, *Set…* (writes the channel
+  as it is: no limits, no ramp) and *Run action*.
 
 Below them, four tabs:
 

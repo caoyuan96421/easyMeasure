@@ -117,7 +117,7 @@ def legit_client(url, fp, token, user, seed):
                 elif r < 0.45 and role != "viewer":
                     c.call("write_channel", name="Vg", value=round(rnd.uniform(-0.3, 0.3), 3), ramp=True)
                 elif r < 0.52 and role != "viewer":
-                    c.call("run_action", ref=rnd.choice(["dmm.reset", "lockin.auto_gain", "chaos.fail", "awg.start"]))
+                    c.call("write_channel", name=rnd.choice(["dmm.reset", "lockin.auto_gain", "chaos.fail", "awg.start"]))
                 elif r < 0.58 and role != "viewer":
                     c.call("queue_add", item={"kind": "sweep", "definition": {
                         "name": "remote_%s" % user, "dimensions": [
@@ -261,9 +261,9 @@ def random_obj(rnd, depth=0):
             random_obj(rnd, depth + 1) for _ in range(rnd.randint(0, 5))}
 
 
-CMDS = ["ping", "read_channel", "write_channel", "run_action", "queue_add", "load_run", "make_ppt",
+CMDS = ["ping", "read_channel", "write_channel", "set_many", "queue_add", "load_run", "make_ppt",
         "set_settings", "run_script_now", "define_alias", "monitor_add", "validate_sweep",
-        "remote_stop", "list_runs", "get_state", "query_channel", "nonsense", ""]
+        "remote_stop", "list_runs", "get_state", "channel_info", "nonsense", ""]
 
 
 def fuzzer(port, token, seed):

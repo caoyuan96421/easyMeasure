@@ -33,7 +33,7 @@ def test_variables_are_named_after_their_composite(demo):
     # names that would read like something else
     with pytest.raises(ChannelError, match="taken"):
         demo.define_composite(type="multi", name="h", variables=["T"], targets={"Vb": "T"})
-    with pytest.raises(ChannelError, match="name of an instrument"):
+    with pytest.raises(ChannelError, match="already an instrument"):
         demo.define_composite(type="multi", name="dmm", variables=["a"], targets={"Vb": "a"})
     # a sweep and a script by the full names
     r = demo.validate_sweep(definition={"name": "s", "dimensions": [

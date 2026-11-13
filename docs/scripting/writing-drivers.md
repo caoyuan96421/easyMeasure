@@ -96,7 +96,7 @@ config=False, allowed=None)`:
 | `shape` | `()` scalar; `(-1,)` vector of any length; `(64,)` fixed; `(-1, -1)` image; `None` anything |
 | `unit`, `description` | shown in the front ends, stored in data files |
 | `timeout` | per-channel deadline, for slow readings |
-| `config` | a setting: set directly, never aliased or swept |
+| `config` | a setting (range, mode …): listed apart, shown with ⚙, typical as a sweep constant |
 | `allowed` | accepted values; writes are checked and normalised, front ends show a drop-down |
 
 Implement `_read_<name>()` and `_write_<name>(value)`, or override
@@ -107,7 +107,10 @@ become numbers and arrays, and a wrong shape is an error.
 ### Actions
 
 `ActionSpec(name, description, timeout=None)`, implemented by `_action_<name>()`,
-or by overriding `action(name)`. Actions are never retried automatically.
+or by overriding `action(name)`. Actions are never retried automatically. An action
+is a write-only channel of the instrument (`dmm.reset`), so its name may not be the
+name of one of the driver's channels: such a driver fails to connect with a message
+saying which name.
 
 ### Options
 

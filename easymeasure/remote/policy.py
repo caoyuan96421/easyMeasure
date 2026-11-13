@@ -6,10 +6,11 @@ Three roles, each including the rights of the one before:
     Watch everything: state, monitor, live and stored data, logs, queue.  Reads
     channels (an instrument query) but changes nothing.
 ``operator``
-    Run measurements within the configured setup: set channels (alias limits and
-    ramp rates are always enforced by the backend), run instrument actions,
-    monitor channels, queue / start / pause / abort sweeps, add PPT slides,
-    reconnect instruments, run the user actions an admin defined.  Cannot run Python code (scripts, sweep hooks), change
+    Run measurements within the configured setup: write channels (alias limits
+    and ramp rates are always enforced by the backend; channels of instruments are
+    written as they are), run instrument actions and the user actions an admin
+    defined (writing them), set parameters, monitor channels, queue / start /
+    pause / abort sweeps, add PPT slides, reconnect instruments.  Cannot run Python code (scripts, sweep hooks), change
     instruments, aliases or their limits, send raw instrument commands, change
     backend settings or touch files outside the data directory.
 ``admin``
@@ -36,12 +37,13 @@ VIEW = {
     "list_user_actions", "ramp_state", "list_parameters", "check_code",
 }
 OPERATE = {
-    "write_channel", "set_many", "stop_ramps", "set_parameter", "query_channel", "run_action", "monitor_add", "monitor_remove",
+    "write_channel", "set_many", "stop_ramps", "monitor_add", "monitor_remove",
     "queue_add", "queue_remove", "queue_move", "queue_clear", "queue_start", "queue_stop",
     "queue_options", "pause", "resume", "abort", "abort_all", "make_ppt",
     "connect_instrument", "disconnect_instrument", "reconnect_instrument",
-    # user actions: running one runs code an admin wrote, defining one is writing code
-    "run_user_action", "abort_user_action",
+    # user actions: running one (write_channel) runs code an admin wrote; defining one
+    # is writing code
+    "abort_user_action",
 }
 ADMIN = {
     "set_settings", "rescan_drivers", "discover_resources", "add_instrument",

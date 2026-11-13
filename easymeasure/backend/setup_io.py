@@ -82,6 +82,7 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
                 problems.append("removing %s: %s" % (name, exc))
     for inst in setup.get("instruments", []):
         try:
+            channels.claim(inst["name"], "instrument")
             h = instruments.add(inst["name"], inst["driver"], inst.get("address", "NONE"),
                                 inst.get("options", {}), connect=connect)
             if connect and h.state != "connected":

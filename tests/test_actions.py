@@ -43,51 +43,51 @@ def test_all_simulated_actions_and_effects(demo):
         "cam": {"snap", "cooler_on"},
         "awg": {"start", "stop", "trigger"},
         "tc": set(),
-        "chaos": {"ok", "fail", "hang", "crash"},
+        "chaos": {"ok", "fail", "stall", "explode"},
     }
     got = {i["name"]: {a["name"] for a in i["actions"]} for i in be.list_instruments()}
     assert got == expected
     # run every non-faulty action
     for inst, acts in expected.items():
-        for a in sorted(acts - {"fail", "hang", "crash"}):
-            be.run_action("%s.%s" % (inst, a))
+        for a in sorted(acts - {"fail", "stall", "explode"}):
+            be.write_channel("%s.%s" % (inst, a))
     # effects
     be.write_channel("dmm.nplc", 20)
     be.write_channel("dmm.function", "VOLT")
-    be.run_action("dmm.reset")
+    be.write_channel("dmm.reset")
     assert be.read_channel("dmm.nplc") == 1 and be.read_channel("dmm.function") == "CURR"
     be.write_channel("spec.points", 11)
     be.write_channel("spec.start", 1.0)
-    be.run_action("spec.preset")
+    be.write_channel("spec.preset")
     assert be.read_channel("spec.points") == 201 and be.read_channel("spec.start") == 3.0
-    be.run_action("awg.start")
+    be.write_channel("awg.start")
     assert be.read_channel("awg.run") == "RUN"
-    be.run_action("awg.stop")
+    be.write_channel("awg.stop")
     assert be.read_channel("awg.run") == "STOP" and be.read_channel("awg_rms") == 0.0
     be.write_channel("lockin.sensitivity", "1")
-    be.run_action("lockin.auto_gain")
+    be.write_channel("lockin.auto_gain")
     assert be.read_channel("lockin.sensitivity") != "1"
     assert be.instruments.get("cam").driver.cooler is True
     # magnet: start a ramp to 2 T at 10 T/min, hold after a moment -> stops there
     be.channels.set("B", 2.0, ramp=False)
     time.sleep(0.4)
     assert be.read_channel("magnet.status") == "RAMPING"
-    be.run_action("magnet.hold")
+    be.write_channel("magnet.hold")
     f = be.read_channel("B")
     assert 0 < f < 2.0 and be.read_channel("magnet.status") == "HOLDING"
     assert be.read_channel("magnet.target") == pytest.approx(f, abs=1e-6)
     # chaos: failures are contained and reported, never retried
-    for bad, exc in (("fail", InstrumentError), ("crash", InstrumentError),
-                     ("hang", InstrumentTimeout)):
+    for bad, exc in (("fail", InstrumentError), ("explode", InstrumentError),
+                     ("stall", InstrumentTimeout)):
         t = time.monotonic()
         with pytest.raises(exc):
-            be.run_action("chaos." + bad)
+            be.write_channel("chaos." + bad)
         assert time.monotonic() - t < 3
-    be.run_action("chaos.ok")                        # instrument still usable
+    be.write_channel("chaos.ok")                        # instrument still usable
     # unknown action / bad references
     for ref in ("dmm.nope", "nope.reset", "dmm", ""):
         with pytest.raises(EasyMeasureError):
-            be.run_action(ref)
+            be.write_channel(ref)
 
 
 def test_actions_in_sweep_hooks(demo):
@@ -96,8 +96,8 @@ def test_actions_in_sweep_hooks(demo):
     be.write_channel("spec.points", 5)
     d = {"name": "hooks", "dimensions": [
         {"points": 4, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}], "record": ["I"]}],
-        "pre": {"hook": "action('dmm.reset')\naction('awg.start')", "record": ["dmm.nplc", "awg.run"]},
-        "post": {"hook": "action('spec.preset')\naction('awg.stop')"}}
+        "pre": {"hook": "set('dmm.reset')\nset('awg.start')", "record": ["dmm.nplc", "awg.run"]},
+        "post": {"hook": "set('spec.preset')\nset('awg.stop')"}}
     be.queue_add({"kind": "sweep", "definition": d}, start=True)
     assert be.queue.wait_idle(30)
     item = be.queue_state()["history"][-1]
@@ -107,8 +107,8 @@ def test_actions_in_sweep_hooks(demo):
     assert be.read_channel("spec.points") == 201 and be.read_channel("awg.run") == "STOP"
     # a failing action in the pre hook makes the sweep fail cleanly (post still runs)
     be.add_instrument("chaos", "sim_chaos", options={"exception_rate": 0.0})
-    d["pre"]["hook"] = "action('chaos.fail')"
-    d["post"]["hook"] = "action('awg.start')"
+    d["pre"]["hook"] = "set('chaos.fail')"
+    d["post"]["hook"] = "set('awg.start')"
     be.queue_add({"kind": "sweep", "definition": d}, start=True)
     assert be.queue.wait_idle(30)
     item = be.queue_state()["history"][-1]
@@ -139,7 +139,7 @@ def test_actions_under_hardware_faults(backend):
     for i in range(60):
         ref = ("dmm.reset", "dmm.trigger", "lockin.auto_phase", "lockin.auto_gain")[i % 4]
         try:
-            be.run_action(ref)
+            be.write_channel(ref)
             ok += 1
         except EasyMeasureError:
             failed += 1
@@ -228,8 +228,8 @@ def test_keithley_actions_and_config_over_tcp(backend):
         assert {a["name"] for a in h["actions"]} == {"clear_status", "beep"}
         assert {c["name"] for c in h["channels"] if c["config"]} == {
             "mode", "Icompliance", "output", "nplc", "sense", "terminals"}
-        be.run_action("smu.clear_status")
-        be.run_action("smu.beep")
+        be.write_channel("smu.clear_status")
+        be.write_channel("smu.beep")
         be.write_channel("smu.output", "ON")
         be.write_channel("smu.nplc", 10)
         be.define_alias(name="Vsmu", target="smu.voltage", max=5)
@@ -261,8 +261,8 @@ def test_scpi_generic_actions_and_config_over_tcp(backend):
         h = be.add_instrument("psu", "scpi_generic", "TCP::127.0.0.1::%d" % fake.port, opts)
         assert h["state"] == "connected", h
         assert {a["name"] for a in h["actions"]} == {"trigger", "reset"}
-        be.run_action("psu.trigger")
-        be.run_action("psu.reset")
+        be.write_channel("psu.trigger")
+        be.write_channel("psu.reset")
         be.write_channel("psu.output", "ON")
         assert be.read_channel("psu.I") == pytest.approx(0.2)
         be.define_alias(name="Vpsu", target="psu.V", min=0, max=5)
@@ -272,7 +272,7 @@ def test_scpi_generic_actions_and_config_over_tcp(backend):
         for cmd in want:
             assert cmd in rx, (cmd, rx)
         assert rx.index("*RST") < rx.index("*CLS")
-        with pytest.raises(EasyMeasureError):
-            be.define_alias(name="out", target="psu.output")   # config channel
+        be.define_alias(name="out", target="psu.output")       # a config channel too
+        assert be.read_channel("out") == be.read_channel("psu.output")
     finally:
         fake.close()

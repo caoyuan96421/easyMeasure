@@ -1,18 +1,18 @@
-"""User-defined actions: short named Python snippets (e.g. "all gates to zero",
-"ramp the magnet down") that control any channel with the script API.
+"""User-defined actions: short named Python snippets (``zero_gates``,
+``magnet_down``) that control any channel with the script API.
 
-An action runs at once when asked (like a write from the Manual panel), in the
-requesting thread, with the same namespace as queued scripts (``get``, ``set``,
-``set_many``, ``set_raw``, ``sleep``, ``instrument``, ``action`` ...) plus
-``user_action(name)`` to run another user action.  Each run has its own abort
-control: ``abort_user_action`` (or abort all) stops it at the next line, sleep
-or ramp step; pausing a sweep does not pause it.  The definitions travel with
-the setup (save / load / autosave).
+A user action is a write-only channel with a plain name: writing it runs it
+(``write_channel(name="zero_gates")``, ``set('zero_gates')`` in a script or another
+action, a pre-sweep constant, a Manual-panel button).  It runs in the writing
+thread, with the same namespace as queued scripts (``get``, ``set``, ``set_many``,
+``sleep``, ``instrument`` ...).  Each run has its own abort control:
+``abort_user_action`` (or abort all) stops it at the next line, sleep or ramp step;
+run from a script or a sweep, aborting those stops it too.  The definitions travel
+with the setup (save / load / autosave).
 """
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -20,13 +20,39 @@ from typing import Callable, Dict, List, Optional
 
 from ..common.errors import AbortRequested, ChannelError
 from .logsys import get_logger
+from .composites import ok_name
 from .scripting import ScriptRunner
 from .sweep import RunControl
 
 log = get_logger("user_actions")
 
-NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ .\-]{0,63}$")
 MAX_DEPTH = 8
+
+
+class _Linked(RunControl):
+    """The control of a user action run from a script or a sweep: their abort (and
+    pause) stops the action too."""
+
+    def __init__(self, parent_check):
+        super().__init__()
+        self._parent = parent_check
+
+    def check(self, on_pause=None) -> None:
+        self._parent()
+        super().check(on_pause)
+
+    def check_abort(self) -> None:
+        self._parent()
+        super().check_abort()
+
+    def sleep(self, seconds: float) -> None:
+        end = time.monotonic() + max(0.0, seconds)
+        while True:
+            self._parent()
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return
+            super().sleep(min(remaining, 0.05))
 
 
 @dataclass
@@ -37,9 +63,9 @@ class UserAction:
     confirm: bool = False           # front ends ask before running it
 
     def __post_init__(self):
-        if not isinstance(self.name, str) or not NAME_RE.match(self.name.strip()):
-            raise ChannelError("action name %r: use letters, digits, space, _ . - "
-                               "(starting with a letter or _)" % (self.name,))
+        if not isinstance(self.name, str) or not ok_name(self.name.strip()):
+            raise ChannelError("user action name %r: use letters, digits and _ (it is a "
+                               "channel name, e.g. zero_gates)" % (self.name,))
         self.name = self.name.strip()
         if not isinstance(self.code, str) or not self.code.strip():
             raise ChannelError("action %s has no code" % self.name)
@@ -82,13 +108,20 @@ class UserActions:
         self._running: Dict[str, _Run] = {}
         self._last: Dict[str, dict] = {}
         self._local = threading.local()
+        #: ``claim(name, replace)``: refuses a name taken in the channel namespace
+        self.claim: Optional[Callable[[str, bool], None]] = None
+
+    def has(self, name: str) -> bool:
+        return name in self._actions
 
     # -- definitions ---------------------------------------------------------------
     def define(self, a: UserAction, replace: bool = False, rename_from: Optional[str] = None
                ) -> None:
+        if self.claim is not None:
+            self.claim(a.name, bool(replace) or a.name == rename_from)
         with self._lock:
             if a.name in self._actions and not replace and a.name != rename_from:
-                raise ChannelError("action %r already exists" % a.name)
+                raise ChannelError("user action %r already exists" % a.name)
             if rename_from and rename_from != a.name:
                 if rename_from in self._running:
                     raise ChannelError("action %s is running" % rename_from)
@@ -143,10 +176,11 @@ class UserActions:
             return out
 
     # -- running -------------------------------------------------------------------
-    def run(self, name: str) -> dict:
+    def run(self, name: str, abort_check: Optional[Callable[[], None]] = None) -> dict:
         """Run an action to its end in the calling thread; returns {status, elapsed,
         error}.  A failure or an abort is reported, not raised, for a top-level run;
-        a nested ``user_action()`` raises so the outer action stops too."""
+        one run by another action raises so the outer action stops too.
+        *abort_check* (of the script or sweep that runs it) stops it as well."""
         a = self.get(name)
         depth = getattr(self._local, "depth", 0)
         nested = depth > 0
@@ -159,7 +193,8 @@ class UserActions:
             if name in self._running and not nested:
                 raise ChannelError("action %s is already running" % name)
             parent = self._running.get(stack[0]) if stack else None
-            control = parent.control if parent else RunControl()
+            control = parent.control if parent else \
+                (_Linked(abort_check) if abort_check is not None else RunControl())
             if not nested:
                 self._running[name] = _Run(control, time.time(), threading.get_ident())
         self._local.depth = depth + 1
@@ -171,7 +206,7 @@ class UserActions:
         res = {"name": name, "status": "finished", "error": None}
         try:
             runner = self._make_runner(control)
-            runner.run(a.code, name="action " + name, extra={"user_action": self.run_nested})
+            runner.run(a.code, name="action " + name)
         except Exception as exc:
             if nested:
                 raise
@@ -195,12 +230,6 @@ class UserActions:
                 log.info("action %s finished (%.2f s)", name, res["elapsed"])
             self._emit("user_action", dict(res))
         return res
-
-    def run_nested(self, name: str) -> None:
-        """``user_action(name)`` inside an action's code."""
-        if getattr(self._local, "depth", 0) == 0:
-            raise ChannelError("user_action() only works inside an action")
-        self.run(name)
 
     def abort(self, name: Optional[str] = None) -> List[str]:
         """Abort one running action (or all of them); returns the ones asked to stop."""

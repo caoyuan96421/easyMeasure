@@ -117,9 +117,9 @@ def test_allowed_values_through_backend(box):
         box.write_channel("G2", "Idle")
     with pytest.raises(ChannelError):
         box.write_channel("G", "Stop")
-    # a raw write must respect the narrowing alias too
-    with pytest.raises(LimitError):
-        box.channels.set_raw("box.gate", "idle")
+    # the instrument's own channel is written as it is (the alias narrows only itself)
+    box.channels.set("box.gate", "idle")
+    assert box.read_channel("G") == "Idle"
 
 
 def test_mode_switch_changes_channel_list(box):
@@ -144,7 +144,7 @@ def test_mode_switch_changes_channel_list(box):
     info = {a["name"]: a for a in box.list_channels()["aliases"]}
     assert info["Vs"]["writable"] is False and info["Is"]["writable"] is True
     box.write_channel("Is", 1e-3, ramp=False)
-    with pytest.raises(ChannelError, match="not writable"):
+    with pytest.raises(ChannelError, match="read-only"):
         box.write_channel("Vs", 1.0)
     with pytest.raises(ChannelError, match=r"no channel 'Icompliance' \(channels now: .*Vcompliance"):
         box.read_channel("box.Icompliance")
@@ -194,11 +194,11 @@ def test_sweep_after_pre_constant_mode_switch(box):
 
     # without the mode switch the sweep is refused up front ...
     bad = dict(d, pre={"constants": []}, post={"constants": []})
-    with pytest.raises(SweepDefinitionError, match="not writable"):
+    with pytest.raises(SweepDefinitionError, match="read-only"):
         box.validate_sweep(bad)
     # ... and a pre-sweep constant that does not help stops the run before point 1
     useless = dict(bad, pre={"constants": [{"channel": "box.nplc", "value": 10}]})
     box.queue_add({"kind": "sweep", "definition": useless}, start=True)
     assert box.queue.wait_idle(30)
     item = box.queue_state()["history"][-1]
-    assert item["status"] == "error" and "not writable" in item.get("error", ""), item
+    assert item["status"] == "error" and "read-only" in item.get("error", ""), item

@@ -23,12 +23,12 @@
     }
   ],
   "pre": {
-    "hook": "set_raw('awg.run', 'RUN')",
+    "hook": "set('awg.run', 'RUN')",
     "constants": [],
     "record": []
   },
   "post": {
-    "hook": "set_raw('awg.run', 'STOP')",
+    "hook": "set('awg.run', 'STOP')",
     "constants": [],
     "record": []
   },

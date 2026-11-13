@@ -230,7 +230,7 @@ def test_policy_matrix(tmp_path):
     # viewer
     ok("viewer", "read_channel", {"name": "Vg"})
     ok("viewer", "load_run", {"path": str(f)})
-    for cmd in ("write_channel", "run_action", "queue_add", "abort", "set_settings", "raw_write"):
+    for cmd in ("write_channel", "set_many", "queue_add", "abort", "set_settings", "raw_write"):
         with pytest.raises(policy.Denied):
             ok("viewer", cmd)
     # operator: no code, no setup / limit changes, no files outside the data directory
@@ -497,7 +497,7 @@ def test_roles_enforced_end_to_end(gw, demo):
         with pytest.raises(RemoteError) as ei:                  # backend limits still apply
             o.call("write_channel", name="Vg", value=50)
         assert ei.value.kind == "LimitError"
-        o.call("run_action", ref="dmm.reset")
+        o.call("write_channel", name="dmm.reset")
         sweep = {"name": "s", "dimensions": [{"points": 3, "sweep": [{"channel": "Vg", "start": 0, "stop": 0.1}],
                                               "record": ["I"]}]}
         o.call("queue_add", item={"kind": "sweep", "definition": sweep}, start=True)

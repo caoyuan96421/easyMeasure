@@ -42,8 +42,8 @@ class SimChaos(SimDirectInstrument):
     ]
     ACTIONS = [ActionSpec("ok", "an action that works"),
                ActionSpec("fail", "an action that always raises"),
-               ActionSpec("hang", "an action that never returns"),
-               ActionSpec("crash", "an action that raises SystemExit")]
+               ActionSpec("stall", "an action that never returns"),
+               ActionSpec("explode", "an action that raises SystemExit")]
     DEFAULT_OPTIONS = dict(slow_time=1.5, flaky_rate=0.5, call_timeout=3.0,
                            **FAULT_OPTION_DOC)
 
@@ -59,11 +59,11 @@ class SimChaos(SimDirectInstrument):
     def _action_fail(self):
         raise IOError("simulated action failure")
 
-    def _action_hang(self):
+    def _action_stall(self):
         while True:
             time.sleep(1.0)
 
-    def _action_crash(self):
+    def _action_explode(self):
         raise SystemExit(2)
 
     def read(self, channel):

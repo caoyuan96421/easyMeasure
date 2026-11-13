@@ -184,16 +184,24 @@ Sweeps whose pre-sweep constants change such a setting are validated again after
 constants were applied, so `pre: smu.mode = Current` followed by a current sweep works,
 and a sweep that still does not fit stops before its first point.
 
+**Channels, one namespace.** Everything with a name is a channel, read with
+`read_channel` / `get` and written with `write_channel` / `set`, with its access
+(r, w, rw) respected: an instrument's channels, settings and actions
+(`instrument.name`), aliases, composite channels (`nD.n`), parameters (a value: rw,
+a formula: r), user actions (plain names, write-only) and `@time`. Names are unique
+across all kinds and checked when something is defined. A write to an instrument's
+own channel is plain (no limits, no ramp); aliases add the protection.
+
 **Configuration channels** (`ChannelSpec(..., config=True)`): settings such as
-sensitivity, range, integration time or output on/off. They can be read and set
-directly (`write_channel("lockin.sensitivity", "1e-3")`, GUI *Instrument channels →
-Set…*, sweep pre/post constants and one-off records) but are never aliased or swept,
-which keeps the channel lists short with many instruments.
+sensitivity, range, integration time or output on/off
+(`write_channel("lockin.sensitivity", "1e-3")`, GUI *Channels (hardware) → Set…*,
+sweep pre/post constants and one-off records).
 
 **Actions** (`ACTIONS = [ActionSpec("reset", ...)]`, implemented by `_action_reset()`):
-commands without arguments such as trigger, reset, auto-phase. Run them from the GUI
-(*Channels (hardware) → Run action*), the API (`run_action(ref="dmm.reset")`),
-or scripts and sweep hooks (`action('dmm.reset')`; the sweep editor has a *+ action*
+commands without arguments such as trigger, reset, auto-phase: write-only channels
+(`dmm.reset`), so writing one runs it. Run them from the GUI
+(*Channels (hardware) → Run action*), the API (`write_channel(name="dmm.reset")`),
+a sweep constant without a value, or scripts and sweep hooks (`set('dmm.reset')`; the sweep editor has a *+ action*
 button that appends this to the pre/post hook). Actions are guarded like every other
 call but never retried automatically (a trigger must not fire twice); afterwards the
 cached values of that instrument's aliases are discarded, so the next ramp reads back.
@@ -207,8 +215,8 @@ reconnect, 2), `timeout_retries` (1), `breaker_threshold` (2) and
 An alias names one instrument channel and carries the protection: `min`, `max`,
 `ramp_rate` (units/s), `ramp_step`, `scale`/`offset` (alias = raw·scale+offset),
 `allowed` values for text channels, `read_only`. NaN is never written. Ramps
-are time-based and abortable. Raw `instrument.channel` references can be read
-anywhere but only *set* through `set_raw()` in scripts.
+are time-based and abortable. The instrument's own `instrument.channel` is
+written as it is, without protection.
 
 ### Composite channels (`backend/composites.py`)
 Software channels built on aliases (and on each other). Three types:
@@ -271,17 +279,16 @@ multivariate write whose variable has the composite's name.
 
 ### User actions (`backend/user_actions.py`)
 Named snippets of Python that control any channel, kept in the setup (they are
-saved, loaded and autosaved with it). Examples are "gates to zero" or "ramp the
-magnet down":
+saved, loaded and autosaved with it). A user action is a write-only channel with
+a plain name (`gates_to_zero`, `magnet_down`); writing it runs it:
 ```python
 set_many({'VL': 0, 'VR': 0})      # limits and ramp rates apply as always
 set('B', 0)
 print('gates and field at 0')
 ```
 The code uses the same functions as scripts: `get`, `set`, `set_many`,
-`set_raw`, `sleep`, `wait_until`, `action`, `instrument`, `print` and `state`.
-It can also call `user_action('other')` to run another action; an action that
-calls itself is refused.
+`sleep`, `wait_until`, `instrument`, `print` and `state`. `set('other')` runs
+another action; an action that calls itself is refused.
 
 The **Actions** panel (Instruments tab, desktop and web) lists your actions and
 lets you add, edit, reorder, remove, run and abort them. Running one is
@@ -293,8 +300,8 @@ each action's last run (finished / aborted / error, time, duration).
 Sweeps cannot be started from an action; queue them instead. Defining actions
 needs the admin role remotely, because it is writing code. Running and aborting
 them is an operator right. Backend commands: `define_user_action`,
-`remove_user_action`, `move_user_action`, `run_user_action`, `abort_user_action`,
-`list_user_actions`.
+`remove_user_action`, `move_user_action`, `abort_user_action`,
+`list_user_actions`; run one with `write_channel`.
 
 ### Sweeps (`backend/sweep.py`)
 ```json
@@ -330,7 +337,7 @@ them is an operator right. Backend commands: `define_user_action`,
   hidden until ticked in the editor; unticked code is kept in the definition but
   not run:
   ```json
-  "hooks": {"pre_record": {"enabled": true, "code": "action('dmm.trigger')"},
+  "hooks": {"pre_record": {"enabled": true, "code": "set('dmm.trigger')"},
             "post_record": {"enabled": true, "code": "if values['I'] > 1e-6: log('high at %s' % (index,))"}}
   ```
   Besides the script API they see `k` (dimension), `i` (index in it), `index` (this
@@ -361,7 +368,7 @@ them is an operator right. Backend commands: `define_user_action`,
 
 ### Run queue (`backend/runqueue.py`)
 States `idle`, `running`, `paused`, `aborting`. Items are sweeps or **scripts**
-(arbitrary Python with `get`, `set`, `set_raw`, `sleep`, `wait_until`, `log`,
+(arbitrary Python with `get`, `set`, `set_many`, `sleep`, `wait_until`, `log`,
 `instrument(name).raw_query()`, `run_sweep(definition)`, a persistent `state`
 dict, `np`). Pause / resume / abort (current) / abort all / stop after current.
 Abort reaches scripts on *every line*, so even `while True: pass` stops.

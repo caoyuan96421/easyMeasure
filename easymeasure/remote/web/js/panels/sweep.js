@@ -118,15 +118,15 @@ class HookEditor {
   constructor(name, title, when) {
     this.name = name;
     this.code = h("textarea", { class: "code", rows: 3, spellcheck: false,
-      placeholder: `# Python, runs at every point ${when}. Names: k, i, index, setpoints${name === "post_record" ? ", values" : ""};\n# get, set, action, sleep, log, state ...   e.g.  action('dmm.trigger')\n# skip_point() / skip_line() / end_sweep(): like continue / break / exit` });
-    this.actionBox = h("select", { title: "instrument actions (commands without arguments)" });
+      placeholder: `# Python, runs at every point ${when}. Names: k, i, index, setpoints${name === "post_record" ? ", values" : ""};\n# get, set, sleep, log, state ...   e.g.  set('dmm.trigger')\n# skip_point() / skip_line() / end_sweep(): like continue / break / exit` });
+    this.actionBox = h("select", { title: "actions: yours, and the instruments' (commands without arguments)" });
     this.addAction = btn("+ action", () => {
       const ref = this.actionBox.value;
       if (!ref) return;
       let t = this.code.value;
       if (t && !t.endsWith("\n")) t += "\n";
       const flow = FLOW_ACTIONS.find((f) => f[0] === ref);
-      this.code.value = t + (flow ? flow[1] : `action('${ref}')`) + "\n";
+      this.code.value = t + (flow ? flow[1] : `set('${ref}')`) + "\n";
     }, { title: "append the selected action to this code" });
     this.legend = h("legend", { text: title });
     this.check = codeChecker(this.code, "point action " + name);
@@ -272,8 +272,8 @@ class PhaseEditor {
     this.consts = [];
     this.record = new CheckList();
     this.hook = h("textarea", { class: "code", rows: 7, spellcheck: false,
-      placeholder: `# Python executed ${phase === "pre" ? "before" : "after"} the sweep, e.g.\n# action('dmm.reset')\n# set('Tset', 4.2)\n# sleep(1)\n# log('ready, T = %g' % get('T'))` });
-    this.actionBox = h("select", { title: "instrument actions (commands without arguments)" });
+      placeholder: `# Python executed ${phase === "pre" ? "before" : "after"} the sweep, e.g.\n# set('dmm.reset')\n# set('Tset', 4.2)\n# sleep(1)\n# log('ready, T = %g' % get('T'))` });
+    this.actionBox = h("select", { title: "actions: yours, and the instruments' (commands without arguments)" });
     this.addAction = btn("+ action", () => this.appendAction(), { title: "append the selected action to the hook code" });
     this.canHook = canHook;
     this.hookNote = h("div", { class: "help" });
@@ -283,7 +283,7 @@ class PhaseEditor {
       h("div", { class: "help", text: phase === "pre" ? "Order: hook → constants → record" : "Order: record → constants → hook (always runs, also after errors/abort)" }),
       h("div", { class: "row2" },
         group("Constants", this.list, h("div", { class: "table-wrap" }, h("table", { class: "grid edit" },
-          h("thead", {}, h("tr", {}, ["Channel", "Value (number or text)", ""].map((t) => h("th", { text: t })))), this.tbody)),
+          h("thead", {}, h("tr", {}, ["Channel", "Value (number or text; empty for an action)", ""].map((t) => h("th", { text: t })))), this.tbody)),
           bar(this.addConstBtn)),
         group("Record once", this.record.el)),
       group("Hook code", this.hook, bar(h("span", { text: "Action" }), this.actionBox, this.addAction, this.check.button),
@@ -306,7 +306,7 @@ class PhaseEditor {
     if (!ref) return;
     let t = this.hook.value;
     if (t && !t.endsWith("\n")) t += "\n";
-    this.hook.value = t + `action('${ref}')\n`;
+    this.hook.value = t + `set('${ref}')\n`;
   }
   addConst(e = {}) {
     const ch = h("input", { value: e.channel || "", class: "w-chan" });
@@ -337,7 +337,8 @@ class PhaseEditor {
       const ch = c.ch.value.trim(), t = c.val.value.trim();
       if (!ch) continue;
       const n = Number(t);
-      constants.push({ channel: ch, value: t !== "" && Number.isFinite(n) ? n : t });
+      // empty: an action (run, no value)
+      constants.push({ channel: ch, value: t === "" ? null : Number.isFinite(n) ? n : t });
     }
     return { constants, record: this.record.checked(), hook: this.hook.value };
   }
@@ -422,11 +423,11 @@ export class SweepEditor {
   refreshChannels() {
     const [w, r] = this._lists();
     for (const d of this.dims) d.setChannels(w, r);
-    const wall = this.model.writableChannels().concat(this.model.configChannels(true));
-    const rall = r.concat(this.model.configChannels());
+    const wall = this.model.writableChannels().concat(this.model.actionChannels());
+    const rall = r;
     const ch = this.model.channelChoices();
     this.pre.setChannels(wall, rall, ch); this.post.setChannels(wall, rall, ch);
-    const acts = this.model.actions();
+    const acts = this.model.actionChannels();
     this.pre.setActions(acts); this.post.setActions(acts);
     for (const d of this.dims) d.setActions(acts);
     this.setReadOnly(this.readOnly);
@@ -452,7 +453,7 @@ export class SweepEditor {
     const ed = new DimensionEditor(() => this._relabel(), () => this.conn.can("run_script_now"));
     const [w, r] = this._lists();
     ed.setChannels(w, r);
-    ed.setActions(this.model.actions());
+    ed.setActions(this.model.actionChannels());
     if (d) ed.load(d);
     this.dims.push(ed);
     this.dimStack.append(ed.el);

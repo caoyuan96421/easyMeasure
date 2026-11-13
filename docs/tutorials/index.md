@@ -43,7 +43,7 @@ instruments the first three tutorials use.
     ![](../images/t3-result.png)
 
     Ramp a gate until the leakage current reaches 1 nA, then stop by itself. Point
-    actions, and one-click buttons of your own ("gates to zero").
+    actions, and one-click buttons of your own (`gates_to_zero`).
 
 -   **[Tutorial 4: a VNA power sweep](vna-power.md)**
 

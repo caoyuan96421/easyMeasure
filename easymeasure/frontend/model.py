@@ -101,10 +101,17 @@ class BackendModel(QObject):
     def composites(self) -> List[dict]:
         return list((self.state.get("channels") or {}).get("composites", []))
 
+    def channel_list(self) -> List[dict]:
+        """Every channel of the backend, one list: ``{name, kind, access, readable,
+        writable, dtype, shape, unit, min, max, ramp_rate, choices, description,
+        last, …}``; kind is hardware, config, action, alias, variable, map, read,
+        parameter, user_action or special."""
+        return list((self.state.get("channels") or {}).get("channels", []))
+
     def virtual_channels(self) -> List[dict]:
         """Channels the composites define: variables of multivariate composites
         (``kind`` "variable"), mappings ("map") and composite reads ("read")."""
-        return list((self.state.get("channels") or {}).get("virtual", []))
+        return [c for c in self.channel_list() if c.get("kind") in ("variable", "map", "read")]
 
     def parameters(self) -> List[dict]:
         """The setup's parameters: {name, value | formula, unit, description, current,
@@ -118,63 +125,57 @@ class BackendModel(QObject):
         """The user-defined actions (name, code, description, confirm, running, last)."""
         return list(self.state.get("actions", []))
 
-    def writable_channels(self, numeric_only: bool = False) -> List[str]:
-        out = []
-        for a in self.aliases():
-            if a.get("writable") and not (numeric_only and a.get("dtype") == "str"):
-                out.append(a["name"])
-        out += [v["name"] for v in self.virtual_channels() if v.get("writable")]
-        return out
+    #: the order of channel lists: named channels first, the instruments' after
+    _ORDER = {"alias": 0, "variable": 1, "map": 1, "read": 1, "parameter": 2, "special": 3,
+              "user_action": 4, "hardware": 5, "config": 6, "action": 7}
 
-    def readable_channels(self) -> List[str]:
-        out = [a["name"] for a in self.aliases() if a.get("readable", True)]
-        out += [v["name"] for v in self.virtual_channels()]
-        out += [p["name"] for p in self.parameters()]
-        return out
+    def _names(self, pred) -> List[str]:
+        chans = [c for c in self.channel_list() if pred(c)]
+        chans.sort(key=lambda c: self._ORDER.get(c.get("kind"), 9))
+        return [c["name"] for c in chans]
+
+    def writable_channels(self, numeric_only: bool = False, hardware: bool = True) -> List[str]:
+        """Channels with a value that can be written (not actions); with
+        *numeric_only* not text; without *hardware* only the named channels."""
+        return self._names(lambda c: c.get("writable") and c.get("kind") not in
+                           ("action", "user_action") and
+                           not (numeric_only and c.get("dtype") == "str") and
+                           (hardware or c.get("kind") not in ("hardware", "config")))
+
+    def readable_channels(self, hardware: bool = True) -> List[str]:
+        return self._names(lambda c: c.get("readable") and c.get("kind") != "special" and
+                           (hardware or c.get("kind") not in ("hardware", "config")))
+
+    def action_channels(self) -> List[str]:
+        """Actions: user actions (plain names), then the instruments' (``dmm.reset``)."""
+        return self._names(lambda c: c.get("kind") in ("user_action", "action"))
 
     def raw_channels(self) -> List[str]:
-        out = []
-        for inst in self.instruments():
-            for c in inst.get("channels", []):
-                out.append("%s.%s" % (inst["name"], c["name"]))
-        return out
+        """The channels of the instruments (``instrument.channel``)."""
+        return self._names(lambda c: c.get("kind") in ("hardware", "config"))
 
     def aliasable_channels(self) -> List[str]:
-        """Instrument channels that may be aliased (everything but config channels)."""
-        return ["%s.%s" % (i["name"], c["name"]) for i in self.instruments()
-                for c in i.get("channels", []) if not c.get("config")]
+        """Instrument channels an alias can name (any channel with a value)."""
+        return self.raw_channels()
 
     def config_channels(self, writable: bool = False) -> List[str]:
-        """Configuration channels (``instrument.channel``), set directly, never swept."""
-        return ["%s.%s" % (i["name"], c["name"]) for i in self.instruments()
-                for c in i.get("channels", []) if c.get("config")
-                and ("w" in c.get("access", "rw") if writable else "r" in c.get("access", "rw"))]
+        """Configuration channels (``instrument.setting``)."""
+        return self._names(lambda c: c.get("kind") == "config" and
+                           (c.get("writable") if writable else c.get("readable")))
 
     def channel_choices(self) -> dict:
-        """``name -> list of allowed values`` for aliases and configuration channels
-        that only accept certain values (front ends offer a combo box)."""
-        out = {}
-        for a in self.aliases():
-            if a.get("choices"):
-                out[a["name"]] = list(a["choices"])
-        for i in self.instruments():
-            for c in i.get("channels", []):
-                if c.get("allowed"):
-                    out["%s.%s" % (i["name"], c["name"])] = list(c["allowed"])
-        return out
+        """``name -> list of allowed values`` for channels that only accept certain
+        values (front ends offer a combo box)."""
+        return {c["name"]: list(c["choices"]) for c in self.channel_list() if c.get("choices")}
 
     def actions(self) -> List[str]:
         """All instrument actions as ``instrument.action``."""
-        return ["%s.%s" % (i["name"], a["name"]) for i in self.instruments()
-                for a in i.get("actions", [])]
+        return self._names(lambda c: c.get("kind") == "action")
 
     def channel_meta(self, name: str) -> Optional[dict]:
-        for a in self.aliases():
-            if a["name"] == name:
-                return a
-        for v in self.virtual_channels():
-            if v["name"] == name:
-                return v
+        for c in self.channel_list():
+            if c["name"] == name:
+                return c
         return None
 
     def composite_groups(self) -> List[dict]:

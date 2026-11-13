@@ -16,7 +16,7 @@ STATUS_COLORS = {"finished": "#3a3", "terminated": "#2a9d8f", "error": "#d44", "
                  "running": "#38f",
                  "queued": "#888"}
 
-SCRIPT_HELP = ("# get(name), set(name, value), set_raw('inst.ch', v), sleep(s),\n"
+SCRIPT_HELP = ("# get(name), set(name, value) - any channel; set('dmm.reset') runs an action - sleep(s),\n"
                "# wait_until(fn, timeout), log(msg), instrument(name).raw_query(cmd),\n"
                "# run_sweep(definition) -> dataset (.status, .data, .setpoints), load_sweep(path) -> definition,\n"
                "# state (persistent dict), np, math, time\n")

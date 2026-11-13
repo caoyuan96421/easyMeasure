@@ -278,7 +278,7 @@ class MonitorPanel(QWidget):
         self._timer.start()
 
     def _state(self, st: dict) -> None:
-        names = self.model.readable_channels() + self.model.raw_channels()
+        names = self.model.readable_channels()
         cur = self.channel.currentText()
         self.channel.blockSignals(True)
         self.channel.clear()

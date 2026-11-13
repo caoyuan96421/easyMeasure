@@ -1,31 +1,40 @@
-"""Channel aliasing, protection (limits / ramp rates) and composite channels.
+"""Channels: one namespace, one way to read and write.
 
-Aliases
--------
-An alias gives a friendly name to one instrument channel (``"Vg" -> "src.V1"``)
-and carries the protection settings - these belong to the alias, not to the
-instrument layer:
+Every name in a setup is a **channel** (or the name of the thing that owns some):
 
-* ``min`` / ``max``  - hard limits (in alias units); violating values are refused.
-* ``ramp_rate``     - maximum rate of change in units/second (``None`` = jump).
-* ``ramp_step``     - optional maximum step per write while ramping.
-* ``scale`` / ``offset`` - alias value = raw * scale + offset (e.g. amplifier gain).
-* ``allowed``       - for string channels, the list of accepted values (narrows the
-                      instrument channel's own ``allowed`` list, if it has one).
-* ``read_only``     - refuse all writes through this alias.
+==============  ==========================  ==========================================
+kind            name                        access
+==============  ==========================  ==========================================
+``hardware``    ``instrument.channel``      what the driver says (r, w, rw)
+``config``      ``instrument.setting``      what the driver says (a configuration channel)
+``action``      ``instrument.action``       w: writing it runs the action
+``alias``       ``Vg``                      the target's, without w if read-only
+``variable``    ``composite.variable``      rw (multivariate composite)
+``map``         ``name``                    rw (one-to-one mapping)
+``read``        ``name``                    r (composite read: a formula of channels)
+``parameter``   ``name``                    rw for a value, r for a formula
+``user_action`` ``name``                    w: writing it runs the user's code
+``special``     ``@time``                   r
+==============  ==========================  ==========================================
 
-Composite channels
-------------------
-Virtual channels defined by formulas (:mod:`.composites`): multivariate writes
-(variables driving several targets), composite reads (a formula of channels) and
-one-to-one mappings (forward / backward, checked to be inverse).  They nest; a
-dependency loop is refused when it would be defined.  Setting a composite channel
-computes everything it drives (through nested composites, in dependency order),
-checks every value against its limits before anything is written, and moves all
-hardware targets together so that no alias, variable or mapping exceeds its ramp
-rate, also along non-linear relations.
+``get``, ``set``, ``set_many``, ``check_value`` and ``info`` take any of them; the
+access is respected and nothing else is special-cased.  Names are unique across
+all kinds (aliases, parameters, composites and their channels, user actions,
+instruments): a name that is taken is refused when it is defined.
 
-Special read-only channels ``@time`` (unix time) are always available.
+Writing a hardware channel is a plain write: no limits, no ramp.  Protection
+(``min`` / ``max``, ``ramp_rate``, ``ramp_step``, ``scale`` / ``offset``,
+``allowed``, ``read_only``) belongs to aliases.  Writing an action (instrument or
+user) runs it; the value, if any, is ignored.
+
+Composite channels (:mod:`.composites`) are formulas of channels: multivariate
+writes (variables driving several targets), composite reads and one-to-one
+mappings.  Their targets and inputs may be any channel of the right access
+(aliases, other composite channels, hardware channels).  They nest; a dependency
+loop is refused when it would be defined.  Setting a composite channel computes
+everything it drives, checks every value against its limits before anything is
+written, and moves all targets together so that no ramp rate is exceeded, also
+along non-linear relations.
 """
 
 from __future__ import annotations
@@ -125,6 +134,17 @@ class Alias:
             "unit", "allowed", "read_only", "description")}
 
     @classmethod
+    def identity(cls, ref: str) -> "Alias":
+        """The plain write path of a hardware channel (no limits, ramp or scaling):
+        how a composite or a sweep writes ``instrument.channel``."""
+        a = cls.__new__(cls)
+        a.name = a.target = ref
+        a.min = a.max = a.ramp_rate = a.ramp_step = None
+        a.scale, a.offset, a.unit, a.allowed, a.read_only, a.description = \
+            1.0, 0.0, "", None, False, ""
+        return a
+
+    @classmethod
     def from_dict(cls, d: dict) -> "Alias":
         keys = {"name", "target", "min", "max", "ramp_rate", "ramp_step", "scale", "offset",
                 "unit", "allowed", "read_only", "description"}
@@ -172,20 +192,89 @@ class ChannelManager:
         self._ramps_lock = threading.Lock()
         #: called with the list of active ramps whenever it changes
         self.ramp_listeners: List[Callable[[List[dict]], None]] = []
+        #: the user actions (:class:`.user_actions.UserActions`), set by the service
+        self.user_actions = None
+        self._identity: Dict[str, Alias] = {}   # write paths of hardware channels
+
+    # -- the namespace -----------------------------------------------------------
+    def _instrument_names(self) -> List[str]:
+        try:
+            return list(self.instruments.names())
+        except Exception:
+            return []
+
+    def _hw(self, name: str):
+        """``(kind, handle, spec)`` for ``instrument.name``: kind ``hardware``,
+        ``config`` (a ChannelSpec) or ``action`` (an ActionSpec); None otherwise.
+        Never does I/O."""
+        if not isinstance(name, str) or "." not in name or name.startswith("@"):
+            return None
+        inst, ch = name.split(".", 1)
+        try:
+            h = self.instruments.get(inst)
+        except ChannelError:
+            return None
+        spec = h.channels.get(ch)
+        if spec is not None:
+            return ("config" if spec.config else "hardware"), h, spec
+        act = h.actions.get(ch)
+        if act is not None:
+            return "action", h, act
+        return None
+
+    def owner_of(self, name: str) -> Optional[Tuple[str, str]]:
+        """``(what, description)`` of whatever has *name* - what is ``alias``,
+        ``parameter``, ``composite``, ``user_action``, ``instrument`` or ``channel``
+        (of a composite or an instrument, or ``@time``) - or None if it is free."""
+        if name in self._aliases:
+            return "alias", "an alias"
+        if name in self._params:
+            return "parameter", "a parameter"
+        if name in self._composites:
+            return "composite", "a composite"
+        o = self._owner.get(name)
+        if o is not None:
+            return "channel", "a channel of composite %s" % o.name
+        ua = self.user_actions
+        if ua is not None and ua.has(name):
+            return "user_action", "a user action"
+        if name in self._instrument_names():
+            return "instrument", "an instrument"
+        if name == "@time":
+            return "channel", "a special channel"
+        hw = self._hw(name)
+        if hw is not None:
+            return "channel", "%s of instrument %s" % (
+                "an action" if hw[0] == "action" else "a channel", hw[1].name)
+        return None
+
+    def claim(self, name: str, what: str, replace: bool = False) -> None:
+        """Refuse *name* for a new *what* (``alias``, ``parameter``, ``composite``,
+        ``user_action``, ``instrument``) if anything else has it, or if a *what* of
+        that name exists and *replace* is not given."""
+        o = self.owner_of(name)
+        if o is None:
+            return
+        if o[0] == what:
+            if replace:
+                return
+            raise ChannelError("%s %r already exists" % (what.replace("_", " "), name))
+        raise ChannelError("the name %r is taken: it is already %s" % (name, o[1]))
 
     # -- definition --------------------------------------------------------------
     def add_alias(self, alias: Alias, replace: bool = False) -> None:
-        try:
-            _, spec = self.instruments.resolve(alias.target)
-        except ChannelError:
-            spec = None          # instrument not available yet: checked again on use
-        if spec is not None and spec.config:
-            raise ChannelError("%s is a configuration channel; configuration channels are set "
-                               "directly and cannot be aliased" % alias.target)
+        hw = self._hw(alias.target)
+        inst = alias.target.split(".", 1)[0]
+        if hw is None and inst in self._instrument_names() and \
+                self.instruments.get(inst).channels:
+            # the instrument's channels are known: say which it has (unknown, e.g. a
+            # dynamic driver never connected: checked when it is used)
+            self.instruments.resolve(alias.target)
+        if hw is not None and hw[0] == "action":
+            raise ChannelError("%s is an action: an alias names a channel with a value"
+                               % alias.target)
         with self._lock:
-            if alias.name in self._owner or alias.name in self._composites or \
-                    alias.name in self._params or (alias.name in self._aliases and not replace):
-                raise ChannelError("channel name %r already in use" % alias.name)
+            self.claim(alias.name, "alias", replace)
             old = self._aliases.get(alias.name)
             self._aliases[alias.name] = alias
             if old is not None:
@@ -271,15 +360,14 @@ class ChannelManager:
             c.name for c in self._composites.values() if name in c.references())
 
     def _is_live_channel(self, n: str) -> bool:
-        return n in self._aliases or n in self._owner or n in self._composites
+        return self.kind(n) not in (None, "parameter")
 
     def _apply_parameters(self, cand: Dict[str, Parameter]) -> List[str]:
         """Make *cand* the parameters, if their values compute and every composite
         still checks out with them (a mapping using one is checked to be inverse
         again); otherwise raise and keep the old ones."""
         for n in cand:
-            if n in self._aliases or n in self._owner or n in self._composites:
-                raise ChannelError("parameter name %r is already a channel or composite" % n)
+            self.claim(n, "parameter", replace=True)
         vals = compute_parameters(cand, self._is_live_channel)
         try:
             warnings = self._validate(self._composites, pvals=vals)
@@ -312,8 +400,7 @@ class ChannelManager:
             cand = dict(self._params)
             cand[p.name] = p
             for n in cand:
-                if n in self._aliases or n in self._owner or n in self._composites:
-                    raise ChannelError("parameter name %r is already a channel or composite" % n)
+                self.claim(n, "parameter", replace=True)
             vals = compute_parameters(cand, self._is_live_channel)
             try:
                 warnings = self._validate(self._composites, pvals=vals)
@@ -328,8 +415,8 @@ class ChannelManager:
             if p is None:
                 raise ChannelError("no parameter %r" % name)
             if p.is_formula:
-                raise ChannelError("parameter %s is computed from its formula %s; change the "
-                                   "formula to change it" % (name, p.formula))
+                raise ChannelError("%s is read-only: a parameter computed from its formula %s"
+                                   % (name, p.formula))
             q = Parameter(name, value=value, unit=p.unit, description=p.description)
             cand = dict(self._params)
             cand[name] = q
@@ -364,28 +451,17 @@ class ChannelManager:
         pvals = self._pvals if pvals is None else pvals
         owner: Dict[str, CompositeBase] = {}
         for c in comps.values():
-            if c.name in pvals:
-                raise ChannelError("composite name %r is a parameter" % c.name)
             for ch in c.channels():
-                if ch in self._aliases:
-                    raise ChannelError("composite %s: channel name %r is an alias" % (c.name, ch))
-                if ch in pvals:
-                    raise ChannelError("composite %s: channel name %r is a parameter"
-                                       % (c.name, ch))
                 if ch in owner:
                     raise ChannelError("channel %s is defined by both %s and %s"
                                        % (ch, owner[ch].name, c.name))
                 owner[ch] = c
-        try:
-            insts = set(self.instruments.names())
-        except Exception:
-            insts = set()
         for c in comps.values():
-            if c.name in self._aliases:
-                raise ChannelError("composite name %r is an alias" % c.name)
-            if c.type == "multi" and c.name in insts:
-                # its variables would read like the instrument's channels (name.channel)
-                raise ChannelError("composite name %r is the name of an instrument" % c.name)
+            for nm in dict.fromkeys([c.name] + c.channels()):
+                taken = self._taken_besides_composites(nm, pvals)
+                if taken:
+                    raise ChannelError("composite %s: the name %r is taken: it is already %s"
+                                       % (c.name, nm, taken))
             if c.name in owner and owner[c.name] is not c:
                 raise ChannelError("composite name %r is a channel of %s"
                                    % (c.name, owner[c.name].name))
@@ -396,35 +472,46 @@ class ChannelManager:
             if n in pvals:
                 return "parameter"
             o = owner.get(n)
-            if o is None:
-                return None
-            return "variable" if o.type == "multi" else o.type
+            if o is not None:
+                return "variable" if o.type == "multi" else o.type
+            if n == "@time":
+                return "special"
+            hw = self._hw(n)
+            return hw[0] if hw is not None else None
 
         def writable_target(c, t, scalar):
             k = kind(t)
             if k is None:
                 raise ChannelError("composite %s: %s does not exist (define it first: an alias, "
-                                   "mapping or variable)" % (c.name, t))
-            if k == "read":
-                raise ChannelError("composite %s: %s is a composite read channel, it cannot be "
-                                   "set" % (c.name, t))
+                                   "mapping or variable, or a channel of an instrument)"
+                                   % (c.name, t))
+            if k in ("read", "special"):
+                raise ChannelError("composite %s: %s is read-only" % (c.name, t))
             if k == "parameter":
                 raise ChannelError("composite %s: %s is a parameter, it cannot be set by a "
                                    "composite" % (c.name, t))
-            if k == "alias":
-                a = self._aliases[t]
-                if a.read_only:
-                    raise ChannelError("composite %s: alias %s is read-only" % (c.name, t))
-                try:
-                    _, spec = self.instruments.resolve(a.target)
-                except ChannelError:
-                    return                       # instrument offline: checked on use
+            if k == "action":
+                raise ChannelError("composite %s: %s is an action, it has no value to set"
+                                   % (c.name, t))
+            if k in ("alias", "hardware", "config"):
+                if k == "alias":
+                    a = self._aliases[t]
+                    if a.read_only:
+                        raise ChannelError("composite %s: alias %s is read-only" % (c.name, t))
+                    try:
+                        _, spec = self.instruments.resolve(a.target)
+                    except ChannelError:
+                        return                       # instrument offline: checked on use
+                    what = "alias %s (%s)" % (t, a.target)
+                else:
+                    spec = self._hw(t)[2]
+                    what = t
                 if not spec.writable or spec.dtype == "str":
-                    raise ChannelError("composite %s: alias %s (%s) cannot be set to numbers"
-                                       % (c.name, t, a.target))
+                    raise ChannelError("composite %s: %s cannot be set to numbers"
+                                       % (c.name, what))
                 if scalar and spec.shape not in ((), None):
-                    raise ChannelError("composite %s: alias %s is not a scalar channel"
-                                       % (c.name, t))
+                    raise ChannelError("composite %s: %s is not a scalar channel"
+                                       % (c.name, what))
 
         warnings: List[str] = []
         for c in comps.values():
@@ -452,7 +539,12 @@ class ChannelManager:
                                     "of %s [%s, %s]: those x will be refused" % (
                                         c.name, c.target, lo, hi, c.target, a.min, a.max))
             elif c.type == "read":
-                c.resolve_inputs(lambda n: kind(n) is not None)
+                c.resolve_inputs(lambda n: kind(n) not in (None, "action"))
+                wonly = [n for n in c.inputs if kind(n) in ("hardware", "config") and
+                         not self._hw(n)[2].readable]
+                if wonly:
+                    raise ChannelError("composite %s: %s cannot be read (write-only)"
+                                       % (c.name, ", ".join(wonly)))
         edges: Dict[str, List[str]] = {}
         for c in comps.values():
             for a, b in c.edges():
@@ -461,6 +553,18 @@ class ChannelManager:
         if cyc:
             raise ChannelError("circular dependency: %s" % " → ".join(cyc))
         return warnings
+
+    def _taken_besides_composites(self, name: str, pvals) -> Optional[str]:
+        """What, other than a composite, has *name* (composite validation)."""
+        if name in self._aliases:
+            return "an alias"
+        if name in pvals:
+            return "a parameter"
+        o = self.owner_of(name)
+        if o is not None and o[0] not in ("alias", "parameter", "composite") and \
+                not (o[0] == "channel" and name in self._owner):
+            return o[1]
+        return None
 
     def clear(self) -> None:
         with self._lock:
@@ -487,16 +591,34 @@ class ChannelManager:
         return a
 
     def kind(self, name: str) -> Optional[str]:
-        """``alias``, ``variable``, ``map``, ``read``, ``parameter`` or None (raw /
-        unknown)."""
+        """``hardware``, ``config``, ``action`` (``instrument.name``), ``alias``,
+        ``parameter``, ``variable``, ``map``, ``read``, ``user_action``, ``special``,
+        or None for an unknown name."""
         if name in self._aliases:
             return "alias"
         if name in self._params:
             return "parameter"
         o = self._owner.get(name)
-        if o is None:
-            return None
-        return "variable" if o.type == "multi" else o.type
+        if o is not None:
+            return "variable" if o.type == "multi" else o.type
+        if name == "@time":
+            return "special"
+        ua = self.user_actions
+        if ua is not None and ua.has(name):
+            return "user_action"
+        hw = self._hw(name)
+        return hw[0] if hw is not None else None
+
+    def _unknown(self, name: str):
+        """Raise the most helpful error for a name that is not a channel."""
+        if isinstance(name, str) and "." in name and \
+                name.split(".", 1)[0] in self._instrument_names() and not name.startswith("@"):
+            self.instruments.resolve(name)       # "instrument x has no channel y (now: …)"
+        raise ChannelError("unknown channel %r" % (name,))
+
+    def access(self, name: str) -> str:
+        """``r``, ``w`` or ``rw``."""
+        return self.info(name)["access"]
 
     def is_composite(self, name: str) -> bool:
         return name in self._owner
@@ -507,15 +629,28 @@ class ChannelManager:
         return o.name if o is not None and o.type == "multi" else None
 
     def exists(self, name: str) -> bool:
-        if name.startswith("@"):
-            return name in ("@time",)
-        if name in self._aliases or name in self._owner or name in self._params:
-            return True
-        try:
-            self.instruments.resolve(name)
-            return True
-        except Exception:
-            return False
+        return self.kind(name) is not None
+
+    def hardware_behind(self, name: str) -> set:
+        """The instrument channels and actions (``instrument.name``) a channel
+        ultimately writes or reads, through aliases and composites."""
+        out, seen, todo = set(), set(), [name]
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            a = self._aliases.get(n)
+            if a is not None:
+                out.add(a.target)
+                continue
+            o = self._owner.get(n)
+            if o is not None:
+                todo += [b for x, b in o.edges() if x == n]
+            elif self._hw(n) is not None or (
+                    "." in n and n.split(".", 1)[0] in self._instrument_names()):
+                out.add(n)          # also a channel the instrument does not offer (yet)
+        return out
 
     def aliases_behind(self, name: str) -> set:
         """The aliases a channel ultimately writes or reads (through composites)."""
@@ -534,56 +669,72 @@ class ChannelManager:
         return out
 
     def instruments_behind(self, name: str) -> set:
-        if "." in name and name not in self._owner:          # instrument.channel
-            return {name.split(".", 1)[0]}
-        return {self._aliases[a].target.split(".", 1)[0] for a in self.aliases_behind(name)}
+        return {r.split(".", 1)[0] for r in self.hardware_behind(name)}
 
     # -- introspection -------------------------------------------------------------
     def info(self, name: str) -> dict:
-        """Type information: dtype, shape, readable, writable, unit."""
-        if name == "@time":
-            return {"name": name, "kind": "special", "dtype": "float", "shape": [],
-                    "readable": True, "writable": False, "unit": "s"}
-        with self._lock:
-            a = self._aliases.get(name)
-            o = self._owner.get(name)
-            p = self._params.get(name)
-        if p is not None:
-            return {"name": name, "kind": "parameter", "dtype": "float", "shape": [],
-                    "readable": True, "writable": False, "unit": p.unit, "min": None,
-                    "max": None, "ramp_rate": None, "choices": None,
-                    "description": p.description, "formula": p.formula or None,
-                    "value": self._pvals.get(name)}
-        if o is not None:
-            return self._virtual_info(o, name)
-        if a is not None:
+        """What a channel is: ``kind``, ``access`` (``readable`` / ``writable``),
+        ``dtype``, ``shape``, ``unit``, ``min`` / ``max`` / ``ramp_rate``, ``choices``,
+        ``description`` and what is particular to its kind."""
+        k = self.kind(name)
+        base = {"name": name, "kind": k, "dtype": "float", "shape": [], "unit": "",
+                "min": None, "max": None, "ramp_rate": None, "choices": None,
+                "description": ""}
+        if k is None:
+            self._unknown(name)
+        if k == "special":
+            out = dict(base, access="r", unit="s", description="unix time")
+        elif k == "parameter":
+            with self._lock:
+                p = self._params[name]
+            out = dict(base, access="r" if p.is_formula else "rw", unit=p.unit,
+                       description=p.description, formula=p.formula or None,
+                       value=self._pvals.get(name))
+        elif k in ("variable", "map", "read"):
+            out = self._virtual_info(self._owner[name], name)
+        elif k == "alias":
+            a = self._aliases[name]
             spec = self._alias_spec(a)
-            return {"name": name, "kind": "alias", "target": a.target, "dtype": spec.dtype,
-                    "shape": None if spec.shape is None else list(spec.shape),
-                    "readable": spec.readable, "writable": spec.writable and not a.read_only,
-                    "unit": a.unit or spec.unit, "min": a.min, "max": a.max,
-                    "ramp_rate": a.ramp_rate, "choices": self._choices(a, spec)}
-        h, spec = self.instruments.resolve(name)
-        return {"name": name, "kind": "raw", "dtype": spec.dtype,
-                "shape": None if spec.shape is None else list(spec.shape),
-                "readable": spec.readable, "writable": spec.writable and spec.config,
-                "unit": spec.unit, "config": spec.config,
-                "choices": None if spec.allowed is None else list(spec.allowed)}
+            acc = spec.access if not a.read_only else spec.access.replace("w", "")
+            out = dict(base, access=acc or "r", target=a.target, dtype=spec.dtype,
+                       shape=None if spec.shape is None else list(spec.shape),
+                       unit=a.unit or spec.unit, min=a.min, max=a.max, ramp_rate=a.ramp_rate,
+                       choices=self._choices(a, spec), description=a.description)
+        elif k == "user_action":
+            ua = self.user_actions.get(name)
+            out = dict(base, access="w", dtype=None, shape=None, description=ua.description,
+                       confirm=ua.confirm)
+        else:                                       # hardware, config, action
+            _, h, spec = self._hw(name)
+            if k == "action":
+                out = dict(base, access="w", dtype=None, shape=None, instrument=h.name,
+                           description=spec.description)
+            else:
+                out = dict(base, access=spec.access, dtype=spec.dtype, instrument=h.name,
+                           shape=None if spec.shape is None else list(spec.shape),
+                           unit=spec.unit, description=spec.description,
+                           config=bool(spec.config),
+                           choices=None if spec.allowed is None else list(spec.allowed))
+        out["readable"] = "r" in out["access"]
+        out["writable"] = "w" in out["access"]
+        return out
 
     def _virtual_info(self, o: CompositeBase, name: str) -> dict:
-        base = {"name": name, "composite": o.name, "dtype": "float", "readable": True,
-                "choices": None, "description": o.description}
+        base = {"name": name, "composite": o.name, "dtype": "float", "choices": None,
+                "description": o.description}
         if o.type == "multi":
             v = o.var[name]
-            base.update(kind="variable", shape=[], writable=True, unit=v.unit, min=v.min,
+            base.update(kind="variable", access="rw", shape=[], unit=v.unit, min=v.min,
                         max=v.max, ramp_rate=v.ramp_rate, description=v.description or
                         o.description)
         elif o.type == "map":
-            base.update(kind="map", shape=[], writable=True, unit=o.unit, min=o.min, max=o.max,
+            base.update(kind="map", access="rw", shape=[], unit=o.unit, min=o.min, max=o.max,
                         ramp_rate=o.ramp_rate, target=o.target)
         else:
-            base.update(kind="read", shape=None, writable=False, unit=o.unit, min=None,
+            base.update(kind="read", access="r", shape=None, unit=o.unit, min=None,
                         max=None, ramp_rate=None)
+        base["readable"] = "r" in base["access"]
+        base["writable"] = "w" in base["access"]
         return base
 
     @staticmethod
@@ -604,7 +755,7 @@ class ChannelManager:
         with self._lock:
             a = self._aliases.get(name)
         target = a.target if a is not None else name
-        if self.is_composite(name) or "." not in target or target.startswith("@"):
+        if a is None and self.kind(name) not in ("hardware", "config"):
             return None
         h, spec = self.instruments.resolve(target)
         if not spec.axes:
@@ -632,11 +783,46 @@ class ChannelManager:
         for a in self.aliases():
             if a.target.startswith(prefix):
                 self._last.pop(a.name, None)
+        for n in [n for n in self._last if n.startswith(prefix) and n not in self._owner]:
+            self._last.pop(n, None)
         for c in self.composites():
             if c.type == "map":
                 self._last.pop(c.name, None)
 
+    def channel_names(self) -> List[str]:
+        """Every channel: aliases, composite channels, parameters, user actions,
+        ``@time``, then the channels and actions of each instrument."""
+        with self._lock:
+            out = list(self._aliases) + [ch for c in self._composites.values()
+                                         for ch in c.channels()] + list(self._params)
+        ua = self.user_actions
+        if ua is not None:
+            out += [a.name for a in ua.actions()]
+        out.append("@time")
+        for h in self.instruments.handles():
+            out += ["%s.%s" % (h.name, c) for c in h.channels]
+            out += ["%s.%s" % (h.name, a) for a in h.actions]
+        return out
+
     def describe(self) -> dict:
+        """``channels``: every channel's :meth:`info` with its ``last`` value (one flat
+        list: front ends filter it by kind and access); ``aliases``, ``composites``,
+        ``parameters``: the definitions."""
+        listing = []
+        for n in self.channel_names():
+            try:
+                inf = self.info(n)
+            except Exception as exc:
+                inf = {"name": n, "kind": self.kind(n), "access": "", "readable": False,
+                       "writable": False, "error": str(exc)}
+            hw = self._hw(n) if inf.get("kind") in ("hardware", "config") else None
+            if hw is not None:
+                inf["last"] = hw[1]._last_of(hw[2].name)["last"]
+            elif inf.get("kind") == "parameter":
+                inf["last"] = inf.get("value")
+            else:
+                inf["last"] = _jsonable_last(self._last.get(n))
+            listing.append(inf)
         out_a = []
         for a in self.aliases():
             d = a.to_dict()
@@ -649,7 +835,7 @@ class ChannelManager:
                 d.update(error=str(exc))
             d["last"] = self._last.get(a.name)
             out_a.append(d)
-        out_c, virtual = [], []
+        out_c = []
         for c in self.composites():
             d = c.to_dict()
             if c.type == "multi":
@@ -657,74 +843,83 @@ class ChannelManager:
             elif c.type == "map":
                 d["last"] = self._last.get(c.name)
             out_c.append(d)
-            for ch in c.channels():
-                inf = self._virtual_info(c, ch)
-                inf["last"] = self._last.get(ch)
-                virtual.append(inf)
-        return {"aliases": out_a, "composites": out_c, "virtual": virtual,
+        return {"channels": listing, "aliases": out_a, "composites": out_c,
                 "parameters": self.describe_parameters()}
 
     def last_value(self, name: str):
         return self._last.get(name)
 
     # -- validation --------------------------------------------------------------
+    def _read_only(self, name: str, k: str) -> ChannelError:
+        why = {"read": "a composite read", "special": "a special channel",
+               "parameter": "a parameter computed from its formula",
+               "alias": "a read-only alias", "hardware": "a read-only channel",
+               "config": "a read-only setting"}.get(k, k)
+        return ChannelError("%s is read-only (%s)" % (name, why))
+
     def check_value(self, name: str, value: Any, partial: bool = False) -> Any:
-        """Validate a value against protection; returns the canonical value.  For a
-        composite channel everything it would write is checked; with *partial*
-        targets that need a variable that was never set are skipped (sweep
-        validation: the sweep sets it first)."""
-        with self._lock:
-            a = self._aliases.get(name)
-            k = self.kind(name)
+        """Check a write of *value* to *name* (access, type, limits); returns the
+        canonical value (None for an action).  For a composite channel everything it
+        would write is checked; with *partial* targets that need a variable that was
+        never set are skipped (sweep validation: the sweep sets it first)."""
+        k = self.kind(name)
+        if k is None:
+            self._unknown(name)
         if k in ("variable", "map"):
             self.check_many({name: value}, partial=partial)
             return self._to_float(name, value)
-        if k == "read":
-            raise ChannelError("%s is a composite read channel (read-only)" % name)
+        if k in ("read", "special"):
+            raise self._read_only(name, k)
+        if k in ("action", "user_action"):
+            return None
         if k == "parameter":
-            raise ChannelError("%s is a parameter: set it in the Parameters or Manual panel "
-                               "(set_parameter), it cannot be written or swept" % name)
-        if a is not None:
-            if a.read_only:
-                raise ChannelError("alias %s is read-only" % name)
-            spec = self._alias_spec(a)
+            if self._params[name].is_formula:
+                raise self._read_only(name, k)
+            v = self._to_float(name, value)
+            if not math.isfinite(v):
+                raise ChannelError("parameter %s: value must be finite" % name)
+            return v
+        if k in ("hardware", "config"):
+            _, h, spec = self._hw(name)
             if not spec.writable:
-                raise ChannelError("alias %s (%s) is not writable" % (name, a.target))
-            if spec.dtype == "str":
-                from .instrument import coerce_value
-                v = coerce_value(str(value), spec, "write")   # instrument's own list
-                if a.allowed and not _in_allowed(v, a.allowed):
-                    raise LimitError("%s: %r not in allowed values %s" % (name, v, a.allowed))
-                return v
-            arr = self._to_array(name, value)
-            if spec.shape == ():
-                if arr.size != 1:
-                    raise ChannelError("%s is a scalar channel, got shape %s" % (name, arr.shape))
-                arr = arr.reshape(())
-            self._check_limits(name, arr, a.min, a.max)
-            return float(arr) if arr.ndim == 0 else arr
-        if name.startswith("@"):
-            raise ChannelError("%s is read-only" % name)
-        spec = self._raw_config_spec(name)
-        if spec is not None:
-            if not spec.writable:
-                raise ChannelError("%s is read-only" % name)
+                raise self._read_only(name, k)
             from .instrument import coerce_value
             return coerce_value(value, spec, "write")
-        if "." in name:
-            self.instruments.resolve(name)     # says which channels the instrument has now
-            raise ChannelError("%s is a measurement channel: define an alias to set it (limits "
-                               "and ramps apply); only configuration channels are set directly"
-                               % name)
-        raise ChannelError("unknown channel %r" % name)
+        a = self._aliases[name]
+        if a.read_only:
+            raise self._read_only(name, "alias")
+        spec = self._alias_spec(a)
+        if not spec.writable:
+            raise ChannelError("%s is read-only (alias of the read-only %s)" % (name, a.target))
+        if spec.dtype == "str":
+            from .instrument import coerce_value
+            v = coerce_value(str(value), spec, "write")   # instrument's own list
+            if a.allowed and not _in_allowed(v, a.allowed):
+                raise LimitError("%s: %r not in allowed values %s" % (name, v, a.allowed))
+            return v
+        arr = self._to_array(name, value)
+        if spec.shape == ():
+            if arr.size != 1:
+                raise ChannelError("%s is a scalar channel, got shape %s" % (name, arr.shape))
+            arr = arr.reshape(())
+        self._check_limits(name, arr, a.min, a.max)
+        return float(arr) if arr.ndim == 0 else arr
 
     def check_many(self, values: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
         """Check setting several channels at once (variables of one composite together);
         returns every value that would be written."""
+        planned = {n: v for n, v in values.items()
+                   if self.kind(n) in ("alias", "variable", "map")}
+        out = {n: self.check_value(n, v) for n, v in values.items() if n not in planned}
         origins: Dict[str, str] = {}
-        plan = self._plan(self._start_values(values), partial=partial, origins=origins)
+        plan = self._plan(self._start_values(planned), partial=partial, origins=origins)
         self._check_plan(plan, origins)
-        return plan
+        twice = sorted(set(out) & set(plan))
+        if twice:
+            raise ChannelError("%s would be set twice (directly and by %s)" % (
+                ", ".join(twice), ", ".join(origins.get(n, "?") for n in twice)))
+        out.update(plan)
+        return out
 
     def _check_plan(self, plan: Dict[str, Any], origins: Dict[str, str]) -> None:
         """Limits of every channel of a plan.  A value a multivariate composite
@@ -895,16 +1090,6 @@ class ChannelManager:
             return m.min, m.max
         return None, None
 
-    def _raw_config_spec(self, name: str):
-        """The spec of ``instrument.channel`` if it is a configuration channel."""
-        if "." not in name:
-            return None
-        try:
-            _, spec = self.instruments.resolve(name)
-        except ChannelError:
-            return None
-        return spec if spec.config else None
-
     @staticmethod
     def _to_float(name, value) -> float:
         try:
@@ -946,6 +1131,7 @@ class ChannelManager:
 
     # -- composite plans ---------------------------------------------------------------
     def _start_values(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Start values of a plan: aliases, variables and mappings."""
         out = {}
         for n, v in values.items():
             k = self.kind(n)
@@ -953,14 +1139,22 @@ class ChannelManager:
                 out[n] = self._to_float(n, v)
             elif k == "alias":
                 out[n] = self.check_value(n, v)
-            elif k == "read":
-                raise ChannelError("%s is a composite read channel (read-only)" % n)
-            elif k == "parameter":
-                raise ChannelError("%s is a parameter: set it in the Parameters or Manual panel "
-                                   "(set_parameter), it cannot be written or swept" % n)
             else:
-                raise ChannelError("%s is not an alias or composite channel" % n)
+                raise ChannelError("%s is not set through a plan" % n)
         return out
+
+    def _is_leaf(self, n: str) -> bool:
+        """A channel of a plan that is written to an instrument."""
+        return n in self._aliases or self.kind(n) in ("hardware", "config")
+
+    def _leaf(self, n: str) -> Alias:
+        a = self._aliases.get(n)
+        if a is not None:
+            return a
+        a = self._identity.get(n)
+        if a is None:
+            a = self._identity[n] = Alias.identity(n)
+        return a
 
     def _write_succ(self, n: str) -> List[str]:
         if n.startswith(GROUP):
@@ -1075,7 +1269,7 @@ class ChannelManager:
     def _check_node(self, n: str, v) -> None:
         """Limits of one channel of a plan (an alias also: writable, scalar …)."""
         k = self.kind(n)
-        if k == "alias":
+        if k in ("alias", "hardware", "config"):
             self.check_value(n, v)
         elif k == "variable":
             var = self._owner[n].var[n]
@@ -1092,8 +1286,8 @@ class ChannelManager:
 
     def _check_node_fast(self, n: str, v) -> None:
         """Limits only (ramp paths: the kinds were checked with the plan)."""
-        if n in self._aliases:
-            a = self._aliases[n]
+        if self._is_leaf(n):
+            a = self._leaf(n)
             if not np.isfinite(np.asarray(v, dtype=float)).all():
                 raise LimitError("%s: ramp path contains NaN/inf" % n)
             self._check_limits(n, v, a.min, a.max)
@@ -1114,22 +1308,29 @@ class ChannelManager:
 
     # -- read ----------------------------------------------------------------------
     def get(self, name: str) -> Any:
-        if name == "@time":
+        """Read any readable channel."""
+        k = self.kind(name)
+        if k == "special":
             return time.time()
-        v = self._pvals.get(name)
-        if v is not None:
-            return v
-        with self._lock:
-            a = self._aliases.get(name)
-            o = self._owner.get(name)
-        if o is not None:
-            return self._get_virtual(o, name)
-        if a is not None:
+        if k == "parameter":
+            return self._pvals[name]
+        if k in ("variable", "map", "read"):
+            return self._get_virtual(self._owner[name], name)
+        if k == "alias":
+            a = self._aliases[name]
             h, spec = self.instruments.resolve(a.target)
-            raw = h.read(spec.name)
-            return self._from_raw(a, spec, raw)
-        h, spec = self.instruments.resolve(name)
-        return h.read(spec.name)
+            if not spec.readable:
+                raise ChannelError("%s is write-only (alias of %s)" % (name, a.target))
+            return self._from_raw(a, spec, h.read(spec.name))
+        if k in ("hardware", "config"):
+            _, h, spec = self._hw(name)
+            if not spec.readable:
+                raise ChannelError("%s is write-only" % name)
+            return h.read(spec.name)
+        if k in ("action", "user_action"):
+            raise ChannelError("%s is an action: it has no value to read (write it to run it)"
+                               % name)
+        self._unknown(name)
 
     def _get_virtual(self, o: CompositeBase, name: str):
         stack = getattr(self._reading, "stack", None)
@@ -1210,87 +1411,109 @@ class ChannelManager:
                 lk = self._set_locks[name] = threading.RLock()
             return lk
 
-    def _guard_raw(self, ref: str, value: Any) -> List[Alias]:
-        """A raw write must still respect the limits of every alias on that target."""
-        h, spec = self.instruments.resolve(ref)
-        guards = [a for a in self.aliases() if a.target == ref]
-        for a in guards:
-            if a.read_only:
-                raise ChannelError("%s is protected by read-only alias %s" % (ref, a.name))
-            if spec.dtype == "str":
-                if a.allowed and not _in_allowed(str(value), a.allowed):
-                    raise LimitError("%s (alias %s): %r not in allowed values %s"
-                                     % (ref, a.name, value, a.allowed))
-                continue
-            arr = self._to_array(ref, value)
-            self._check_limits("%s (alias %s)" % (ref, a.name), arr * a.scale + a.offset,
-                               a.min, a.max)
-        return guards
-
-    def set_raw(self, ref: str, value: Any) -> None:
-        """Write to ``instrument.channel`` without ramping (scripts).  Limits of
-        aliases on the same target are still enforced."""
-        h, spec = self.instruments.resolve(ref)
-        guards = self._guard_raw(ref, value)
-        try:
-            h.write(spec.name, value)
-        finally:
-            for a in guards:
-                self._last.pop(a.name, None)   # cached value is stale now
-
-    def query_raw(self, ref: str, value: Any) -> Any:
-        h, spec = self.instruments.resolve(ref)
-        guards = self._guard_raw(ref, value)
-        try:
-            return h.query(spec.name, value)
-        finally:
-            for a in guards:
-                self._last.pop(a.name, None)
-
-    def set(self, name: str, value: Any, ramp: bool = True, abort_check: AbortCheck = None) -> Any:
-        """Protected write to an alias or composite channel.  Returns the value set."""
-        k = self.kind(name)
-        if k in ("variable", "map", "read"):
-            plan = self.set_many({name: value}, ramp=ramp, abort_check=abort_check)
-            return plan[name]
-        value = self.check_value(name, value)
-        if k is None:
-            # configuration channel: written directly, no protection / ramping
-            h, spec = self.instruments.resolve(name)
-            h.write(spec.name, value)
+    def set(self, name: str, value: Any = None, ramp: bool = True,
+            abort_check: AbortCheck = None) -> Any:
+        """Write any writable channel; returns the value set (for a user action, how
+        it ended: ``{status, error, elapsed}``)."""
+        if self.kind(name) == "alias":
+            value = self.check_value(name, value)
+            with self._set_lock(name):
+                self._set_alias(self._aliases[name], value, ramp, abort_check)
             self._notify(name, value)
             return value
-        with self._set_lock(name):
-            self._set_alias(self.get_alias(name), value, ramp, abort_check)
-        self._notify(name, value)
-        return value
+        return self.set_many({name: value}, ramp=ramp, abort_check=abort_check).get(name)
 
     def set_many(self, values: Dict[str, Any], ramp: bool = True,
                  abort_check: AbortCheck = None) -> Dict[str, Any]:
-        """Set several channels together (e.g. two variables of one composite at the
-        same point of a sweep): everything they drive is computed and checked first,
-        then all hardware targets move together.  Returns every value written."""
-        start = self._start_values(values)
-        origins: Dict[str, str] = {}
-        plan = self._plan(start, origins=origins)
-        self._check_plan(plan, origins)
-        leaves = sorted(n for n in plan if n in self._aliases)
-        locks = [self._set_lock(n) for n in leaves]
-        for lk in locks:
-            lk.acquire()
+        """Write several channels together.  Everything is checked before anything is
+        written; then the parameters are set, then the aliases and composite channels
+        (everything they drive computed and moved together), then the other channels
+        of instruments, then the actions are run in the order given.  Returns every
+        value written (an action: None, a user action: how it ended)."""
+        kinds = {}
+        for n in values:
+            k = self.kind(n)
+            if k is None:
+                self._unknown(n)
+            kinds[n] = k
+        params = {n: self.check_value(n, v) for n, v in values.items() if kinds[n] == "parameter"}
+        direct = {n: self.check_value(n, v) for n, v in values.items()
+                  if kinds[n] in ("hardware", "config", "read", "special")}
+        actions = [n for n in values if kinds[n] in ("action", "user_action")]
+        planned = {n: v for n, v in values.items() if kinds[n] in ("alias", "variable", "map")}
+        old_params = {n: self._params[n] for n in params}
         try:
-            self._write_plan(start, plan, leaves, ramp, abort_check)
-        finally:
-            for lk in reversed(locks):
-                lk.release()
-        for n, v in plan.items():
+            for n, v in params.items():            # constants of the formulas: first
+                self.set_parameter(n, v)
+            start = self._start_values(planned)
+            origins: Dict[str, str] = {}
+            plan = self._plan(start, origins=origins) if start else {}
+            self._check_plan(plan, origins)
+            twice = sorted(set(direct) & set(plan))
+            if twice:
+                raise ChannelError("%s would be set twice (directly and by %s)" % (
+                    ", ".join(twice), ", ".join(origins.get(n, "?") for n in twice)))
+        except Exception:
+            if old_params:
+                with self._lock:
+                    cand = dict(self._params)
+                    cand.update(old_params)
+                    self._apply_parameters(cand)
+            raise
+        done: Dict[str, Any] = dict(params)
+        if plan:
+            leaves = sorted(n for n in plan if self._is_leaf(n))
+            locks = [self._set_lock(n) for n in leaves]
+            for lk in locks:
+                lk.acquire()
+            try:
+                self._write_plan(start, plan, leaves, ramp, abort_check)
+            finally:
+                for lk in reversed(locks):
+                    lk.release()
+            done.update(plan)
+        for n, v in direct.items():
+            with self._set_lock(n):
+                self._write_hardware(n, v)
+            done[n] = v
+        for n, v in done.items():
             self._notify(n, v)
-        return plan
+        for n in actions:
+            if abort_check is not None:
+                abort_check()
+            done[n] = self._run_action(n, kinds[n], abort_check)
+        return done
+
+    def _write_hardware(self, ref: str, value) -> None:
+        """A plain write to ``instrument.channel``."""
+        _, h, spec = self._hw(ref)
+        try:
+            h.write(spec.name, value)
+        finally:
+            for a in self.aliases():               # their cached values are stale now
+                if a.target == ref:
+                    self._last.pop(a.name, None)
+        self._last[ref] = value
+        self._last_time[ref] = time.monotonic()
+
+    def _run_action(self, name: str, kind: str, abort_check: AbortCheck = None):
+        if kind == "action":
+            _, h, act = self._hw(name)
+            try:
+                h.run_action(act.name)
+            finally:
+                self.forget_instrument(h.name)
+            self._notify(name, None)
+            return None
+        res = self.user_actions.run(name, abort_check=abort_check)
+        if res.get("status") == "error":
+            raise ChannelError("user action %s failed: %s" % (name, res.get("error")))
+        return res
 
     def _write_plan(self, start, plan, leaves, ramp, abort_check) -> None:
         items = []
         for n in leaves:
-            a = self._aliases[n]
+            a = self._leaf(n)
             items.append((a, self._alias_spec(a)))
         rated = {n: r for n in plan for r in [self._rate_of(n)] if r[0] or r[1]}
         if not (ramp and rated):
@@ -1312,7 +1535,7 @@ class ChannelManager:
         # hardware is still there; otherwise every target moves on a straight line
         origin = {}
         for n in start:
-            x0 = self._last.get(n) if n not in self._aliases else starts.get(n)
+            x0 = self._last.get(n) if not self._is_leaf(n) else starts.get(n)
             if x0 is None and self.kind(n) == "map":
                 try:
                     x0 = self.get(n)
@@ -1358,7 +1581,7 @@ class ChannelManager:
             except RampStopped:
                 # stopped off the relation: the composite channels have no value now
                 for n in plan:
-                    if n not in self._aliases:
+                    if not self._is_leaf(n):
                         self._last.pop(n, None)
                 raise
         self._remember(plan, skip=leaves)
@@ -1390,6 +1613,8 @@ class ChannelManager:
             raise
         self._last[a.name] = value
         self._last_time[a.name] = time.monotonic()
+        if a.target != a.name:
+            self._last.pop(a.target, None)
 
     @staticmethod
     def _has_ramp(a: Alias) -> bool:
@@ -1499,6 +1724,13 @@ class ChannelManager:
                 return
             last_u = u
             time.sleep(RAMP_INTERVAL)
+
+
+def _jsonable_last(v):
+    """A last value for a state snapshot: arrays only by their shape."""
+    if isinstance(v, np.ndarray):
+        return {"shape": list(v.shape)} if v.ndim else float(v)
+    return v
 
 
 def _jsonable(v):

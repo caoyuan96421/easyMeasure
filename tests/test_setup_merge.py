@@ -203,16 +203,16 @@ def test_invalid_names_drivers_and_targets(demo):
     m.rename("parameters", "Cb", "sin")                # a function name
     assert not m.validate()
     m.rename("parameters", "Cb", "")
-    m.select("actions", "gates to zero")
-    m.rename("actions", "gates to zero", "1 bad")
-    assert not m.validate() and m.item("actions", "gates to zero").status == ERROR
+    m.select("actions", "gates_to_zero")
+    m.rename("actions", "gates_to_zero", "1 bad")
+    assert not m.validate() and m.item("actions", "gates_to_zero").status == ERROR
     # a driver the backend does not have
     src = graphene()
     src["instruments"].append({"name": "x", "driver": "no_such_driver", "address": "NONE"})
     m = plan(demo, src)
     m.select("instruments", "x")
     assert not m.validate() and "not available" in msgs(m, "instruments", "x")
-    # an alias of a channel the instrument does not have / of a setting
+    # an alias of a channel the instrument does not have; one of a setting is fine
     src = graphene()
     src["aliases"] += [{"name": "Q", "target": "magnet.nonsense"},
                        {"name": "R", "target": "magnet.rate"}]
@@ -221,7 +221,13 @@ def test_invalid_names_drivers_and_targets(demo):
     m.select("aliases", "R")
     assert not m.validate()
     assert "has no channel nonsense" in msgs(m, "aliases", "Q")
-    assert "configuration channel" in msgs(m, "aliases", "R")
+    assert m.item("aliases", "R").status != ERROR
+    # one namespace: a user action may not take the name of a channel
+    src = graphene()
+    src["actions"].append({"name": "Vg", "code": "pass"})
+    m = plan(demo, src)
+    m.select("actions", "Vg")
+    assert not m.validate() and "already the alias Vg" in msgs(m, "actions", "Vg")
 
 
 def test_circular_references_and_live_channels(demo):
@@ -270,7 +276,7 @@ def test_writable_targets_and_actions_warnings(demo):
     m.select("composites", "h")
     m.select("actions", "uses")
     assert not m.validate()
-    assert "cannot be set" in msgs(m, "composites", "g")
+    assert "read-only" in msgs(m, "composites", "g")
     assert "needs the parameter Cb" in msgs(m, "composites", "h")
     a = m.item("actions", "uses")
     assert a.status == WARNING and "Vxx" in " ".join(a.messages)     # a warning only
@@ -283,13 +289,13 @@ def test_writable_targets_and_actions_warnings(demo):
 
 
 def test_rename_code_and_formula_helpers():
-    code = ("v = get('Vxx')  # 'Vxx'\nset(\"Vbg\", k*2)\nrun_action('li', 'auto')\n"
+    code = ("v = get('Vxx')  # 'Vxx'\nset(\"Vbg\", k*2)\nset('li.auto')\n"
             "x = get('li.X'); params['k']; params.k\ns = '''Vxx'''\nkk = 1\n")
     out = rename_code(code, {"Vxx": "V2", "Vbg": "Vb2", "k": "kk2"}, {"li": "li9"},
                       {"k": "kk2"}, {})
     assert "get('V2')  # 'Vxx'" in out
     assert "set(\"Vb2\", kk2*2)" in out
-    assert "run_action('li9', 'auto')" in out and "get('li9.X')" in out
+    assert "set('li9.auto')" in out and "get('li9.X')" in out
     assert "params['kk2']; params.kk2" in out and "s = '''V2'''" in out
     assert "kk = 1" in out                                     # other names untouched
     assert rename_code("x = (", {"a": "b"}, {}, {}, {}) == "x = ("     # broken code: as is
@@ -450,7 +456,7 @@ def test_more_edge_cases(demo):
         {"type": "map", "name": "Vbm", "target": "Vbg", "forward": "x * 2",
          "backward": "y / 2", "min": -1, "max": 1}]
     src["aliases"].append({"name": "bad", "target": "bg.voltage", "min": 2, "max": 1})
-    src["actions"] += [{"name": "a1", "code": "x = get('bg.voltage')\nrun_user_action('a2')"},
+    src["actions"] += [{"name": "a1", "code": "x = get('bg.voltage')\nset('a2')"},
                        {"name": "a2", "code": "log('two')"}]
     m = plan(demo, src)
     m.select("aliases", "bad")
@@ -467,7 +473,7 @@ def test_more_edge_cases(demo):
     assert m.item("composites", "Vgx").merged["targets"] == {"VB": "v / 2"}
     assert m.item("composites", "Vbm").merged["target"] == "VB"
     code = m.item("actions", "a1").merged["code"]
-    assert "get('backgate.voltage')" in code and "run_user_action('second')" in code
+    assert "get('backgate.voltage')" in code and "set('second')" in code
     apply(demo, m)
     demo.write_channel("Vgx.v", 0.5, ramp=False)
     assert demo.instruments.get("backgate").read("voltage") == pytest.approx(0.25)

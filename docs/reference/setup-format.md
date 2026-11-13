@@ -37,7 +37,7 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
   ],
   "monitor": [{"channel": "T", "interval": 1.0}, {"channel": "I", "interval": 0.5}],
   "actions": [
-    {"name": "gates to zero", "code": "set_many({'Vx': 0, 'Vy': 0})",
+    {"name": "gates_to_zero", "code": "set_many({'Vx': 0, 'Vy': 0})",
      "description": "all gates to 0 V", "confirm": false}
   ]
 }

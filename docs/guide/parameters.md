@@ -44,12 +44,14 @@ group at the bottom: type the value and press Enter. Formula parameters are show
 there with their value and formula, and follow at once.
 
 Setting a parameter **moves no instrument**. Composite channels use the new value the
-next time they set something: after changing `Cb`, setting `n` again puts the gates
+next time they set something: after changing `Cb`, setting `nD.n` again puts the gates
 where the new `Cb` says.
 
-Parameters cannot be written like channels: not by `set(...)` in a script, not by
-`write_channel`, and not by a sweep. They are constants of the setup, and are changed
-only on purpose, in the Parameters or Manual panel.
+A parameter is a channel: a value parameter is read and written (`rw`) like any
+other, by `set('Cb', 0.58)` in a script, `write_channel`, a sweep constant, or even
+as a swept channel; a formula parameter is read-only (`r`) and follows the ones it
+uses. When several channels are written together, the parameters are set first, so
+the composites in the same write already use the new values.
 
 ## Using parameters
 
@@ -102,7 +104,7 @@ is wrong (a circle, an unknown name) is reported and left out, and the rest load
     c.call("define_parameter", name="Ct", definition="1.2")   # as typed: a number or a formula
     c.call("check_parameter", name="k", definition="ratio * 2")
     # {'name': 'k', 'formula': 'ratio * 2', 'current': 4.0, 'warnings': []}   nothing defined
-    c.call("set_parameter", name="Cb", value=0.58)       # formulas follow
+    c.call("write_channel", name="Cb", value=0.58)       # formulas follow
     c.call("read_channel", name="ratio")
     c.call("list_parameters")
     # [{'name': 'Cb', 'value': 0.58, 'current': 0.58, 'unit': ..., 'used_by': ['ratio', 'nD']}, ...]

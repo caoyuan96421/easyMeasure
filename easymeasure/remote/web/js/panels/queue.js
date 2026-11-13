@@ -2,7 +2,7 @@
 
 import { h, Table, btn, bar, group, clock, confirmDialog, qcan, codeChecker } from "../ui.js";
 
-const SCRIPT_HELP = `# Script API: get(name), set(name, value), action('inst.act'), sleep(s),
+const SCRIPT_HELP = `# Script API: get(name), set(name, value) - any channel; set('dmm.reset') runs an action - sleep(s),
 # log(msg), run_sweep(definition), instrument(name) ...
 `;
 

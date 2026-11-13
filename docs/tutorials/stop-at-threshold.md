@@ -75,7 +75,7 @@ gate sweep at the leakage threshold while stepping the field.
 | when | code |
 |---|---|
 | post-record | `if values['Rxx'] > 1e6: skip_line()`: the device went insulating; next line |
-| pre-record | `action('dmm.trigger')`: trigger a meter in triggered mode |
+| pre-record | `set('dmm.trigger')`: trigger a meter in triggered mode |
 | post-sweep | `wait_until(lambda: abs(get('T') - setpoints['Tset']) < 0.01, timeout=1800)`: wait for the temperature |
 | pre-sweep | `if 0.10 < setpoints['Vbg'] < 0.12: skip_point()`: skip a known bad spot |
 
@@ -87,7 +87,9 @@ the magnet down. Make each one a button. On *Instruments & channels*, on the
 
 ![A user action: both gates to zero](../images/t3-user-action.png)
 
-* **Name**, and a **Description** shown in the list.
+* **Name**: `gates_to_zero` (letters, digits and `_`: an action is a channel, and
+  writing it runs it, so a script can also run it with `set('gates_to_zero')`), and
+  a **Description** shown in the list.
 * **Code**: the same small Python as in point actions:
 
     ```python
@@ -112,7 +114,7 @@ work there:
 
 ![The user actions in the Manual panel](../images/t3-manual-actions.png)
 
-1. **▶ gates to zero** runs the action. While an action runs its button turns orange
+1. **▶ gates_to_zero** runs the action. While an action runs its button turns orange
    (**■**), and clicking it again aborts it.
 2. Below the channels, under **Parameters**, the setup's
    [parameters](../guide/parameters.md): type a value and press Enter to change one.

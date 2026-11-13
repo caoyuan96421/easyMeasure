@@ -77,7 +77,7 @@ def test_definitions_are_validated(demo):
     be = demo
     with pytest.raises(ChannelError, match="does not exist"):
         be.define_composite(type="multi", name="m", variables=["a"], targets={"nope": "a"})
-    with pytest.raises(ChannelError, match="composite read channel, it cannot be set"):
+    with pytest.raises(ChannelError, match="is read-only"):
         be.define_composite(type="multi", name="m", variables=["a"], targets={"Vdiff": "a"})
     be.define_alias(name="Iro", target="dmm.reading", read_only=True)
     with pytest.raises(ChannelError, match="read-only"):
@@ -86,16 +86,16 @@ def test_definitions_are_validated(demo):
     be.define_composite(type="multi", name="m", variables=["Vg"], targets={"Vx": "Vg"})
     assert be.channels.kind("m.Vg") == "variable" and be.channels.kind("Vg") == "alias"
     be.remove_composite("m")
-    with pytest.raises(ChannelError, match="is an alias"):
+    with pytest.raises(ChannelError, match="already an alias"):
         be.define_composite(type="multi", name="Vg", variables=["a"], targets={"Vx": "a"})
     gates(be)
     # variables are named after their composite: another eps is no conflict
     be.define_composite(type="multi", name="other", variables=["eps"], targets={"Vb": "eps"})
     assert be.channels.kind("other.eps") == "variable"
     be.remove_composite("other")
-    with pytest.raises(ChannelError, match="name of an instrument"):
+    with pytest.raises(ChannelError, match="already an instrument"):
         be.define_composite(type="multi", name="src", variables=["eps"], targets={"Vb": "eps"})
-    with pytest.raises(ChannelError, match="name of a multivariate composite"):
+    with pytest.raises(ChannelError, match="already a composite"):
         be.add_instrument("gates", "sim_dmm", "SIM::g")
     with pytest.raises(ChannelError, match="already exists"):
         gates(be)
@@ -153,7 +153,7 @@ def test_mapping_write_and_read(demo):
     with pytest.raises(LimitError, match="outside the range of the mapping"):
         ch.set("Tset_C", 30)
     # the read is a real read-back: a raw write to the hardware is seen
-    ch.set_raw("tc.setpoint", 250.0)
+    ch.set("tc.setpoint", 250.0)
     assert ch.get("Tset_C") == pytest.approx(-23.15)
     # beyond the target's limits: refused before anything is written
     r = be.define_composite(type="map", name="Vg_mV", target="Vg", forward="x/1000",
@@ -277,7 +277,7 @@ def test_ramps_follow_all_rates(demo):
     ch.set("slow", 1.0)                      # 1 unit at 2 /s: 0.5 s (Vb alone: 0.1 s)
     assert time.monotonic() - t > 0.4 and ch.get("Vb") == pytest.approx(0.1)
     # moved behind its back: a straight line from where the hardware really is
-    ch.set_raw("src.V2", -0.3)
+    ch.set("src.V2", -0.3)
     seen, undo = writes_of(be)
     ch.set("slow", 2.0)
     undo()
@@ -489,7 +489,7 @@ def test_setups_keep_nested_composites(demo, tmp_path):
     assert be.channel_info("outer.s")["ramp_rate"] == 0.5
     be.channels.set("outer.s", 0.1, ramp=False)
     assert be.channels.get("Vx") == pytest.approx(0.31)
-    virt = {v["name"]: v for v in be.list_channels()["virtual"]}
+    virt = {v["name"]: v for v in be.list_channels()["channels"]}
     assert virt["outer.s"]["kind"] == "variable" and virt["outer.s"]["last"] == 0.1
     assert virt["r"]["kind"] == "read" and virt["eps_mV"]["kind"] == "map"
     # a composite without a type is reported, the rest loads

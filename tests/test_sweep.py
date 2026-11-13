@@ -50,15 +50,23 @@ def test_validation_against_channels(demo):
                             "record": ["I"]}]}
     with pytest.raises(SweepDefinitionError, match="above maximum"):
         demo.validate_sweep(base)
-    for sweep, msg in [({"channel": "I", "start": 0, "stop": 1}, "not writable"),
-                       ({"channel": "src.output", "start": 0, "stop": 1}, "alias"),
-                       ({"channel": "src.V1", "start": 0, "stop": 1}, "alias"),
+    for sweep, msg in [({"channel": "I", "start": 0, "stop": 1}, "read-only"),
+                       ({"channel": "src.output", "start": 0, "stop": 1}, "cannot be swept"),
+                       ({"channel": "dmm.reset", "start": 0, "stop": 1}, "is an action"),
                        ({"channel": "wave", "start": 0, "stop": 1}, "mapping is required"),
                        ({"channel": "nope", "start": 0, "stop": 1}, "nope")]:
         with pytest.raises(SweepDefinitionError, match=msg):
             demo.validate_sweep({"dimensions": [{"points": 3, "sweep": [sweep]}]})
     with pytest.raises(SweepDefinitionError, match="syntax"):
         demo.validate_sweep({"dimensions": [{"points": 2}], "pre": {"hook": "if:"}})
+    # any writable channel with a number can be swept: an instrument's own channel too
+    assert demo.validate_sweep({"dimensions": [{"points": 3, "sweep": [
+        {"channel": "src.V1", "start": 0, "stop": 1}], "record": ["src.V1"]}]})["ok"]
+    # an action as a constant (no value); a record must be readable
+    assert demo.validate_sweep({"dimensions": [{"points": 2}],
+                                "pre": {"constants": [{"channel": "dmm.reset"}]}})["ok"]
+    with pytest.raises(SweepDefinitionError, match="cannot be read"):
+        demo.validate_sweep({"dimensions": [{"points": 2}], "pre": {"record": ["dmm.reset"]}})
     # queue_add refuses invalid sweeps up front
     with pytest.raises(SweepDefinitionError):
         demo.queue_add({"kind": "sweep", "definition": base})
@@ -75,7 +83,7 @@ def test_3d_sweep_with_vectors_images_and_phases(demo):
          "record_after_inner": True}],
         "pre": {"constants": [{"channel": "src.output", "value": "ON"}],
                 "record": ["src.output", "lockin.sensitivity", "B"],
-                "hook": "state['pre'] = get('Vg')\nset_raw('awg.run', 'RUN')"},
+                "hook": "state['pre'] = get('Vg')\nset('awg.run', 'RUN')"},
         "post": {"constants": [{"channel": "Vg", "value": 0.0}], "record": ["Vg"],
                  "hook": "state['post'] = True"}}
     item, ds = run(demo, d)
@@ -215,7 +223,7 @@ set('Vg', 0.2)
 assert abs(get('Vg') - 0.2) < 1e-9
 ok = wait_until(lambda: get('T') > 0, timeout=2)
 state['ok'] = ok
-state['idn'] = instrument('src').read('idn')
+state['idn'] = get('src.idn')
 ds = run_sweep({'name': 'nested', 'dimensions': [{'points': 3, 'sweep': [{'channel': 'Vb', 'start': 0, 'stop': 0.1}], 'record': ['I']}]})
 state['nested'] = ds.status
 state['nested_shape'] = ds.data['I'].shape
@@ -271,7 +279,7 @@ def test_point_hooks_with_record_after_inner_and_actions(demo):
         {"points": 2, "sweep": [{"channel": "Vb", "start": 0, "stop": 0.1}], "record": ["T"],
          "record_after_inner": True,
          "hooks": {"post_sweep": {"enabled": True, "code": "state.setdefault('s', []).append('set%d' % i)"},
-                   "pre_record": {"enabled": True, "code": "action('dmm.trigger')\nstate['s'].append('rec%d' % i)"}}}]}
+                   "pre_record": {"enabled": True, "code": "set('dmm.trigger')\nstate['s'].append('rec%d' % i)"}}}]}
     demo.scripts.state.clear()
     item, _ = run(demo, d)
     assert item["status"] == "finished", item

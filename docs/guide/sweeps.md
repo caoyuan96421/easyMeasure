@@ -216,7 +216,8 @@ optional code snippets; see [Point actions](point-actions.md).
   Use it to bring the sample back to a safe state.
 
 Constants are a natural place for configuration channels (ranges, modes, output
-on/off). A sweep whose pre-sweep constants switch a mode, such as
+on/off). A constant can also be an **action**, of an instrument (`dmm.reset`) or
+your own (`gates_to_zero`), without a value: it runs at that place in the order. A sweep whose pre-sweep constants switch a mode, such as
 `smu.mode = Current` before a current sweep, is validated again after the constants
 were applied. A sweep that still does not fit stops before its first point.
 

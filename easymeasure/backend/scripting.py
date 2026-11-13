@@ -3,17 +3,17 @@
 Scripts are plain Python run in the backend with a small API in their namespace:
 
 =====================  =========================================================
-``get(name)``          read an alias / composite / ``instrument.channel``
-``set(name, value)``   protected (limits, ramp) write to an alias / composite
-``set_many({n: v})``   set several together (e.g. variables of one composite)
-``set_raw(ref, v)``    unprotected write to ``instrument.channel``
+``get(name)``          read any readable channel (``Vg``, ``gates.eps``,
+                       ``dmm.V``, a parameter, ``@time``)
+``set(name, value)``   write any writable channel: an alias with its limits and
+                       ramp, ``src.V1`` as it is, a parameter; ``set('dmm.reset')``
+                       or ``set('zero_gates')`` runs an action
+``set_many({n: v})``   write several together (e.g. variables of one composite)
 ``sleep(s)``           abortable sleep (always use this instead of time.sleep)
 ``wait_until(f, timeout, interval)``  poll ``f()`` until true
 ``check()``            honour pause / abort
 ``log(msg)``/``print`` write to the backend log
-``instrument(name)``   guarded instrument proxy: ``.raw_query``, ``.raw_write``, ``.call``,
-                       ``.action``
-``action(ref)``        run an instrument action, e.g. ``action('dmm.reset')``
+``instrument(name)``   guarded instrument proxy: ``.raw_query``, ``.raw_write``, ``.call``
 ``run_sweep(defn)``    run a sweep definition synchronously; returns its DataSet
                        (``.status``, ``.data``, ``.setpoints``, ``.path``)
 ``load_sweep(path)``   a sweep definition (dict) from a JSON file saved by the sweep
@@ -65,12 +65,6 @@ class _InstrumentProxy:
     def call(self, method: str, *args, **kwargs):
         return self._h.call(method, *args, **kwargs)
 
-    def action(self, name: str) -> None:
-        self._h.run_action(name)
-
-    def read(self, channel: str):
-        return self._h.read(channel)
-
     @property
     def state(self) -> str:
         return self._h.state
@@ -97,7 +91,8 @@ def load_sweep(path) -> dict:
 
 class _Params:
     """The setup's parameters in scripts and actions: ``params.Cb`` or
-    ``params['Cb']`` (the present value), ``dict(params)``.  Read-only."""
+    ``params['Cb']`` (the present value), ``dict(params)``.  ``params.Cb = 0.7``
+    sets a value parameter (like ``set('Cb', 0.7)``)."""
 
     def __init__(self, channels):
         object.__setattr__(self, "_ch", channels)
@@ -121,7 +116,9 @@ class _Params:
             raise AttributeError(str(exc)) from None
 
     def __setattr__(self, name, value):
-        raise ScriptError("parameters are set in the Parameters or Manual panel, not by code")
+        if self._ch.kind(name) != "parameter":
+            raise ScriptError("no parameter %r" % name)
+        self._ch.set(name, value)
 
     __setitem__ = __setattr__
 
@@ -167,7 +164,7 @@ class ScriptRunner:
                 ctl.sleep(interval)
             return False
 
-        def _set(n, v, ramp=True):
+        def _set(n, v=None, ramp=True):
             ctl.check()
             return self.channels.set(n, v, ramp=ramp, abort_check=ctl.check)
 
@@ -179,22 +176,8 @@ class ScriptRunner:
             ctl.check()
             return self.channels.get(n)
 
-        def _set_raw(ref, v):
-            ctl.check()
-            self.channels.set_raw(ref, v)
-
         def _instrument(n):
             return _InstrumentProxy(self.instruments.get(n))
-
-        def _action(ref):
-            ctl.check()
-            if not isinstance(ref, str) or "." not in ref:
-                raise ScriptError("action() needs 'instrument.action'")
-            inst, name = ref.split(".", 1)
-            try:
-                self.instruments.get(inst).run_action(name)
-            finally:
-                self.channels.forget_instrument(inst)
 
         def _point_only(fn):
             def f():
@@ -208,10 +191,10 @@ class ScriptRunner:
 
         ns = {
             "__name__": "__easymeasure_script__", "load_sweep": load_sweep,
-            "get": _get, "set": _set, "set_many": _set_many, "set_raw": _set_raw, "sleep": ctl.sleep,
+            "get": _get, "set": _set, "set_many": _set_many, "sleep": ctl.sleep,
             "check": ctl.check, "wait_until": wait_until, "log": slog.info,
             "warn": slog.warning, "print": _print, "instrument": _instrument,
-            "run_sweep": _run_sweep, "action": _action, "np": np, "math": math, "time": time,
+            "run_sweep": _run_sweep, "np": np, "math": math, "time": time,
             "state": self.state, "AbortRequested": AbortRequested, "skip_point": _point_only("skip_point"), "skip_line": _point_only("skip_line"),
             "end_sweep": _point_only("end_sweep"),
             "params": _Params(self.channels),
@@ -276,14 +259,15 @@ class ScriptRunner:
 
 
 #: script functions whose first argument is a channel name
-_CHANNEL_FUNCS = {"get": "read", "set": "set", "set_raw": "set"}
+_CHANNEL_FUNCS = {"get": "r", "set": "w"}
 
 
 def check_code(code: str, channels, what: str = "code") -> dict:
     """Check Python code for the code fields (scripts, user actions, point actions)
     without running it: ``{ok, errors, warnings}``.  An error is a syntax error;
     a warning is a quoted channel that does not exist (``get('Vxx')``,
-    ``set_many({'nD.n': 0})``) - it may be defined before the code runs."""
+    ``set_many({'nD.n': 0})``) - it may be defined before the code runs - or that
+    cannot be read / written that way (``get('dmm.reset')``, ``set('Rxx', 1)``)."""
     import ast
     errors, warnings = [], []
     try:
@@ -295,19 +279,30 @@ def check_code(code: str, channels, what: str = "code") -> dict:
         return {"ok": False, "errors": errors, "warnings": warnings}
     seen = set()
 
-    def chan(node, line):
+    def chan(node, line, need):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             n = node.value
-            if n and n not in seen and not channels.exists(n):
-                seen.add(n)
+            if not n or (n, need) in seen:
+                return
+            seen.add((n, need))
+            if not channels.exists(n):
                 warnings.append("line %d: no channel %r (yet)" % (line, n))
+                return
+            try:
+                acc = channels.info(n)["access"]
+            except Exception:
+                return
+            if need not in acc:
+                warnings.append("line %d: %s is %s: it cannot be %s" % (
+                    line, n, "read-only" if acc == "r" else "write-only" if acc == "w"
+                    else "not accessible", "read" if need == "r" else "written"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             fn = node.func.id
             if fn in _CHANNEL_FUNCS and node.args:
-                chan(node.args[0], node.lineno)
+                chan(node.args[0], node.lineno, _CHANNEL_FUNCS[fn])
             elif fn == "set_many" and node.args and isinstance(node.args[0], ast.Dict):
                 for k in node.args[0].keys:
                     if k is not None:
-                        chan(k, node.lineno)
+                        chan(k, node.lineno, "w")
     return {"ok": True, "errors": errors, "warnings": warnings}

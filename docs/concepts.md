@@ -8,21 +8,37 @@ Eight words cover almost everything in easyMeasure.
     it a short name: `bg`, `lockin`, `vna`.
 
 **Channel**
-:   One quantity of an instrument, written `instrument.channel`, for example `bg.voltage`,
-    `lockin.X` or `vna.S11`. A channel holds a number, an array (a spectrum, a VNA trace,
-    a camera image) or a text. Channels marked ⚙ are **settings**: ranges, modes,
-    sensitivity, output on/off.
+:   Anything with a name that you read or write. Every channel is read and written
+    the same way (the Manual panel, a sweep, a script: `get(name)`, `set(name, value)`)
+    and has an **access**: readable (r), writable (w) or both (rw), which is always
+    respected. There are a few kinds:
+
+    | kind | name | access |
+    |---|---|---|
+    | a quantity of an instrument | `bg.voltage`, `lockin.X`, `vna.S11` | what the instrument allows |
+    | a setting of an instrument (⚙) | `lockin.sensitivity`, `dmm.function` | what the instrument allows |
+    | an action of an instrument | `dmm.reset`, `lockin.auto_gain` | w: writing it runs it |
+    | an [alias](guide/aliases.md) | `Vbg` | the instrument channel's |
+    | a [composite channel](guide/composites.md) | `Rxx`, `nD.n` | r (a formula), rw (variables, mappings) |
+    | a [parameter](guide/parameters.md) | `Cb` | rw (a value), r (a formula) |
+    | a [user action](guide/user-actions.md) | `gates_to_zero` | w: writing it runs it |
+    | the clock | `@time` | r |
+
+    A channel holds a number, an array (a spectrum, a VNA trace, a camera image) or a
+    text; an action holds nothing. Names are unique: no alias, composite, parameter,
+    user action and instrument share a name. The channels of an instrument sit under
+    its name (`bg.…`) and are written as they are, without limits or ramps.
 
 **Alias**
-:   Your name for a channel, for example `Vbg` for `bg.voltage`. It carries the
-    **protection**: minimum, maximum and ramp rate, and an optional scale (V → Ω, an
-    amplifier gain). Measurements use aliases.
+:   Your name for a channel of an instrument, for example `Vbg` for `bg.voltage`. It
+    carries the **protection**: minimum, maximum and ramp rate, and an optional scale
+    (V → Ω, an amplifier gain). Measurements use aliases.
 
 **Composite channel**
 :   A channel computed from others. Examples:
 
-    * carrier density and displacement field, driving two gates
-      ([tutorial 2](tutorials/rotated-gates.md));
+    * carrier density and displacement field, driving two gates (`nD.n`, `nD.D`;
+      [tutorial 2](tutorials/rotated-gates.md));
     * a resistance computed from a voltage and a current measured by two lock-ins
       ([tutorial 2](tutorials/rotated-gates.md#2-measure-the-current-too-rxx-vxx-i));
     * a temperature in °C on a controller that works in K.

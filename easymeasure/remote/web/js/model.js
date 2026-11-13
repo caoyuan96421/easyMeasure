@@ -47,8 +47,12 @@ export class Model {
 
   aliases() { return ((this.state.channels || {}).aliases) || []; }
   composites() { return ((this.state.channels || {}).composites) || []; }
+  /** Every channel of the backend, one list: {name, kind, access, readable, writable, dtype,
+   *  shape, unit, min, max, ramp_rate, choices, description, last, …}; kind is hardware,
+   *  config, action, alias, variable, map, read, parameter, user_action or special. */
+  channelList() { return ((this.state.channels || {}).channels) || []; }
   /** channels the composites define: kind "variable" (of a multivariate write), "map", "read" */
-  virtualChannels() { return ((this.state.channels || {}).virtual) || []; }
+  virtualChannels() { return this.channelList().filter((c) => ["variable", "map", "read"].includes(c.kind)); }
   /** multivariate composites with several variables (set together with set_many); the
    *  variables by their channel names (nD.n) */
   compositeGroups() {
@@ -62,38 +66,41 @@ export class Model {
   parameters() { return ((this.state.channels || {}).parameters) || []; }
   settings() { return this.state.settings || {}; }
 
-  writableChannels(numericOnly = false) {
-    const out = this.aliases().filter((a) => a.writable && !(numericOnly && a.dtype === "str")).map((a) => a.name);
-    return out.concat(this.virtualChannels().filter((v) => v.writable).map((v) => v.name));
+  /** names of the channels that fit pred: named channels first, the instruments' after */
+  _names(pred) {
+    const order = { alias: 0, variable: 1, map: 1, read: 1, parameter: 2, special: 3, user_action: 4,
+      hardware: 5, config: 6, action: 7 };
+    return this.channelList().filter(pred)
+      .sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9)).map((c) => c.name);
   }
-  readableChannels() {
-    return this.aliases().filter((a) => a.readable !== false).map((a) => a.name)
-      .concat(this.virtualChannels().map((v) => v.name))
-      .concat(this.parameters().map((p) => p.name));
+  /** channels with a value that can be written (not actions) */
+  writableChannels(numericOnly = false, hardware = true) {
+    return this._names((c) => c.writable && !["action", "user_action"].includes(c.kind) &&
+      !(numericOnly && c.dtype === "str") && (hardware || !["hardware", "config"].includes(c.kind)));
   }
-  rawChannels() {
-    return this.instruments().flatMap((i) => (i.channels || []).map((c) => `${i.name}.${c.name}`));
+  readableChannels(hardware = true) {
+    return this._names((c) => c.readable && c.kind !== "special" &&
+      (hardware || !["hardware", "config"].includes(c.kind)));
   }
-  aliasableChannels() {
-    return this.instruments().flatMap((i) => (i.channels || []).filter((c) => !c.config).map((c) => `${i.name}.${c.name}`));
-  }
+  /** actions: the user's (plain names), then the instruments' (dmm.reset) */
+  actionChannels() { return this._names((c) => c.kind === "user_action" || c.kind === "action"); }
+  /** the channels of the instruments (instrument.channel) */
+  rawChannels() { return this._names((c) => c.kind === "hardware" || c.kind === "config"); }
+  aliasableChannels() { return this.rawChannels(); }
   configChannels(writable = false) {
-    return this.instruments().flatMap((i) => (i.channels || []).filter((c) => c.config &&
-      (writable ? (c.access || "rw").includes("w") : (c.access || "rw").includes("r"))).map((c) => `${i.name}.${c.name}`));
+    return this._names((c) => c.kind === "config" && (writable ? c.writable : c.readable));
   }
-  /** name -> allowed values, for aliases and configuration channels that only take certain values */
+  /** name -> allowed values, for channels that only take certain values */
   channelChoices() {
     const out = {};
-    for (const a of this.aliases()) if (a.choices && a.choices.length) out[a.name] = a.choices;
-    for (const i of this.instruments()) for (const c of i.channels || []) if (c.allowed && c.allowed.length) out[`${i.name}.${c.name}`] = c.allowed;
+    for (const c of this.channelList()) if (c.choices && c.choices.length) out[c.name] = c.choices;
     return out;
   }
-  actions() {
-    return this.instruments().flatMap((i) => (i.actions || []).map((a) => `${i.name}.${a.name}`));
-  }
+  /** the instruments' actions (instrument.action) */
+  actions() { return this._names((c) => c.kind === "action"); }
   channelMeta(name) {
     const a = this.aliases().find((x) => x.name === name);
     if (a) return a;
-    return this.virtualChannels().find((x) => x.name === name) || null;
+    return this.channelList().find((x) => x.name === name) || null;
   }
 }

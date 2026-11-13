@@ -106,7 +106,7 @@ class Monitor:
         """Poll channels of the same instrument on the same worker."""
         try:
             info = self.channels.info(name)
-            target = info.get("target") or (name if info.get("kind") == "raw" else None)
+            target = info.get("target") or (name if info.get("kind") in ("hardware", "config") else None)
             if target:
                 return target.split(".", 1)[0]
             if info.get("kind") in ("variable", "map", "read"):

@@ -33,7 +33,9 @@ recorded and monitored. The table lists them below their composite:
 
 ## Multivariate write
 
-Several variables, whose names you choose, drive several hardware channels:
+Several variables, whose names you choose, drive several channels (the targets): any
+writable channels with a number - aliases (with their limits and ramp rates), other
+composite channels, or channels of an instrument (`src.V1`, written as they are):
 
 ??? example "From Python"
 
@@ -154,7 +156,8 @@ parameters too.
 
 ## Composite read
 
-A read-only channel computed from others: aliases, variables, mappings or other reads.
+A read-only channel computed from others: aliases, variables, mappings, other reads,
+parameters, or channels of an instrument (`lockin.X`).
 The classic case is a resistance from two lock-ins, one measuring the voltage
 ($V_{xx}$) and one the current ($I$): a composite read `Rxx` with the formula
 `Vxx / I` and unit Ω. In the editor, choose the type *Composite read* and type the

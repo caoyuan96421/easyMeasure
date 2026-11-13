@@ -41,7 +41,7 @@ def test_channels_and_interfaces(cyg):
 
 def test_outputs_limits_and_readback(cyg):
     be = cyg
-    raw = be.channels.set_raw
+    raw = be.channels.set
     raw("cyg.Ilimit1", 0.005)
     raw("cyg.voltage1", 10.0)
     assert be.read_channel("cyg.Vmeas1") == pytest.approx(10.0)       # relay open: the node
@@ -88,7 +88,7 @@ def test_outputs_limits_and_readback(cyg):
 def test_refusal_reports_the_firmware_message(cyg, monkeypatch):
     monkeypatch.setattr(emu_mod, "VMAX", 100.0)       # a firmware with a lower maximum
     with pytest.raises(ChannelError, match=r"refused VOLT 3,120.000000: VOLT: > 150.0 V max"):
-        cyg.channels.set_raw("cyg.voltage3", 120.0)
+        cyg.channels.set("cyg.voltage3", 120.0)
     assert cyg.instruments.get("cyg").state == "connected"
     assert cyg.read_channel("cyg.voltage3") == 0.0
 
@@ -97,15 +97,15 @@ def test_readings_wait_for_fresh_conversions(cyg):
     be = cyg
     d = be.instruments.get("cyg").driver
     assert d.settle_time() == pytest.approx(2 * adc_period(13))       # 2 × 76 ms
-    be.channels.set_raw("cyg.Ilimit2", 0.04)
-    be.channels.set_raw("cyg.output2", "ON")
+    be.channels.set("cyg.Ilimit2", 0.04)
+    be.channels.set("cyg.output2", "ON")
     t0 = time.monotonic()
-    be.channels.set_raw("cyg.voltage2", 20.0)
+    be.channels.set("cyg.voltage2", 20.0)
     assert be.read_channel("cyg.Imeas2") == pytest.approx(2e-3)       # not the old 0
     assert time.monotonic() - t0 >= adc_period(13)
     # without settling the reading right after a change is the stale one
     be.update_instrument("cyg", options={"load_ohm": 1e4, "settle": False})
-    be.channels.set_raw("cyg.voltage2", 30.0)
+    be.channels.set("cyg.voltage2", 30.0)
     assert be.read_channel("cyg.Imeas2") == pytest.approx(2e-3)
     time.sleep(2 * adc_period(13))
     assert be.read_channel("cyg.Imeas2") == pytest.approx(3e-3)
@@ -126,24 +126,24 @@ def test_actions(cyg):
     be = cyg
     e = emu()
     for k in (1, 4):
-        be.channels.set_raw("cyg.output%d" % k, "ON")
+        be.channels.set("cyg.output%d" % k, "ON")
     with pytest.raises(ChannelError, match="switch every output off first.*1, 4"):
-        be.run_action("cyg.auto_calibrate")
-    be.run_action("cyg.all_off")
+        be.write_channel("cyg.auto_calibrate")
+    be.write_channel("cyg.all_off")
     assert e.on == [False] * 8
-    be.run_action("cyg.auto_calibrate")
+    be.write_channel("cyg.auto_calibrate")
     assert e.cal_runs == 1
-    be.channels.set_raw("cyg.voltage5", 42.0)
+    be.channels.set("cyg.voltage5", 42.0)
     be.write_channel("cyg.Vfilter", 0.3)
-    be.run_action("cyg.reset")
+    be.write_channel("cyg.reset")
     assert e.v_set == [0.0] * 8 and be.read_channel("cyg.Vfilter") == 1.0
     assert e.unknown == []
 
 
 def test_sweep_over_one_output(cyg):
     be = cyg
-    be.channels.set_raw("cyg.Ilimit3", 0.04)
-    be.channels.set_raw("cyg.output3", "ON")
+    be.channels.set("cyg.Ilimit3", 0.04)
+    be.channels.set("cyg.output3", "ON")
     be.define_alias(name="V3", target="cyg.voltage3", min=0, max=20)
     be.define_alias(name="I3", target="cyg.Imeas3")
     be.queue_add({"kind": "sweep", "definition": {"name": "cyg", "dimensions": [

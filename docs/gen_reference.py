@@ -88,16 +88,15 @@ COMMAND_GROUPS = [
                        "wizard_save", "wizard_try", "wizard_delete"]),
     ("Instruments", ["add_instrument", "update_instrument", "remove_instrument",
                      "connect_instrument", "disconnect_instrument", "reconnect_instrument",
-                     "list_instruments", "run_action", "raw_query", "raw_write"]),
+                     "list_instruments", "raw_query", "raw_write"]),
     ("Channels", ["read_channel", "write_channel", "set_many", "stop_ramps", "ramp_state",
-                  "query_channel",
                   "channel_info", "list_channels"]),
     ("Aliases and composites", ["define_alias", "remove_alias", "define_composite",
                                 "check_composite", "remove_composite"]),
-    ("Parameters", ["define_parameter", "check_parameter", "set_parameter", "remove_parameter",
+    ("Parameters", ["define_parameter", "check_parameter", "remove_parameter",
                     "list_parameters"]),
     ("User actions", ["define_user_action", "check_user_action", "remove_user_action",
-                      "move_user_action", "run_user_action", "abort_user_action",
+                      "move_user_action", "abort_user_action",
                       "list_user_actions", "check_code"]),
     ("Monitor", ["monitor_add", "monitor_remove", "monitor_list", "monitor_history"]),
     ("Sweeps and queue", ["validate_sweep", "queue_add", "queue_remove", "queue_move",
@@ -248,16 +247,17 @@ def driver_page(name: str, d: dict) -> str:
                  "channels or change units; the front ends follow.\n" % src)
     parts.append(channel_table(d["channels"], False))
     parts.append("## Configuration channels\n")
-    parts.append("Settings: read and set directly (`write_channel(\"inst.<name>\", value)`, "
-                 "sweep pre/post constants), never aliased or swept.\n")
+    parts.append("Settings: channels like the others (`write_channel(\"inst.<name>\", value)`, "
+                 "sweep pre/post constants), written as they are.\n")
     parts.append(channel_table(d["channels"], True))
     parts.append("## Actions\n")
     if d["actions"]:
         parts.append("| action | description |\n|---|---|")
         for a in d["actions"]:
             parts.append("| `%s` | %s |" % (a["name"], md_escape(a.get("description", ""))))
-        parts.append("\nRun with `run_action(ref=\"<instrument>.<action>\")` or "
-                     "`action('<instrument>.<action>')` in scripts.\n")
+        parts.append("\nActions are write-only channels: writing one runs it, "
+                     "`write_channel(name=\"<instrument>.<action>\")`, or "
+                     "`set('<instrument>.<action>')` in scripts.\n")
     else:
         parts.append("_none_\n")
     parts.append("## Python API\n")

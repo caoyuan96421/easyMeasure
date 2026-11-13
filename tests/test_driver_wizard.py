@@ -182,7 +182,7 @@ def test_line_protocol_scale_vector_map_init_and_shutdown(backend):
     be.define_alias(name="S", target="lb.setpoint")
     be.write_channel("S", 1.25, ramp=False)
     assert box.v == 1.25 and be.read_channel("S") == pytest.approx(1.25)
-    be.run_action("lb.zero")
+    be.write_channel("lb.zero")
     assert box.v == 0.0
     be.write_channel("S", 2.0, ramp=False)
     be.disconnect_instrument("lb")
@@ -348,9 +348,9 @@ def test_generic_scpi_template_actions_and_error_queue(backend):
         be.read_channel("g.value")                  # MEAS? is not a 2400 command: no reply
     assert be.instruments.get("g").state == "connected"                # and no reconnect
     e.out.nplc = 7.0
-    be.run_action("g.reset")
+    be.write_channel("g.reset")
     assert e.out.nplc == 1.0 and "*RST" in e.log
-    be.run_action("g.clear_status")
+    be.write_channel("g.clear_status")
 
 
 def test_wizard_commands_are_admin_only():

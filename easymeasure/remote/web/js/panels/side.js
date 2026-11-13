@@ -155,7 +155,7 @@ export class MonitorPanel {
 
   _state(st) {
     const names = (st.monitor || []).map((m) => m.channel);
-    this.list.replaceChildren(...this.app.model.readableChannels().concat(this.app.model.rawChannels()).map((n) => h("option", { value: n })));
+    this.list.replaceChildren(...this.app.model.readableChannels().map((n) => h("option", { value: n })));
     for (const n of names) {
       if (!this.tiles.has(n)) {
         const t = new MonitorTile(n, (x) => this._remove(x));
@@ -452,7 +452,7 @@ export class ManualPanel {
       }
       this.actionsBar.hidden = !acts.length;
     }
-    const canRun = this.conn.can("run_user_action"), canAbort = this.conn.can("abort_user_action");
+    const canRun = this.conn.can("write_channel"), canAbort = this.conn.can("abort_user_action");
     for (const a of acts) {
       const b = this.actionBtns.get(a.name);
       if (!b) continue;
@@ -478,7 +478,7 @@ export class ManualPanel {
     this.say(`running ${name} …`);
     this.app.model.scheduleRefresh();
     try {
-      const r = await this.conn.request("run_user_action", { name }, { timeout: 7 * 24 * 3600 * 1000 });
+      const r = await this.conn.request("write_channel", { name }, { timeout: 7 * 24 * 3600 * 1000 });
       this.say(r.status === "finished" ? `✔ ${name} done (${fmt(r.elapsed || 0, 3)} s)` : `✘ ${name} ${r.status}${r.error ? ": " + r.error : ""}`);
     } catch (e) { this.say(`✘ ${name}: ${e.message}`); }
     this.app.model.scheduleRefresh();
@@ -497,7 +497,7 @@ export class ManualPanel {
         let ed;
         if (p.formula) ed = h("span", { class: "muted man-pformula", title: `computed: ${p.name} = ${p.formula}` });
         else {
-          ed = h("input", { class: "man-num man-pvalue", type: "text", "data-cmd": "set_parameter",
+          ed = h("input", { class: "man-num man-pvalue", type: "text", "data-cmd": "write_channel",
             title: "type a value and press Enter (moves no instrument)" });
           ed.addEventListener("keydown", (ev) => { if (ev.key === "Enter") this.setParameter(p.name, ed.value); });
         }
@@ -523,7 +523,7 @@ export class ManualPanel {
     const value = Number(String(text).trim());
     if (!String(text).trim() || !Number.isFinite(value)) { this.say(`✘ ${name}: "${text}" is not a number`); return; }
     try {
-      const v = await this.conn.request("set_parameter", { name, value });
+      const v = await this.conn.request("write_channel", { name, value });
       this.say(`${name} = ${fmt(v, 8)}`);
     } catch (e) { this.say(`✘ ${name}: ${e.message}`); }
     this.app.model.scheduleRefresh();

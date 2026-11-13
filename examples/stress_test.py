@@ -43,7 +43,7 @@ EX = ROOT / "examples"
 
 ACTIONS = ["dmm.reset", "dmm.trigger", "lockin.auto_phase", "lockin.auto_gain", "spec.preset",
            "cam.snap", "awg.start", "awg.stop", "awg.trigger", "magnet.hold", "src.clear_status",
-           "chaos.ok", "chaos.fail", "chaos.hang", "chaos.crash", "dmm.nope"]
+           "chaos.ok", "chaos.fail", "chaos.stall", "chaos.explode", "dmm.nope"]
 CONFIG_WRITES = [("dmm.nplc", lambda: random.choice([0.1, 1, 10])),
                  ("lockin.sensitivity", lambda: random.choice(["1e-4", "1e-3", "1e-2", "bad"])),
                  ("spec.points", lambda: random.choice([51, 201, 401, 0])),
@@ -55,9 +55,9 @@ CONFIG_WRITES = [("dmm.nplc", lambda: random.choice([0.1, 1, 10])),
 def small_sweep(i):
     hooks = random.random() < 0.4
     return {"name": "stress_%d" % i,
-            "pre": {"hook": "action('dmm.reset')\naction('awg.start')" if hooks else "",
+            "pre": {"hook": "set('dmm.reset')\nset('awg.start')" if hooks else "",
                     "record": ["dmm.nplc", "lockin.sensitivity"] if hooks else []},
-            "post": {"hook": "action('awg.stop')" if hooks else "",
+            "post": {"hook": "set('awg.stop')" if hooks else "",
                      "constants": [{"channel": "Vg", "value": 0.0}]},
             "dimensions": [
         {"points": random.randint(5, 25), "sweep": [{"channel": "Vg", "start": -0.3, "stop": 0.3}],
@@ -74,8 +74,8 @@ SCRIPTS = [
     "raise RuntimeError('deliberate script failure')",
     "x = 0\nwhile True:\n    x += 1",          # needs an abort
     "set('Vg', 99)",                           # limit violation
-    "action('lockin.auto_gain')\nset_raw('dmm.nplc', 2)\nlog(get('lockin.sensitivity'))",
-    "action('chaos.hang')",                    # hanging action inside a script
+    "set('lockin.auto_gain')\nset('dmm.nplc', 2)\nlog(get('lockin.sensitivity'))",
+    "set('chaos.stall')",                    # hanging action inside a script
 ]
 
 
@@ -150,7 +150,7 @@ def main():
                 try:
                     if op < 0.08:
                         try:
-                            c.call("run_action", _timeout=60, ref=random.choice(ACTIONS))
+                            c.call("write_channel", _timeout=60, name=random.choice(ACTIONS))
                             bump("actions")
                         except TimeoutError:
                             raise
@@ -279,7 +279,7 @@ def main():
             "name": "final_check", "on_read_error": "nan", "dimensions": [
                 {"points": 20, "sweep": [{"channel": "Vg", "start": -0.2, "stop": 0.2}],
                  "record": ["I", "spectrum"]}],
-            "pre": {"hook": "action('dmm.reset')"}}}, start=True)
+            "pre": {"hook": "set('dmm.reset')"}}}, start=True)
         for _ in range(600):
             st = c.call("queue_state")
             if st["state"] == "idle" and st["history"][-1]["name"] == "final_check":

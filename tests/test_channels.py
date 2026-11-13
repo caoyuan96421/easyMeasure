@@ -22,15 +22,14 @@ def test_limits_and_protection(demo):
         ch.set("Vg", float("nan"))
     with pytest.raises(ChannelError):
         ch.set("I", 1.0)                       # read-only target
-    with pytest.raises(ChannelError):
-        ch.set("src.V1", 1.0)                  # raw channels are not settable
     with pytest.raises(LimitError):
         ch.set("Vg", 1e9)
-    # configuration channels are set directly and cannot be aliased
+    # channels of instruments are written as they are, configuration channels too,
+    # and can be aliased
     ch.set("src.output", "OFF")
     assert ch.get("src.output") == "OFF"
-    with pytest.raises(ChannelError, match="configuration"):
-        ch.add_alias(Alias("out", "src.output"))
+    ch.add_alias(Alias("out", "src.output"))
+    assert ch.get("out") == "OFF"
     with pytest.raises(ChannelError):
         ch.set("Vg", "abc")
     # value unchanged after refusals
@@ -151,12 +150,11 @@ def test_review_ramp_bypasses_closed(demo):
     ch.add_alias(Alias("Vr", "src.V3", max=1.0, ramp_rate=0.1), replace=True)
     with pytest.raises(LimitError):
         ch.set("Vr", float("-inf"))
-    # raw query / raw write respect alias limits and invalidate the cache
-    with pytest.raises(LimitError):
-        demo.query_channel("src.V1", 50.0)
-    with pytest.raises(LimitError):
-        ch.set_raw("src.V1", -7.0)
-    ch.set_raw("src.V1", -1.0)
+    # a write of the instrument's channel itself is plain (no alias limits) and
+    # makes the alias read the instrument back
+    ch.set("src.V1", -7.0)
+    assert ch.get("src.V1") == -7.0
+    ch.set("src.V1", -1.0)
     seen = []
     orig = src.write
     src.write = lambda c, v: (seen.append(v), orig(c, v))
@@ -216,29 +214,33 @@ def test_actions_and_config_channels(demo):
     cfg = {c["name"] for c in info["dmm"]["channels"] if c["config"]}
     assert cfg == {"nplc", "function", "idn"}
     # actions run once (never retried), failures/hangs/crashes are contained
-    be.run_action("chaos.ok")
+    be.write_channel("chaos.ok")
     assert be.instruments.get("chaos").driver.actions_done == 1
-    for bad in ("chaos.fail", "chaos.crash", "chaos.hang", "chaos.nope", "nodot"):
+    for bad in ("chaos.fail", "chaos.explode", "chaos.stall", "chaos.nope", "nodot"):
         with pytest.raises(Exception):
-            be.run_action(bad)
-    be.run_action("chaos.ok")
+            be.write_channel(bad)
+    be.write_channel("chaos.ok")
     # an action makes cached alias values stale -> next ramp reads back
     be.write_channel("Vg", 0.2)
     assert be.channels.last_value("Vg") == pytest.approx(0.2)
-    be.run_action("src.clear_status")
+    be.write_channel("src.clear_status")
     assert be.channels.last_value("Vg") is None
     # config channel round trip, including through the dmm reset action
     be.write_channel("dmm.nplc", 10)
     assert be.read_channel("dmm.nplc") == 10
-    be.run_action("dmm.reset")
+    be.write_channel("dmm.reset")
     assert be.read_channel("dmm.nplc") == 1
-    # non-config raw channels still cannot be set directly
-    with pytest.raises(ChannelError):
-        be.write_channel("src.V1", 0.1)
+    # every channel of an instrument is written as it is; actions cannot be read
+    be.write_channel("src.V1", 0.1)
+    assert be.read_channel("src.V1") == pytest.approx(0.1)
+    with pytest.raises(ChannelError, match="action"):
+        be.read_channel("dmm.reset")
+    with pytest.raises(ChannelError, match="read-only"):
+        be.write_channel("dmm.idn", "x")
     # actions from scripts / hooks (the hang above replaced the driver object, so
     # count relative to the current one)
     n = be.instruments.get("chaos").driver.actions_done
-    be.queue_add({"kind": "script", "code": "action('dmm.trigger')\ninstrument('chaos').action('ok')"},
+    be.queue_add({"kind": "script", "code": "set('dmm.trigger')\nset('chaos.ok')"},
                  start=True)
     assert be.queue.wait_idle(20)
     assert be.queue_state()["history"][-1]["status"] == "finished"
