@@ -5,7 +5,7 @@ HOLDING); a quench raises :class:`~easymeasure.common.errors.InstrumentFault` an
 stops sweeps, scripts and the queue until ``clear_quench``.  Written from the
 Model 420 manual (its command set is not the 430's; see
 :mod:`easymeasure.drivers._ami420_base`).  For a magnet with a persistent switch
-use ``ami420_persistent``.  RS-232 (9600 8N1 by default) or IEEE-488.
+use ``ami420_Persistent``.  RS-232 (9600 8N1 by default) or IEEE-488.
 """
 
 from ._ami420_base import AMI420Base, memory_file  # noqa: F401

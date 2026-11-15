@@ -4,7 +4,7 @@ Field changes only in driven mode (switch heater on); ``enter_persistent`` and
 ``exit_persistent`` switch between the modes in the order that cannot quench the
 magnet.  The 420 does not know the persistent field: the driver records it (see
 :mod:`easymeasure.drivers._ami420_base`).  For a magnet without a switch use
-``ami420``.
+``ami420_noPersistent``.
 """
 
 from ._ami420_base import AMI420Base, memory_file  # noqa: F401

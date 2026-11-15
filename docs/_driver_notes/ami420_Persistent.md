@@ -1,12 +1,12 @@
 American Magnetics Model 420 power supply programmer for a superconducting magnet
-**with a persistent switch**. For a magnet without one, use [`ami420`](ami420.md).
+**with a persistent switch**. For a magnet without one, use [`ami420_noPersistent`](ami420_noPersistent.md).
 There is no setting for this: the driver you choose says whether there is a switch.
 The 420 cannot be asked, so the choice is yours. The driver was written from the
 Model 420 manual (Rev. 7, chapter 4).
 
 The 420 is not an older 430. Many of its commands differ, and when it gets a query it
 does not know, it beeps, logs error -201 and **sends no reply**, so every such query
-ends in a timeout. That is what happens with an `ami430` driver on a 420, which is why the 420 and 430
+ends in a timeout. That is what happens with the `ami430` driver on a 420, which is why the 420 and 430
 drivers each refuse the other model when they connect.
 
 The magnet's configuration (coil constant, current limit, ramp rate, switch heater

@@ -1,5 +1,5 @@
 """American Magnetics Model 420 power supply programmer: the logic of the two
-drivers, ``ami420`` (a magnet without a persistent switch) and ``ami420_persistent``
+drivers, ``ami420_noPersistent`` (a magnet without a persistent switch) and ``ami420_Persistent``
 (with one).  Which one is the magnet's setup, not an option.
 
 Written from the Model 420 manual (Rev. 7, chapter 4, "Remote Interface
@@ -15,14 +15,14 @@ That is why the ``ami430`` driver times out on a 420.  What matters here:
 * ``STATE?`` codes: 8 is HEATING SWITCH and 9 AT ZERO (on the 430, 8 is AT ZERO);
   there is no "cooling" state and no cooling time;
 * no query for the Load menu's "Persistent Switch Installed" (and ``PSwitch 0`` is
-  accepted without a switch) - hence the two drivers.  ``ami420`` refuses a
+  accepted without a switch) - hence the two drivers.  ``ami420_noPersistent`` refuses a
   programmer whose switch heater is on (the 420 only heats with a switch).
 
 Field
     Writing ``field`` sets the programmed field and starts the ramp (``RAMP``) and
     returns at once: ``status`` reads ``RAMPING``, then ``HOLDING``.
 
-Persistent switch (``ami420_persistent``)
+Persistent switch (``ami420_Persistent``)
     The 420 does not remember the magnet's current once the switch is cold (its
     manual tells the operator to write it down).  The driver does that: entering
     persistent mode records the current in a file of the easyMeasure home folder,
@@ -156,7 +156,7 @@ class AMI420Base(SCPIInstrument):
         idn = super().identify()
         u = idn.upper()
         if "430" in u and "420" not in u:
-            raise IOError("%s: %r is a Model 430: use the ami430 (or ami430_persistent) driver" % (self.name, idn))
+            raise IOError("%s: %r is a Model 430: use the ami430 driver" % (self.name, idn))
         return idn
 
     def connect(self):
@@ -181,11 +181,11 @@ class AMI420Base(SCPIInstrument):
         if not self.PERSISTENT:
             if heater:
                 raise IOError("%s: the switch heater is on, so the magnet has a persistent "
-                              "switch: use the ami420_persistent driver" % self.name)
+                              "switch: use the ami420_Persistent driver" % self.name)
             if self.memory is not None:
                 raise IOError("%s: a persistent field (%.5g T) is on record for this "
                               "programmer (%s): the magnet was left persistent - use the "
-                              "ami420_persistent driver" % (self.name, self.memory["field"],
+                              "ami420_Persistent driver" % (self.name, self.memory["field"],
                                                             self.memory_path))
         elif heater and self.memory is not None:
             log.warning("%s: the switch heater is on: the magnet is driven, the recorded "
@@ -430,7 +430,7 @@ class AMI420Base(SCPIInstrument):
         s = self._tick(force=True)
         self._refuse_when_faulted(what)
         if not self.switch_installed:
-            raise ChannelError("%s: no persistent switch (the ami420_persistent driver is for "
+            raise ChannelError("%s: no persistent switch (the ami420_Persistent driver is for "
                                "a magnet with one)" % self.name)
         self._busy_checks(s)
         return s

@@ -61,8 +61,8 @@ INTERFACE_NAMES = {
 ROLE = {0: "viewer", 1: "operator", 2: "admin", None: "local only"}
 
 HARDWARE_ORDER = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a",
-                  "yokogawa7651", "hp4145", "e8358a", "ami430", "ami430_persistent", "ami420",
-                  "ami420_persistent", "ni6211", "ni63xx",
+                  "yokogawa7651", "hp4145", "e8358a", "ami430", "ami420_noPersistent",
+                  "ami420_Persistent", "ni6211", "ni63xx",
                   "cygnus16430", "scpi_generic"]
 
 KIND = {
@@ -72,18 +72,17 @@ KIND = {
     "hp4145": "Semiconductor parameter analyzer", "ni6211": "Multifunction DAQ",
     "ni63xx": "Multifunction DAQ (X Series)", "cygnus16430": "8-channel supply",
     "scpi_generic": "Any SCPI instrument (configured by options)",
-    "ami430": "Magnet supply, no persistent switch",
-    "ami430_persistent": "Magnet supply with a persistent switch",
-    "ami420": "Magnet supply, no persistent switch",
-    "ami420_persistent": "Magnet supply with a persistent switch",
+    "ami430": "Superconducting magnet supply",
+    "ami420_noPersistent": "Magnet supply, no persistent switch",
+    "ami420_Persistent": "Magnet supply with a persistent switch",
     "e8358a": "Vector network analyzer",
 }
 
 SHORT_NAME = {"keithley2400": "smu", "keysight_b2901": "smu", "keysight_b2902": "smu2",
               "sr830": "lockin", "hp34401a": "dmm", "yokogawa7651": "src", "hp4145": "spa",
               "ni6211": "daq", "ni63xx": "daq", "cygnus16430": "cyg", "scpi_generic": "inst",
-              "ami430": "magnet", "ami430_persistent": "magnet", "ami420": "magnet",
-              "ami420_persistent": "magnet", "e8358a": "vna"}
+              "ami430": "magnet", "ami420_noPersistent": "magnet",
+              "ami420_Persistent": "magnet", "e8358a": "vna"}
 
 COMMAND_GROUPS = [
     ("Connection and state", ["ping", "get_state", "get_settings", "set_settings", "shutdown",

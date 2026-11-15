@@ -43,7 +43,7 @@ module).
   PowerPoint slides at the end of every run.
 * **Ready-made hardware drivers** (Keithley 2400, Keysight B2901/B2902, SR830/SR850,
   HP 34401A, NI USB-6211, Yokogawa 7651, HP 4145/4155, Agilent E8358A PNA network
-  analyzer, AMI 430 and AMI 420 magnet supplies, with or without a persistent switch), each tested against an emulator built from the
+  analyzer, AMI 430 and AMI 420 magnet supplies), each tested against an emulator built from the
   instrument's programming manual; mode switches rename channels and change units
   and the front ends follow. A **Driver Wizard** builds drivers for other
   command-based instruments from a form (templates, init script, try-it).

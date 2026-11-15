@@ -1,11 +1,11 @@
 American Magnetics Model 420 power supply programmer for a superconducting magnet
 **without a persistent switch**. For a magnet with one, use
-[`ami420_persistent`](ami420_persistent.md). There is no setting for this: the 420
+[`ami420_Persistent`](ami420_Persistent.md). There is no setting for this: the 420
 cannot be asked, so the driver you choose says it.
 
 It was written from the Model 420 manual (Rev. 7, chapter 4). The 420 is not an
 older 430: when it gets a query it does not know, it beeps and sends no reply, so the
-`ami430` drivers time out on it (they now refuse a 420 when connecting).
+`ami430` driver times out on it (it now refuses a 420 when connecting).
 
 **Address.**
 
@@ -16,10 +16,10 @@ older 430: when it gets a query it does not know, it beeps and sends no reply, s
 Field units (kG or T) and ramp-rate units are read and converted: `field` is always
 in T and `ramp_rate` in T/min.
 
-**Refused at connection**, with a message naming `ami420_persistent`, when:
+**Refused at connection**, with a message naming `ami420_Persistent`, when:
 
 * the programmer's switch heater is on (the 420 heats only with a switch installed);
-* a persistent field is on record for this address. `ami420_persistent` leaves a
+* a persistent field is on record for this address. `ami420_Persistent` leaves a
   record when it puts a magnet in persistent mode.
 
 ## Setting the field

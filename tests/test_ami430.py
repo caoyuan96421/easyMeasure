@@ -17,7 +17,7 @@ FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
         "heat_time": 20.0, "cool_time": 30.0}
 
 
-def add_magnet(be, name="mag", driver="ami430_persistent", **opts):
+def add_magnet(be, name="mag", driver="ami430", **opts):
     o = dict(FAST, **opts)
     be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
@@ -150,25 +150,28 @@ def test_the_emulator_quenches_a_naive_sequence(backend):
     wait(lambda: emu.quench_count == 1, what="emulator quench")
 
 
-def test_the_driver_must_match_the_programmer(backend):
-    """Two drivers, no option: the programmer's Load menu (PSwitch:INSTalled?) must
-    agree with the one chosen, or connecting is refused with the right one's name."""
-    h, emu = add_magnet(backend, driver="ami430", switch=False)
-    assert "switch" not in h.channels and "enter_persistent" not in h.actions
+def test_the_switch_is_read_from_the_programmer(backend):
+    """No option: PSwitch:INSTalled? decides whether the persistent-switch channels and
+    actions are there."""
+    h, emu = add_magnet(backend, "plain", switch=False)
+    assert "switch" not in h.channels and "operation" not in h.channels
+    assert "enter_persistent" not in h.actions
     with pytest.raises(ChannelError, match="no action"):
         h.run_action("enter_persistent")
     h.write("field", 0.5)
     wait(lambda: h.read("status") == "HOLDING")
     assert h.read("field") == pytest.approx(0.5) and h.read("current") == pytest.approx(5.0)
     assert not emu.unknown, emu.unknown
-    # the wrong driver for each programmer
-    backend.add_instrument("m2", "ami430", "SIM::ami_m2", dict(FAST))           # has a switch
-    h2 = backend.instruments.get("m2")
-    assert h2.state == "error" and "use the ami430_persistent driver" in h2.last_error
-    backend.add_instrument("m3", "ami430_persistent", "SIM::ami_m3", dict(FAST, switch=False))
-    h3 = backend.instruments.get("m3")
-    assert h3.state == "error" and "without a persistent switch" in h3.last_error
-    assert "use the ami430 driver" in h3.last_error
+    h2, emu2 = add_magnet(backend, "pers")
+    assert {"switch", "operation", "supply_current"} <= set(h2.channels)
+    assert {"enter_persistent", "exit_persistent"} <= set(h2.actions)
+    assert h2.read("switch") == "ON"
+    # the Load menu changed, reconnected: the channel list follows
+    emu2.has_switch = False
+    emu2.heater = False
+    emu2.switch = "none"
+    backend.reconnect_instrument("pers")
+    assert "switch" not in h2.channels and "enter_persistent" not in h2.actions
 
 
 def test_heating_or_cooling_refuses_ramps(backend):

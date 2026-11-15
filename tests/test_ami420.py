@@ -14,7 +14,7 @@ import time
 import pytest
 
 from easymeasure.common.errors import ChannelError, InstrumentFault
-from easymeasure.drivers.ami420_persistent import memory_file
+from easymeasure.drivers.ami420_Persistent import memory_file
 from easymeasure.drivers.emulators import ensure_emulator
 
 FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
@@ -22,7 +22,7 @@ FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
         "heat_time": 15.0, "heater": True}
 
 
-def add_magnet(be, name="mag", driver="ami420_persistent", **opts):
+def add_magnet(be, name="mag", driver="ami420_Persistent", **opts):
     o = dict(FAST, **opts)
     be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
@@ -202,7 +202,7 @@ def test_cooling_is_waited_for(backend):
 
 def test_without_a_switch(backend):
     """ami420: no persistent channels or actions, the measured field, nothing probed."""
-    h, emu = add_magnet(backend, driver="ami420", switch=False)
+    h, emu = add_magnet(backend, driver="ami420_noPersistent", switch=False)
     assert "switch" not in h.channels and "persistent_field" not in h.channels
     assert "enter_persistent" not in h.actions
     with pytest.raises(ChannelError, match="no action"):
@@ -216,9 +216,9 @@ def test_without_a_switch(backend):
 
 def test_the_plain_driver_refuses_a_magnet_with_a_switch_in_use(backend):
     # heater on: the 420 only heats with a switch
-    backend.add_instrument("a", "ami420", "SIM::ami_a", dict(FAST))
+    backend.add_instrument("a", "ami420_noPersistent", "SIM::ami_a", dict(FAST))
     h = backend.instruments.get("a")
-    assert h.state == "error" and "use the ami420_persistent driver" in h.last_error
+    assert h.state == "error" and "use the ami420_Persistent driver" in h.last_error
     # a magnet this driver left persistent (on record)
     p, emu = add_magnet(backend, "b")
     p.write("field", 0.4)
@@ -226,10 +226,10 @@ def test_the_plain_driver_refuses_a_magnet_with_a_switch_in_use(backend):
     p.run_action("enter_persistent")
     wait(lambda: p.read("status") == "PERSISTENT")
     backend.remove_instrument("b")
-    backend.add_instrument("b", "ami420", "SIM::ami_b", dict(FAST))
+    backend.add_instrument("b", "ami420_noPersistent", "SIM::ami_b", dict(FAST))
     h = backend.instruments.get("b")
     assert h.state == "error" and "on record" in h.last_error
-    assert "use the ami420_persistent driver" in h.last_error
+    assert "use the ami420_Persistent driver" in h.last_error
 
 
 def test_quench_aborts_and_is_cleared(backend):
@@ -258,9 +258,9 @@ def test_each_driver_refuses_the_other_model(backend):
     emu = ensure_emulator("SIM::ami_x", 0, lambda: AMI420Emulator(FAST))
     backend.add_instrument("x", "ami430", "SIM::ami_x", dict(FAST))
     h = backend.instruments.get("x")
-    assert h.state != "connected" and "use the ami420 (or ami420_persistent)" in h.last_error
+    assert h.state != "connected" and "use the ami420_noPersistent or ami420_Persistent" in h.last_error
     assert emu.beeps == 0 and not emu.unknown
     from easymeasure.drivers.emulators.ami430 import AMI430Emulator
     ensure_emulator("SIM::ami_y", 0, lambda: AMI430Emulator(FAST))
-    backend.add_instrument("y", "ami420", "SIM::ami_y", dict(FAST))
-    assert "use the ami430 (or ami430_persistent)" in backend.instruments.get("y").last_error
+    backend.add_instrument("y", "ami420_noPersistent", "SIM::ami_y", dict(FAST))
+    assert "use the ami430 driver" in backend.instruments.get("y").last_error
