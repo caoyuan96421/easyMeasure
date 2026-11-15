@@ -201,20 +201,26 @@ def test_cooling_is_waited_for(backend):
     assert h.read("field") == pytest.approx(0.5)   # recorded before the heater went off
 
 
-def test_without_a_switch(backend):
+def test_whether_a_switch_is_installed_is_read_from_the_programmer(backend):
+    """No query for it on the 420: a heater that is on says yes; with the heater off,
+    ``PSwitch 0`` (no change) is refused with -107 when the Load menu says none."""
     h, emu = add_magnet(backend, switch=False)
     assert h.read("IsPersistentSwitchInstalled") == "No" and h.read("switch") == "NONE"
+    assert list(emu.errors) == [] and emu.beeps == 1             # the probe's -107, drained
     with pytest.raises(ChannelError, match="no persistent switch"):
         h.run_action("enter_persistent")
+    with pytest.raises(ChannelError, match="read-only"):
+        h.write("IsPersistentSwitchInstalled", "Yes")
     h.write("field", 0.5)
     wait(lambda: h.read("status") == "HOLDING")
-    assert h.read("field") == pytest.approx(0.5)
-    # a switch configured in the Load menu, heater off: assumed (the safe side)
-    h2, _ = add_magnet(backend, "m2", heater=False)
-    assert h2.read("IsPersistentSwitchInstalled") == "Yes"
-    h3, _ = add_magnet(backend, "m3", heater=False, IsPersistentSwitchInstalled="No")
-    h3.write("field", 0.2)
-    wait(lambda: h3.read("status") == "HOLDING")
+    assert h.read("field") == pytest.approx(0.5)                 # not NaN: no switch
+    # a switch, heater off: the probe is accepted and changes nothing
+    h2, emu2 = add_magnet(backend, "m2", heater=False)
+    assert h2.read("IsPersistentSwitchInstalled") == "Yes" and emu2.beeps == 0
+    assert not emu2.heater and not any(e.startswith("PSwitch") for _, e in emu2.history)
+    # heater on: no probe at all
+    h3, emu3 = add_magnet(backend, "m3")
+    assert h3.read("IsPersistentSwitchInstalled") == "Yes" and "PSwitch 0" not in emu3.log
 
 
 def test_quench_aborts_and_is_cleared(backend):

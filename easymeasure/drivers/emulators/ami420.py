@@ -244,7 +244,7 @@ class AMI420Emulator(SCPIEmulator):
         if v not in ("0", "1"):
             raise SCPIError(-103, "Non-boolean argument")
         on = v == "1"
-        if on and not self.has_switch:
+        if not self.has_switch:              # (assumed for PSwitch 0 too)
             raise SCPIError(-107, "No switch installed")
         if on == self.heater:
             return
