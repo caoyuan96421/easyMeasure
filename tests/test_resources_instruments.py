@@ -8,8 +8,8 @@ from easymeasure.backend.registry import DriverRegistry
 from easymeasure.backend.instrument import (ChannelSpec, Instrument, InstrumentManager,
                                             coerce_value)
 from easymeasure.backend.resources import FairLock, ResourceManager
-from easymeasure.common.errors import (ChannelError, InstrumentError, InstrumentTimeout,
-                                       ResourceBusyError, ResourceError)
+from easymeasure.common.errors import (ChannelError, InstrumentError, InstrumentNotConnected,
+                                       InstrumentTimeout, ResourceBusyError, ResourceError)
 
 
 # ---------------------------------------------------------------- resources --
@@ -381,3 +381,119 @@ def test_review_shared_bus_not_invalidated_by_other_instrument():
     src.resource.invalidate("forced reopen")
     t.join()
     assert _DEVICES[("SB", 1)].volts[:2] == [0.3, 0.3]
+
+
+def test_disconnect_holds_until_connected_again(mgr):
+    """The user's Disconnect: no read, retry or reconnect connects it again, also
+    when it was in error; its port is freed for other programs."""
+    class Shy(Instrument):
+        CHANNELS = [ChannelSpec("x", "r")]
+        fail = True
+        connects = 0
+
+        def connect(self):
+            Shy.connects += 1
+            if Shy.fail:
+                raise IOError("no reply to *IDN?")
+
+        def _read_x(self):
+            return 5.0
+    mgr.drivers.register("shy", Shy)
+    h = mgr.add("s", "shy", "SIM::held", options={"retries": 3, "retry_delay": 0})
+    assert h.state == "error"
+    n = Shy.connects
+    h.disconnect(release=True, hold=True)
+    assert h.state == "disconnected" and h.held and h.describe()["held"]
+    assert not any(r["address"] == "SIM::held" for r in mgr.resources.list())  # port closed
+    Shy.fail = False
+    for call in (lambda: h.read("x"), lambda: h.run_action("nope"),
+                 lambda: h.raw_query("*IDN?")):
+        with pytest.raises((InstrumentNotConnected, ChannelError)):
+            call()
+    assert Shy.connects == n and h.state == "disconnected"     # nothing reconnected it
+    assert h.stats["retries"] == 0 and h.stats["reconnects"] == 0
+    h.connect()                                                 # the user's Connect
+    assert not h.held and h.read("x") == 5.0
+    # the same after a successful connection, and Reconnect ends it too
+    h.disconnect(release=True, hold=True)
+    with pytest.raises(InstrumentNotConnected):
+        h.read("x")
+    h.reconnect()
+    assert h.read("x") == 5.0 and h.state == "connected"
+
+
+def test_shutdown_closes_the_ports_even_of_a_stuck_call(tmp_path):
+    """Every port is closed when the backend stops, also one whose instrument is
+    in the middle of a call that never ends."""
+    import socket
+    import threading
+    from easymeasure.backend.service import Backend
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    port = srv.getsockname()[1]
+    conns = []
+
+    def serve():
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            conns.append(c)
+
+            def talk(c=c):
+                buf = b""
+                while True:
+                    try:
+                        d = c.recv(1024)
+                    except OSError:
+                        return
+                    if not d:
+                        c.close()
+                        conns.append("closed")
+                        return
+                    buf += d
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if line.strip() == b"*IDN?":
+                            c.sendall(b"ACME,X1,0,1.0\n")
+                        # anything else: never answered (a stuck instrument)
+            threading.Thread(target=talk, daemon=True).start()
+    threading.Thread(target=serve, daemon=True).start()
+    be = Backend(home=tmp_path / "h", log_to_console=False,
+                 settings={"folders_confirmed": True})
+    try:
+        for name, host in (("a", "127.0.0.1"), ("b", "localhost")):
+            be.add_instrument(name, "scpi_generic", "TCP::%s::%d" % (host, port),
+                              {"timeout": 60, "call_timeout": 120, "retries": 0,
+                               "channels": [{"name": "v", "access": "r", "get": "V?"}]})
+            assert be.instruments.get(name).state == "connected"
+        stuck = threading.Thread(target=lambda: _ignore(lambda: be.read_channel("a.v")),
+                                 daemon=True)
+        stuck.start()
+        time.sleep(0.5)
+        assert be.instruments.get("a")._call_lock.locked
+    finally:
+        t0 = time.monotonic()
+        be.close()
+        took = time.monotonic() - t0
+    deadline = time.monotonic() + 5
+    while conns.count("closed") < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    srv.close()
+    assert conns.count("closed") == 2, conns          # both ports closed
+    assert took < 15, took
+
+
+def _ignore(fn):
+    try:
+        fn()
+    except Exception:
+        pass
+
+
+def test_a_port_in_use_is_reported(mgr):
+    mgr.add("one", "flaky", "SIM::busy")
+    h = mgr.add("two", "flaky", "SIM::busy")
+    assert h.state == "error" and "SIM::busy" in h.last_error

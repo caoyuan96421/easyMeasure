@@ -453,7 +453,8 @@ class Backend:
     def disconnect_instrument(self, name: str) -> dict:
         """Disconnect an instrument (it stays in the setup); returns its description."""
         h = self.instruments.get(name)
-        h.disconnect(release=False)
+        # stays disconnected (no call reconnects it) and frees its port for other programs
+        h.disconnect(release=True, hold=True)
         self._changed("instruments")
         return h.describe()
 

@@ -44,6 +44,20 @@ The new instrument appears in the list with its state:
 | `disconnected` | switched off with **Disconnect** |
 | `error` | could not be reached. The *Last error* column says why |
 
+**Disconnect** closes the instrument's port, so another program can use it. If
+another instrument shares the port, for example on one GPIB bus, the port stays open
+for that instrument. The instrument then **stays disconnected** until you click
+**Reconnect**. That holds even if it was in `error`. Reads, retries,
+the monitor and sweeps do not connect it again by themselves; they fail with "*name*
+is disconnected". Any other instrument in `error` is tried again whenever something
+uses it.
+
+**Shutting the backend down** closes every port, including the port of an
+instrument whose call never ended (a stuck driver). The ports are freed when the
+backend process exits. Closing the GUI does **not** stop the backend, which keeps
+the instruments connected for the queue and remote access. To free the ports, use
+*Backend → Shut down backend…*, or **Disconnect**.
+
 An instrument that cannot be reached is still added, so a typo in the address doesn't
 lose your settings. Fix the problem, then click **Reconnect**. **Edit…** changes the
 address or options (and reconnects), **Remove** deletes the instrument (refused while

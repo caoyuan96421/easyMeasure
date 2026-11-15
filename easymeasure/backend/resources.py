@@ -291,6 +291,12 @@ class SocketBackend(PortBackend):
         s, self._sock = self._sock, None
         if s is not None:
             try:
+                # wakes a read blocked in another thread (a stuck call) and ends the
+                # connection now; close() alone leaves it open until that read returns
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
                 s.close()
             except OSError:
                 pass
@@ -372,6 +378,11 @@ class SerialBackend(PortBackend):
     def close(self):
         s, self._ser = self._ser, None
         if s is not None:
+            for cancel in ("cancel_read", "cancel_write"):
+                try:
+                    getattr(s, cancel)()     # wakes a read/write blocked in another thread
+                except Exception:
+                    pass
             try:
                 s.close()
             except Exception:
@@ -774,6 +785,7 @@ class ResourceManager:
             self._resources.clear()
         for r in items:
             r.close()
+            log.info("closed port %s", r.address)
 
     def discover(self, interfaces=None, identify: bool = False, timeout: float = 0.8,
                  in_use: Optional[Dict[str, list]] = None) -> dict:

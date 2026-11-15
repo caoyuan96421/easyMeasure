@@ -445,6 +445,9 @@ class InstrumentHandle:
         # tight loop can never starve a running sweep
         self._call_lock = FairLock()
         self._needs_reconnect = False
+        #: disconnected by the user (Disconnect): nothing connects it again by itself
+        #: - not a call, a retry or a reconnect - until it is connected explicitly
+        self.held = False
         self._consecutive_failures = 0
         self.stats = {"calls": 0, "errors": 0, "timeouts": 0, "reconnects": 0, "retries": 0}
         self._rl = RateLimitedLogger(log, 5.0)
@@ -556,17 +559,37 @@ class InstrumentHandle:
 
     # -- connection ---------------------------------------------------------
     def connect(self) -> None:
+        """Connect (the user's Connect: also ends a Disconnect)."""
         with self._locked():
+            self.held = False
             self._connect_locked()
         self._fire_specs_changed()
+
+    def _auto_connect(self) -> None:
+        """Try to connect on behalf of a call - not when the user disconnected it."""
+        if self.held:
+            return
+        try:
+            with self._locked():
+                if not self.held:
+                    self._connect_locked()
+            self._fire_specs_changed()
+        except Exception:
+            pass
+
+    def _refuse_when_held(self) -> None:
+        if self.held:
+            raise InstrumentNotConnected("%s is disconnected (Disconnect): connect it to use it"
+                                         % self.name)
 
     def _connect_locked(self) -> None:
         if self.driver is not None and self.state == "connected" and not self._needs_reconnect:
             return
-        if self.resource is None:
-            self.resource = self._resources.acquire(self.address, self.name, self.shared,
-                                                    self.options)
         try:
+            # (a port in use by another instrument is reported like any failure)
+            if self.resource is None:
+                self.resource = self._resources.acquire(self.address, self.name, self.shared,
+                                                        self.options)
             timeout = float(self.options.get("connect_timeout", max(self.call_timeout, 10.0)))
             if self.driver is None:
                 # even the constructor of a buggy driver may hang: run it guarded
@@ -662,8 +685,12 @@ class InstrumentHandle:
             drv.select(res)
         return _sel
 
-    def disconnect(self, release: bool = True) -> None:
+    def disconnect(self, release: bool = True, hold: bool = False) -> None:
+        """Disconnect; *release* closes the port (if no other instrument shares it),
+        *hold* keeps it disconnected until :meth:`connect` (the user's Disconnect)."""
         with self._locked():
+            self.held = hold
+            self._needs_reconnect = False
             drv = self.driver
             if drv is not None and self.state in ("connected", "error"):
                 try:
@@ -680,7 +707,9 @@ class InstrumentHandle:
             log.info("instrument %s disconnected", self.name)
 
     def reconnect(self) -> None:
+        """Disconnect and connect again (the user's Reconnect: ends a Disconnect)."""
         with self._locked():
+            self.held = False
             self._reconnect_locked()
         self._fire_specs_changed()
 
@@ -724,10 +753,7 @@ class InstrumentHandle:
         """Execute an action (guarded like any other call: deadline, retries)."""
         act = self.actions.get(name)
         if act is None and not self._channels and self.state != "connected":
-            try:
-                self.connect()
-            except Exception:
-                pass
+            self._auto_connect()
             act = self.actions.get(name)
         if act is None:
             raise ChannelError("instrument %s has no action %r" % (self.name, name))
@@ -758,10 +784,7 @@ class InstrumentHandle:
         spec = self.channels.get(channel)
         if spec is None and not self._channels and self.state != "connected":
             # dynamic channel list not known yet (initial connect failed): try again
-            try:
-                self.connect()
-            except Exception:
-                pass
+            self._auto_connect()
             spec = self.channels.get(channel)
         if spec is None:
             raise self._no_channel(channel)
@@ -813,7 +836,9 @@ class InstrumentHandle:
         if b is not None and b[0] >= self.breaker_threshold:
             attempts = 1          # half-open trial after a cooldown: a single attempt
         timeouts = 0
+        self._refuse_when_held()           # fast, and not counted as a failure
         with self._locked():
+            self._refuse_when_held()
             for attempt in range(attempts):
                 try:
                     if self.driver is None or self._needs_reconnect or self.state == "disconnected":
@@ -1009,6 +1034,7 @@ class InstrumentHandle:
             "address": self.address,
             "options": self.options,
             "state": self.state,
+            "held": self.held,                 # disconnected by the user
             "last_error": self.last_error,
             "fault": self.fault,
             "stats": dict(self.stats),
@@ -1154,11 +1180,15 @@ class InstrumentManager:
         return [h.describe() for h in self.handles()]
 
     def shutdown(self) -> None:
+        """Disconnect everything and close the ports.  A call still running (a hung
+        driver) is not waited for more than a few seconds: its port is closed by the
+        resource manager regardless (``ResourceManager.close_all``)."""
         self._stop.set()
         for h in self.handles():
+            h.lock_wait = min(h.lock_wait, 3.0)
             try:
-                h.disconnect()
-            except Exception:
-                pass
+                h.disconnect(hold=True)
+            except Exception as exc:
+                log.warning("shutdown: %s: %s (its port is closed anyway)", h.name, exc)
         with self._lock:
             self._handles.clear()
