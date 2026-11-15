@@ -79,7 +79,8 @@ Every physical port is one `Resource`:
 ## Safety faults
 
 Some instruments can report a fault that endangers the hardware, such as a magnet
-quench ([`ami430`](../reference/drivers/ami430.md), [`ami420`](../reference/drivers/ami420.md)). Such a fault is not an ordinary
+quench (the AMI magnet drivers, e.g.
+[`ami430_persistent`](../reference/drivers/ami430_persistent.md)). Such a fault is not an ordinary
 error:
 
 * it is **never retried**, and never turned into a NaN reading or a skipped point,

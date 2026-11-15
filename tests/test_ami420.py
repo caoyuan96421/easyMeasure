@@ -14,7 +14,7 @@ import time
 import pytest
 
 from easymeasure.common.errors import ChannelError, InstrumentFault
-from easymeasure.drivers.ami420 import memory_file
+from easymeasure.drivers.ami420_persistent import memory_file
 from easymeasure.drivers.emulators import ensure_emulator
 
 FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
@@ -22,7 +22,7 @@ FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
         "heat_time": 15.0, "heater": True}
 
 
-def add_magnet(be, name="mag", driver="ami420", **opts):
+def add_magnet(be, name="mag", driver="ami420_persistent", **opts):
     o = dict(FAST, **opts)
     be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
@@ -57,7 +57,6 @@ def _fresh_bus():
 def test_identification_units_and_a_field_ramp(backend):
     h, emu = add_magnet(backend, units=0, rate_units=0)          # kG, per second
     assert "MODEL 420" in h.driver.idn
-    assert h.read("IsPersistentSwitchInstalled") == "Yes"
     assert h.read("ramp_rate") == pytest.approx(1.0 * 0.1 * 60)  # 1 A/s * 0.1 T/A in T/min
     assert h.read("switch") == "ON" and h.read("status") == "PAUSED"
     h.write("field", 1.5)
@@ -139,36 +138,23 @@ def test_the_recorded_current_survives_a_restart(backend):
 
 
 def test_a_magnet_left_persistent_without_the_driver(backend):
-    """Heater off and nothing on record: the 420 cannot tell a cold switch from no
-    switch, so none is assumed - unless the operator records the field it was left at."""
+    """At power-on the heater is off: persistent, at a field the 420 does not know."""
     h, emu = add_magnet(backend, heater=False)
-    assert h.read("IsPersistentSwitchInstalled") == "No"
-    assert h.read("field") == 0.0 and h.read("status") == "PAUSED"   # measured, not NaN
-    with pytest.raises(ChannelError, match="no persistent switch in use"):
-        h.run_action("exit_persistent")
-    with pytest.raises(ChannelError, match="not a field"):
-        h.write("persistent_field", 99.0)
-    h.write("persistent_field", 0.0)                 # "persistent, it was left at 0 T"
-    assert h.read("IsPersistentSwitchInstalled") == "Yes"
-    assert h.read("status") == "PERSISTENT" and h.read("field") == 0.0
+    assert h.read("status") == "PERSISTENT" and h.read("switch") == "OFF"
+    assert math.isnan(h.read("field")) and "unknown" in h.read("operation")
     with pytest.raises(ChannelError, match="persistent mode"):
         h.write("field", 0.5)
+    with pytest.raises(ChannelError, match="unknown"):
+        h.run_action("exit_persistent")
+    assert not emu.heater
+    with pytest.raises(ChannelError, match="not a field"):
+        h.write("persistent_field", 99.0)
+    h.write("persistent_field", 0.0)                              # it was at zero
+    assert h.read("field") == 0.0
     h.run_action("exit_persistent")
     wait(lambda: h.read("status") == "HOLDING")
     assert emu.heater and emu.quench_count == 0
     only_the_420s_commands(emu)
-
-
-def test_a_heater_turned_on_later_is_noticed(backend):
-    h, emu = add_magnet(backend, heater=False)
-    assert h.read("IsPersistentSwitchInstalled") == "No"
-    emu.handle("PSwitch 1")                          # the front panel
-    wait(lambda: emu.switch == "warm", what="heated")
-    h.write("field", 0.3)
-    assert h.read("IsPersistentSwitchInstalled") == "Yes"
-    wait(lambda: h.read("status") == "HOLDING")
-    h.run_action("enter_persistent")
-    wait(lambda: h.read("status") == "PERSISTENT")
 
 
 def test_exit_never_heats_a_mismatched_switch(backend):
@@ -215,18 +201,35 @@ def test_cooling_is_waited_for(backend):
 
 
 def test_without_a_switch(backend):
-    """A system without a switch (Load menu: none): heater off, nothing on record."""
-    h, emu = add_magnet(backend, switch=False)
-    assert h.read("IsPersistentSwitchInstalled") == "No" and h.read("switch") == "NONE"
-    with pytest.raises(ChannelError, match="no persistent switch"):
+    """ami420: no persistent channels or actions, the measured field, nothing probed."""
+    h, emu = add_magnet(backend, driver="ami420", switch=False)
+    assert "switch" not in h.channels and "persistent_field" not in h.channels
+    assert "enter_persistent" not in h.actions
+    with pytest.raises(ChannelError, match="no action"):
         h.run_action("enter_persistent")
-    with pytest.raises(ChannelError, match="read-only"):
-        h.write("IsPersistentSwitchInstalled", "Yes")
     h.write("field", 0.5)
     wait(lambda: h.read("status") == "HOLDING")
-    assert h.read("field") == pytest.approx(0.5) == h.read("target")   # not NaN
-    assert h.read("status") == "HOLDING"
-    only_the_420s_commands(emu)                       # nothing probed, no beep
+    assert h.read("field") == pytest.approx(0.5) == h.read("target")
+    assert h.read("current") == pytest.approx(5.0)
+    only_the_420s_commands(emu)
+
+
+def test_the_plain_driver_refuses_a_magnet_with_a_switch_in_use(backend):
+    # heater on: the 420 only heats with a switch
+    backend.add_instrument("a", "ami420", "SIM::ami_a", dict(FAST))
+    h = backend.instruments.get("a")
+    assert h.state == "error" and "use the ami420_persistent driver" in h.last_error
+    # a magnet this driver left persistent (on record)
+    p, emu = add_magnet(backend, "b")
+    p.write("field", 0.4)
+    wait(lambda: p.read("status") == "HOLDING")
+    p.run_action("enter_persistent")
+    wait(lambda: p.read("status") == "PERSISTENT")
+    backend.remove_instrument("b")
+    backend.add_instrument("b", "ami420", "SIM::ami_b", dict(FAST))
+    h = backend.instruments.get("b")
+    assert h.state == "error" and "on record" in h.last_error
+    assert "use the ami420_persistent driver" in h.last_error
 
 
 def test_quench_aborts_and_is_cleared(backend):
@@ -255,9 +258,9 @@ def test_each_driver_refuses_the_other_model(backend):
     emu = ensure_emulator("SIM::ami_x", 0, lambda: AMI420Emulator(FAST))
     backend.add_instrument("x", "ami430", "SIM::ami_x", dict(FAST))
     h = backend.instruments.get("x")
-    assert h.state != "connected" and "use the ami420 driver" in h.last_error
+    assert h.state != "connected" and "use the ami420 (or ami420_persistent)" in h.last_error
     assert emu.beeps == 0 and not emu.unknown
     from easymeasure.drivers.emulators.ami430 import AMI430Emulator
     ensure_emulator("SIM::ami_y", 0, lambda: AMI430Emulator(FAST))
     backend.add_instrument("y", "ami420", "SIM::ami_y", dict(FAST))
-    assert "use the ami430 driver" in backend.instruments.get("y").last_error
+    assert "use the ami430 (or ami430_persistent)" in backend.instruments.get("y").last_error

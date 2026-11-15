@@ -1,4 +1,8 @@
-"""American Magnetics Model 430 superconducting magnet power supply programmer.
+"""American Magnetics Model 430 superconducting magnet power supply programmer: the
+logic of the two drivers, ``ami430`` (a magnet without a persistent switch) and
+``ami430_persistent`` (with one).  Which one is the magnet's setup, not an option;
+the programmer's Load menu (``PSwitch:INSTalled?``) must agree, or connecting is
+refused with the name of the right driver.
 
 The magnet's configuration (coil constant, current limit, ramp rates, the
 persistent switch's heater current and times, quench detection) lives in the
@@ -12,7 +16,7 @@ Field
     ``wait_until(lambda: get('magnet.status') == 'HOLDING')``.  Reading ``field``
     gives the magnet's field (in persistent mode the field it was left at).
 
-Persistent switch (``IsPersistentSwitchInstalled`` = Yes)
+Persistent switch (``ami430_persistent``)
     The field can only be changed in **driven** mode (switch heater on).  In
     persistent mode a field write is refused: the supply would only change the
     current in its leads.  The actions do the two transitions in the order that
@@ -80,58 +84,52 @@ HOLDING, PAUSED, ZEROING, QUENCH, AT_ZERO, HEATING, COOLING = 2, 3, 6, 7, 8, 9, 
 STEADY = (HOLDING, PAUSED, AT_ZERO)          # the supply is not moving
 
 
-def _yes(v) -> Optional[bool]:
-    s = str(v).strip().lower()
-    if s in ("yes", "true", "1", "on"):
-        return True
-    if s in ("no", "false", "0", "off"):
-        return False
-    return None                              # "auto"
-
-
-class AMI430(SCPIInstrument):
-    DESCRIPTION = "American Magnetics 430 magnet power supply programmer"
+class AMI430Base(SCPIInstrument):
     INTERFACES = ("tcp", "serial", "gpib", "tcpip", "other", "sim")
     IDN_MATCH = ("AMERICAN MAGNETICS",)
     POLL_INTERVAL = 1.0
+    #: the magnet has a persistent switch (the driver, not an option, says so)
+    PERSISTENT = False
+    #: the other driver (named when the programmer's Load menu disagrees)
+    OTHER = ""
+    PERSISTENT_CHANNELS = [
+        ChannelSpec("supply_field", "r", "float", (), "T",
+                    "the field the supply current corresponds to (in persistent mode the "
+                    "current in the leads, not in the magnet)"),
+        ChannelSpec("supply_current", "r", "float", (), "A", "the supply current"),
+        ChannelSpec("switch", "r", "str", (), "",
+                    "persistent switch heater: ON (driven), OFF (persistent), HEATING, "
+                    "COOLING"),
+        ChannelSpec("operation", "r", "str", (), "",
+                    "the persistent-switch procedure: its step, idle, or why it stopped"),
+    ]
+    PERSISTENT_ACTIONS = [
+        ActionSpec("enter_persistent", "Enter Persistent: wait for a steady field, switch "
+                   "heater off, wait for it to cool, ramp the leads to zero"),
+        ActionSpec("exit_persistent", "Exit Persistent: ramp the supply to the magnet "
+                   "current, heat the switch only when they match, hold the field"),
+    ]
     CHANNELS = [
         ChannelSpec("field", "rw", "float", (), "T",
                     "set: ramp to this field (returns at once; status RAMPING, then HOLDING); "
                     "read: the magnet's field (persistent: the field it was left at)"),
         ChannelSpec("target", "r", "float", (), "T", "the target field"),
-        ChannelSpec("supply_field", "r", "float", (), "T",
-                    "the field the supply current corresponds to (in persistent mode the "
-                    "current in the leads, not in the magnet)"),
         ChannelSpec("current", "r", "float", (), "A", "the magnet current"),
-        ChannelSpec("supply_current", "r", "float", (), "A", "the supply current"),
         ChannelSpec("voltage", "r", "float", (), "V", "the magnet voltage (voltage taps)"),
         ChannelSpec("ramp_rate", "r", "float", (), "T/min",
                     "ramp rate (segment 1; set on the programmer)"),
         ChannelSpec("status", "r", "str", (), "",
                     "RAMPING, HOLDING, PAUSED, ZEROING, AT ZERO, PERSISTENT, HEATING SWITCH, "
                     "COOLING SWITCH, ENTERING PERSISTENT, EXITING PERSISTENT, QUENCH ..."),
-        ChannelSpec("switch", "r", "str", (), "",
-                    "persistent switch heater: ON (driven), OFF (persistent), HEATING, "
-                    "COOLING, NONE"),
         ChannelSpec("quench", "r", "str", (), "", "Yes while a quench is in effect"),
-        ChannelSpec("operation", "r", "str", (), "",
-                    "the persistent-switch procedure: its step, idle, or why it stopped"),
-        ChannelSpec("IsPersistentSwitchInstalled", "rw", "str", (), "",
-                    "the magnet has a persistent switch: field changes need the heater on, "
-                    "and enter/exit_persistent are available", config=True,
-                    allowed=["Yes", "No"]),
     ]
     ACTIONS = [
-        ActionSpec("enter_persistent", "Enter Persistent: wait for a steady field, switch "
-                   "heater off, wait for it to cool, ramp the leads to zero"),
-        ActionSpec("exit_persistent", "Exit Persistent: ramp the supply to the magnet "
-                   "current, heat the switch only when they match, hold the field"),
         ActionSpec("pause", "PAUSE the supply (and stop a persistent-switch procedure)"),
         ActionSpec("clear_quench", "clear the quench condition (like RESET QUENCH)"),
     ]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, read_termination="\r\n",
                            write_termination="\r\n", timeout=5.0,
-                           IsPersistentSwitchInstalled="auto", settle_time=10.0,
+                           settle_time=10.0,
                            max_magnet_voltage=0.05, match_tolerance=0.05, zero_leads=True,
                            status_interval=0.25)
 
@@ -155,7 +153,7 @@ class AMI430(SCPIInstrument):
             if "AMERICAN MAGNETICS" in u and "," in line:   # not the greeting
                 if "420" in u and "430" not in u:
                     # its queries are not the 430's: each unknown one beeps and times out
-                    raise IOError("%s: %r is a Model 420: use the ami420 driver" % (self.name,
+                    raise IOError("%s: %r is a Model 420: use the ami420 (or ami420_persistent) driver" % (self.name,
                                                                                     line))
                 self.idn = line
                 return line
@@ -172,8 +170,11 @@ class AMI430(SCPIInstrument):
         self.per_min = 60.0 if self.qf("RAMP:RATE:UNITS?") < 0.5 else 1.0
         self.limit = self._optional_float("CURRent:LIMit?")
         self.ctrl_switch = self._optional_bool("PSwitch:INSTalled?")
-        opt = _yes(self.options.get("IsPersistentSwitchInstalled", "auto"))
-        self.switch_installed = opt if opt is not None else bool(self.ctrl_switch)
+        if self.ctrl_switch is not None and self.ctrl_switch != self.PERSISTENT:
+            raise IOError("%s: the programmer is set up %s a persistent switch (its Load "
+                          "menu): use the %s driver" % (
+                              self.name, "with" if self.ctrl_switch else "without", self.OTHER))
+        self.switch_installed = self.PERSISTENT
         self.heat_time = self._optional_float("PSwitch:HeatTIME?") or 60.0
         self.cool_time = self._optional_float("PSwitch:CoolTIME?") or 60.0
         self.psw_rate = self._optional_float("PSwitch:PowerSupplyRampRate?") or 1.0
@@ -311,8 +312,6 @@ class AMI430(SCPIInstrument):
             return "Yes" if s == QUENCH or self.fault is not None else "No"
         if channel == "operation":
             return self.operation
-        if channel == "IsPersistentSwitchInstalled":
-            return "Yes" if self.switch_installed else "No"
         raise ChannelError("%s has no channel %s" % (self.name, channel))
 
     def _status(self, s: int) -> str:
@@ -351,8 +350,6 @@ class AMI430(SCPIInstrument):
     def write(self, channel: str, value):
         if channel == "field":
             self._set_field(float(value))
-        elif channel == "IsPersistentSwitchInstalled":
-            self._set_switch_installed(_yes(value))
         else:
             raise ChannelError("%s: %s cannot be set" % (self.name, channel))
 
@@ -371,9 +368,7 @@ class AMI430(SCPIInstrument):
                 raise ChannelError(
                     "%s: the magnet is in persistent mode (switch heater off): run "
                     "exit_persistent first - ramping now would only change the current in the "
-                    "leads%s" % (self.name, "" if self.switch_installed else
-                                 " (the programmer reports a persistent switch although "
-                                 "IsPersistentSwitchInstalled is No)"))
+                    "leads" % self.name)
         if self.limit and abs(b) > self.limit * self.coil * (1 + 1e-9):
             raise ChannelError("%s: %g T is beyond the programmer's current limit (%g T)"
                                % (self.name, b, self.limit * self.coil))
@@ -381,28 +376,13 @@ class AMI430(SCPIInstrument):
         self.checked("RAMP")
         self._state = None
 
-    def _set_switch_installed(self, on: Optional[bool]) -> None:
-        if on is None:
-            raise ChannelError("IsPersistentSwitchInstalled is Yes or No")
-        s = self._tick(force=True)
-        if self.seq is not None:
-            raise ChannelError("%s is busy %s" % (self.name, self._seq_name()))
-        if on and self.ctrl_switch is False:
-            raise ChannelError("%s: the programmer is configured without a persistent switch "
-                               "(Load menu); set it there first" % self.name)
-        if not on and self.switch_installed and (s in (HEATING, COOLING) or
-                                                 self._heater() is False):
-            raise ChannelError("%s: the switch is %s: exit persistent mode first" % (
-                self.name, "busy" if s in (HEATING, COOLING) else "off (persistent)"))
-        self.switch_installed = on
-
     # -- actions ---------------------------------------------------------------------------------
     def _common_checks(self, what: str) -> int:
         s = self._tick(force=True)
         self._refuse_when_faulted(what)
         if not self.switch_installed:
-            raise ChannelError("%s: no persistent switch (IsPersistentSwitchInstalled = No)"
-                               % self.name)
+            raise ChannelError("%s: no persistent switch (the %s driver is for a magnet with "
+                               "one)" % (self.name, self.OTHER))
         if self.ctrl_switch is False:
             raise ChannelError("%s: the programmer is configured without a persistent switch"
                                % self.name)

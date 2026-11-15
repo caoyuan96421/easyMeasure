@@ -216,3 +216,58 @@ def test_ppt_append_while_file_locked(demo, tmp_path, monkeypatch):
     out = pptx_report.append_run_slide(ppt, ds)
     assert out.name == "open_pending.pptx" and out.exists()
     assert sorted(p.name for p in tmp_path.glob("open*")) == ["open.pptx", "open_pending.pptx"]
+
+
+def test_monitor_pauses_while_an_instrument_behind_a_channel_is_not_connected(backend):
+    """Disconnect (or a failed connection) pauses every monitored channel that reads
+    the instrument, directly or through aliases and composites; it is not polled -
+    so not reconnected behind the user's back - and goes on once it is connected."""
+    be = backend
+    be.add_instrument("dmm", "sim_dmm", "SIM::mp1")
+    be.add_instrument("src", "sim_source", "SIM::mp2")
+    be.define_alias(name="I", target="dmm.reading")
+    be.define_alias(name="Vs", target="src.V1", min=-1, max=1)
+    be.define_composite(type="multi", name="g", variables=["u"], targets={"Vs": "u"})
+    got = []
+    be.monitor.listeners.append(got.append)
+    for ch in ("I", "dmm.reading", "g.u", "Vs"):
+        be.monitor_add(ch, 0.05)
+
+    def values(ch, since=0):
+        return [m for m in got[since:] if m["channel"] == ch and "value" in m]
+
+    def until(fn, t=5.0):
+        end = time.time() + t
+        while time.time() < end:
+            if fn():
+                return True
+            time.sleep(0.05)
+        return False
+    assert until(lambda: all(values(c) for c in ("I", "dmm.reading", "g.u")))
+    dmm = be.instruments.get("dmm")
+    be.disconnect_instrument("dmm")
+    calls = dmm.stats["calls"]
+    assert until(lambda: all(any(m.get("paused") == "dmm is disconnected" for m in got
+                                 if m["channel"] == c) for c in ("I", "dmm.reading")))
+    n = len(got)
+    time.sleep(0.6)
+    assert not values("I", n) and not values("dmm.reading", n)
+    assert dmm.stats["calls"] == calls and dmm.state == "disconnected"   # not polled
+    assert len(values("g.u", n)) >= 3                                   # the other goes on
+    st = {e["channel"]: e for e in be.monitor.status()}
+    assert st["I"]["paused"] == "dmm is disconnected" and st["Vs"]["paused"] == ""
+    # paused once, not at every interval
+    assert sum(1 for m in got if m["channel"] == "I" and m.get("paused")) == 1
+    # through a composite: the source disconnected pauses g.e and Vs
+    be.disconnect_instrument("src")
+    assert until(lambda: be.monitor.status() and {e["channel"]: e for e in
+                 be.monitor.status()}["g.u"]["paused"] == "src is disconnected")
+    # connected again: it goes on by itself
+    be.reconnect_instrument("dmm")
+    n = len(got)
+    assert until(lambda: values("I", n) and values("dmm.reading", n))
+    assert {e["channel"]: e for e in be.monitor.status()}["I"]["paused"] == ""
+    # an instrument in error (a failed connection) pauses it as well
+    dmm.state, dmm.last_error = "error", "no reply to *IDN?"
+    assert until(lambda: {e["channel"]: e for e in be.monitor.status()}["I"]["paused"]
+                 .startswith("dmm is in error: no reply"))

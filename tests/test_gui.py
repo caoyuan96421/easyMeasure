@@ -548,6 +548,26 @@ def test_monitor_tile_shows_long_names(app, gui):
     be.monitor_remove("sample_temperature_long")
 
 
+def test_monitor_tile_paused_while_disconnected(app, gui):
+    w, be, _, _ = gui
+    be.define_alias(name="Ipaused", target="dmm.reading")
+    be.monitor_add("Ipaused", 0.1)
+    assert pump(app, 5, lambda: "Ipaused" in w.monitor.tiles)
+    t = w.monitor.tiles["Ipaused"]
+    assert pump(app, 5, lambda: t.kind == "scalar")
+    be.disconnect_instrument("dmm")
+    assert pump(app, 5, lambda: "paused: dmm is disconnected" in t.err.text())
+    assert t.err.isVisible() and "#999" in t.err.styleSheet()
+    # a GUI started now shows it too (from the state)
+    t.paused = False
+    t.err.setVisible(False)
+    w.monitor._state(be.get_state())
+    assert t.err.isVisible() and "paused" in t.err.text()
+    be.reconnect_instrument("dmm")
+    assert pump(app, 5, lambda: not t.err.isVisible())
+    be.monitor_remove("Ipaused")
+
+
 def test_gui_lock(app, gui):
     """The lock button greys out every control of instruments / sweep / queue /
     manual / monitors and the backend commands; tabs, plots and their settings stay

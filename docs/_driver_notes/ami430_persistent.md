@@ -1,9 +1,15 @@
-American Magnetics Model 430 programmer for superconducting magnets. (The older Model
-420 has a different command set and its own driver,
-[`ami420`](ami420.md); this driver refuses a 420.) The magnet's configuration (coil constant, current limit, ramp rates, the
-persistent switch's heater current and times, quench detection) is set once on the
-programmer's front panel. The driver only reads it. What the driver does is make sure
-the magnet is driven safely.
+American Magnetics Model 430 programmer for a superconducting magnet **with a
+persistent switch**. For a magnet without one, use [`ami430`](ami430.md). There is no
+setting for this: the driver you choose says whether there is a switch. The
+programmer's Load menu must agree (`PSwitch:INSTalled?`); if it doesn't, connecting is
+refused with the name of the right driver. The older Model 420 has a different command
+set and its own drivers, [`ami420`](ami420.md) and
+[`ami420_persistent`](ami420_persistent.md); this driver refuses a 420.
+
+The magnet's configuration (coil constant, current limit, ramp rates, the persistent
+switch's heater current and times, quench detection) is set once on the programmer's
+front panel. The driver only reads it. What the driver does is make sure the magnet is
+driven safely.
 
 **Address.** Over Ethernet: `TCP::<ip address>::7180`, or the RS-232 port. The programmer's field units (kG or T) and
 ramp-rate units are read and converted; `field` is always in T and `ramp_rate` in T/min.
@@ -19,10 +25,6 @@ wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=3600)
 ```
 
 ## Persistent switch
-
-`IsPersistentSwitchInstalled` (a setting, `Yes` / `No`) says whether the magnet has a
-persistent switch. Option `auto` (the default) takes it from the programmer's
-configuration. With `Yes`:
 
 * the field can only be changed in **driven** mode (switch heater on). In persistent
   mode, setting `field` is refused: the supply would only change the current in its

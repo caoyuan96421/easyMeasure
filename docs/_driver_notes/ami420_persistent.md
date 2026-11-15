@@ -1,10 +1,13 @@
-American Magnetics Model 420 power supply programmer for superconducting magnets. It
-was written from the Model 420 manual (Rev. 7, chapter 4).
+American Magnetics Model 420 power supply programmer for a superconducting magnet
+**with a persistent switch**. For a magnet without one, use [`ami420`](ami420.md).
+There is no setting for this: the driver you choose says whether there is a switch.
+The 420 cannot be asked, so the choice is yours. The driver was written from the
+Model 420 manual (Rev. 7, chapter 4).
 
 The 420 is not an older 430. Many of its commands differ, and when it gets a query it
 does not know, it beeps, logs error -201 and **sends no reply**, so every such query
-ends in a timeout. That is what happens with the [`ami430`](ami430.md) driver on a
-420, which is why each driver now refuses the other model when it connects.
+ends in a timeout. That is what happens with an `ami430` driver on a 420, which is why the 420 and 430
+drivers each refuse the other model when they connect.
 
 The magnet's configuration (coil constant, current limit, ramp rate, switch heater
 current and heating time, quench detection) is set on the programmer's front panel.
@@ -29,7 +32,7 @@ always in T and `ramp_rate` in T/min.
 | field in persistent mode | not known to the programmer: **recorded by the driver** | kept by the programmer |
 | `STATE?` 8 / 9 | HEATING SWITCH / AT ZERO | AT ZERO / HEATING SWITCH |
 | switch cooling | no state, no time: **timed by the driver** (`cool_time`) | COOLING SWITCH state |
-| switch installed? | no query: inferred from the heater (see below) | `PSwitch:INSTalled?` |
+| switch installed? | no query: you choose the driver | `PSwitch:INSTalled?` (must agree with the driver) |
 
 ## Setting the field
 
@@ -43,25 +46,7 @@ wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=3600)
 
 ## Persistent switch
 
-`IsPersistentSwitchInstalled` (read-only) says whether the driver treats the magnet
-as having a persistent switch. The 420 cannot be asked for its Load-menu setting.
-`PSwitch?` and `PSwitch 0` work the same with or without a switch, so the driver
-goes by what it can see:
-
-* **Yes** if the switch heater is on: the 420 only turns it on when a switch is
-  installed. The driver also notices a heater turned on later, from the front panel.
-* **Yes** if a persistent field is on record (see below).
-* **No** otherwise. `field` is then the measured field, as on the front panel.
-
-!!! warning "A switch whose heater is off, and no record"
-    With the heater off and nothing on record, a cold switch looks exactly like no
-    switch. This happens with a magnet made persistent by hand or by another program.
-    The driver then assumes there is **no** switch, and setting `field` would ramp
-    only the leads. If the magnet is in persistent mode, set **`persistent_field`**
-    to the field it was left at, before doing anything else. That tells the driver
-    there is a switch, so the protections apply and *Exit Persistent* works.
-
-With a switch, the field can only be changed in **driven** mode (heater on). The two
+The field can only be changed in **driven** mode (heater on). The two
 actions do their steps in the order that cannot quench the magnet. Before every step
 they read the programmer's state again:
 
@@ -84,6 +69,12 @@ that.
   and `persistent_field` shows the recorded field. `supply_current` and
   `supply_field` are the leads.
 * **After exiting.** Once the magnet is driven again, the record is deleted.
+
+A magnet made persistent by hand (on the front panel, or by another program) has no
+record. A 420 also starts with its heater off at power-on. In both cases, `status`
+reads `PERSISTENT`, `field` reads **NaN**, and *Exit Persistent* is refused until you
+set **`persistent_field`** to the field the magnet was left at (0 for a magnet that
+was never energized).
 
 Setting `persistent_field` by hand needs care. *Exit Persistent* ramps the supply to
 that value, then heats the switch. A wrong value forces the difference into the

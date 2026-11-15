@@ -17,9 +17,9 @@ FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,
         "heat_time": 20.0, "cool_time": 30.0}
 
 
-def add_magnet(be, name="mag", **opts):
+def add_magnet(be, name="mag", driver="ami430_persistent", **opts):
     o = dict(FAST, **opts)
-    be.add_instrument(name, "ami430", "SIM::ami_" + name, o)
+    be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
     assert h.state == "connected", h.last_error
     emu = ensure_emulator("SIM::ami_" + name, 0, lambda: None)
@@ -47,7 +47,6 @@ def _fresh_bus():
 def test_identification_units_and_a_field_ramp(backend):
     h, emu = add_magnet(backend, greeting=True, units=0, rate_units=0)   # kG, per second
     assert "MODEL 430" in h.driver.idn
-    assert h.read("IsPersistentSwitchInstalled") == "Yes"        # auto: from the programmer
     assert h.read("ramp_rate") == pytest.approx(1.0 * 0.1 * 60)  # 1 A/s * 0.1 T/A in T/min
     assert h.read("switch") == "ON" and h.read("status") == "PAUSED"
     h.write("field", 1.5)
@@ -151,31 +150,25 @@ def test_the_emulator_quenches_a_naive_sequence(backend):
     wait(lambda: emu.quench_count == 1, what="emulator quench")
 
 
-def test_refusals_without_switch_and_config_switch(backend):
-    h, emu = add_magnet(backend, switch=False)
-    assert h.read("IsPersistentSwitchInstalled") == "No" and h.read("switch") == "NONE"
-    with pytest.raises(ChannelError, match="no persistent switch"):
+def test_the_driver_must_match_the_programmer(backend):
+    """Two drivers, no option: the programmer's Load menu (PSwitch:INSTalled?) must
+    agree with the one chosen, or connecting is refused with the right one's name."""
+    h, emu = add_magnet(backend, driver="ami430", switch=False)
+    assert "switch" not in h.channels and "enter_persistent" not in h.actions
+    with pytest.raises(ChannelError, match="no action"):
         h.run_action("enter_persistent")
-    with pytest.raises(ChannelError, match="without a persistent switch"):
-        h.write("IsPersistentSwitchInstalled", "Yes")
     h.write("field", 0.5)
     wait(lambda: h.read("status") == "HOLDING")
-    # the programmer has a switch but the setting says No: still protected
-    h2, emu2 = add_magnet(backend, "m2", IsPersistentSwitchInstalled="No")
-    assert h2.read("IsPersistentSwitchInstalled") == "No"
-    with pytest.raises(ChannelError):
-        h2.run_action("enter_persistent")
-    h2.write("IsPersistentSwitchInstalled", "Yes")
-    h2.write("field", 0.2)
-    wait(lambda: h2.read("status") == "HOLDING")
-    h2.run_action("enter_persistent")
-    wait(lambda: h2.read("status") == "PERSISTENT")
-    with pytest.raises(ChannelError, match="exit persistent mode first"):
-        h2.write("IsPersistentSwitchInstalled", "No")
-    emu2.has_switch = True
-    h2.driver.switch_installed = False             # as if changed behind its back
-    with pytest.raises(ChannelError, match="persistent mode"):
-        h2.write("field", 0.5)
+    assert h.read("field") == pytest.approx(0.5) and h.read("current") == pytest.approx(5.0)
+    assert not emu.unknown, emu.unknown
+    # the wrong driver for each programmer
+    backend.add_instrument("m2", "ami430", "SIM::ami_m2", dict(FAST))           # has a switch
+    h2 = backend.instruments.get("m2")
+    assert h2.state == "error" and "use the ami430_persistent driver" in h2.last_error
+    backend.add_instrument("m3", "ami430_persistent", "SIM::ami_m3", dict(FAST, switch=False))
+    h3 = backend.instruments.get("m3")
+    assert h3.state == "error" and "without a persistent switch" in h3.last_error
+    assert "use the ami430 driver" in h3.last_error
 
 
 def test_heating_or_cooling_refuses_ramps(backend):
