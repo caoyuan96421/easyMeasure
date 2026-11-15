@@ -25,8 +25,7 @@ Options: ``time_scale`` (simulated seconds per real second), ``coil`` (T/A),
 ``cool_time`` (s), ``switch`` (a persistent switch is installed), ``units``
 (0 = kG, 1 = T), ``rate_units`` (0 = per second, 1 = per minute), ``inductance``
 (H), ``mismatch_quench`` (A), ``auto_zero`` (ramp the leads to zero after
-cooling, as the front panel does), ``greeting`` (the TCP welcome lines),
-``model`` (430 or 420).
+cooling, as the front panel does), ``greeting`` (the TCP welcome lines).
 """
 
 from __future__ import annotations
@@ -43,8 +42,7 @@ from ..simbus import FaultInjector
 class AMI430Emulator(SCPIEmulator):
     def __init__(self, options=None):
         o = options or {}
-        model = int(o.get("model", 430))
-        super().__init__("AMERICAN MAGNETICS INC.,MODEL %d,2.65" % model, FaultInjector(o))
+        super().__init__("AMERICAN MAGNETICS INC.,MODEL 430,2.65", FaultInjector(o))
         self.lock = threading.RLock()
         self.scale = float(o.get("time_scale", 1.0))
         self.coil = float(o.get("coil", 0.1))                # T/A
@@ -102,13 +100,6 @@ class AMI430Emulator(SCPIEmulator):
         a("PSwitch:CoolTIME?", lambda x, n: "%d" % self.cool_time)
         a("PSwitch:PowerSupplyRampRate?", lambda x, n: fmt_num(self.psw_rate))
         a("PERSistent?", lambda x, n: "1" if self.persistent else "0")
-        if model == 420:
-            # queries the 420 does not have (the driver must do without them)
-            gone = ("PSwitch:INSTalled?", "CURRent:LIMit?", "PSwitch:PowerSupplyRampRate?",
-                    "VOLTage:MAGnet?")
-            from . import compile_pattern
-            pats = {compile_pattern(g).pattern for g in gone}
-            self.handlers = [(rx, fn) for rx, fn in self.handlers if rx.pattern not in pats]
 
     # -- time -----------------------------------------------------------------------
     def _now(self) -> float:

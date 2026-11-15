@@ -1,4 +1,4 @@
-"""AMI 430 / 420 magnet programmer: field ramps, the persistent-switch procedures in
+"""AMI 430 magnet programmer: field ramps, the persistent-switch procedures in
 their safe order, refusals, and a quench aborting a running sweep.
 
 The emulator (drivers/emulators/ami430.py) quenches the magnet when the switch is
@@ -302,18 +302,3 @@ def test_quench_while_a_sweep_reads_the_magnet_is_not_a_nan(backend):
     end = next(d for k, d in events if k == "sweep_end")
     assert end["status"] in ("error", "aborted") and "QUENCH" in end["error"], end
     assert end["footer"]["points"] < 2000
-
-
-def test_model_420_without_the_newer_queries(backend):
-    h, emu = add_magnet(backend, model=420)
-    assert "MODEL 420" in h.driver.idn
-    assert h.read("IsPersistentSwitchInstalled") == "No"     # unknown: not assumed
-    assert h.read("voltage") != h.read("voltage")              # NaN: no voltage taps query
-    h.write("IsPersistentSwitchInstalled", "Yes")
-    h.write("field", 0.4)
-    wait(lambda: h.read("status") == "HOLDING")
-    h.run_action("enter_persistent")
-    wait(lambda: h.read("status") == "PERSISTENT")
-    h.run_action("exit_persistent")
-    wait(lambda: h.read("status") == "HOLDING")
-    assert emu.quench_count == 0

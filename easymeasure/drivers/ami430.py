@@ -1,4 +1,4 @@
-"""American Magnetics Model 430 (and 420) superconducting magnet power supply programmer.
+"""American Magnetics Model 430 superconducting magnet power supply programmer.
 
 The magnet's configuration (coil constant, current limit, ramp rates, the
 persistent switch's heater current and times, quench detection) lives in the
@@ -56,8 +56,8 @@ Quench
     or RESET QUENCH on the front panel) field writes and the persistent actions are
     refused; reading still works.
 
-Model 420: the same command set, over RS-232.  Model 430: Ethernet
-(``TCP::<ip>::7180``) or RS-232.  Both send ``\\r\\n`` line ends.
+Ethernet (``TCP::<ip>::7180``) or RS-232; it sends ``\\r\\n`` line ends.  The older
+Model 420 has a different command set: it has its own driver, ``ami420``.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def _yes(v) -> Optional[bool]:
 
 
 class AMI430(SCPIInstrument):
-    DESCRIPTION = "American Magnetics 430 / 420 magnet power supply programmer"
+    DESCRIPTION = "American Magnetics 430 magnet power supply programmer"
     INTERFACES = ("tcp", "serial", "gpib", "tcpip", "other", "sim")
     IDN_MATCH = ("AMERICAN MAGNETICS",)
     POLL_INTERVAL = 1.0
@@ -151,7 +151,12 @@ class AMI430(SCPIInstrument):
         self.resource.write("*IDN?")
         for _ in range(6):
             line = self.resource.read().strip()
-            if "AMERICAN MAGNETICS" in line.upper() and "," in line:   # not the greeting
+            u = line.upper()
+            if "AMERICAN MAGNETICS" in u and "," in line:   # not the greeting
+                if "420" in u and "430" not in u:
+                    # its queries are not the 430's: each unknown one beeps and times out
+                    raise IOError("%s: %r is a Model 420: use the ami420 driver" % (self.name,
+                                                                                    line))
                 self.idn = line
                 return line
         raise IOError("%s: no identification from the programmer" % self.name)
@@ -185,7 +190,7 @@ class AMI430(SCPIInstrument):
         self._state_t = time.monotonic()
 
     def _optional_float(self, q: str) -> Optional[float]:
-        """A query the 420 (or an older 430) may not know: None if refused."""
+        """A query an older 430 firmware may not know: None if refused."""
         try:
             v = self.qf(q)
         except (IOError, OSError, ValueError, ResourceError):
