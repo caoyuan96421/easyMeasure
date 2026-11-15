@@ -179,6 +179,7 @@ table.grid.edit input { width: 100%; }
 .mon-value { font-family: var(--font-mono); font-size: 1.6rem; line-height: 1.2; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .mon-tile .plot-host { flex: 1 1 auto; height: auto; min-height: 50px; resize: none; }
 .mon-err { color: var(--err); font-size: .88rem; }
+.mon-err.paused { color: var(--muted); }
 .man-rows { display: flex; flex-direction: column; gap: 2px; }
 .man-row { display: grid; grid-template-columns: minmax(50px, 9em) minmax(70px, 8em) auto minmax(40px, 1fr) auto; gap: 4px; align-items: center; }
 .man-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

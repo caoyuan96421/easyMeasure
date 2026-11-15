@@ -4,6 +4,12 @@ Each monitored channel has its own interval.  Channels are polled by a small
 pool of worker threads (one per instrument, so a slow/hung instrument never
 delays the others).  Values are kept in a per-channel ring buffer (so a
 reconnecting frontend gets recent history) and pushed to listeners.
+
+A channel that depends on an instrument that is not connected (Disconnect, a failed
+connection, a hung call) - directly or through aliases and composites - is not
+polled: polling it would only fail, or connect the instrument again behind the
+user's back.  Its entry is *paused* (listeners get ``{"channel", "t", "paused":
+why}`` once) and goes on by itself when the instrument is connected again.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ class _Entry:
         self.last_time = 0.0
         self.errors = 0
         self.enabled = True
+        self.paused = ""        # why it is not polled now ("" while it is)
 
 
 class Monitor:
@@ -75,8 +82,34 @@ class Monitor:
     def status(self) -> List[dict]:
         with self._lock:
             return [{"channel": e.name, "interval": e.interval, "last_value": e.last_value,
-                     "last_time": e.last_time, "last_error": e.last_error, "errors": e.errors}
+                     "last_time": e.last_time, "last_error": e.last_error, "errors": e.errors,
+                     "paused": e.paused}
                     for e in self._entries.values()]
+
+    def _blocked_by(self, name: str) -> str:
+        """Why *name* cannot be read now: an instrument behind it is not connected."""
+        try:
+            insts = sorted({r.split(".", 1)[0] for r in self.channels.hardware_behind(name)})
+        except Exception:
+            return ""
+        for i in insts:
+            try:
+                h = self.channels.instruments.get(i)
+            except Exception:
+                continue
+            if getattr(h, "held", False) or h.state == "disconnected":
+                return "%s is disconnected" % i
+            if h.state != "connected":
+                why = (": " + h.last_error[:120]) if h.last_error else ""
+                return "%s is %s%s" % (i, "in error" if h.state == "error" else h.state, why)
+        return ""
+
+    def _notify(self, msg: dict) -> None:
+        for cb in list(self.listeners):
+            try:
+                cb(msg)
+            except Exception:
+                pass
 
     def history(self, name: Optional[str] = None) -> Dict[str, list]:
         with self._lock:
@@ -126,6 +159,19 @@ class Monitor:
                     if not e.enabled:
                         continue
                     if not e.busy and now >= e.next_due:
+                        why = self._blocked_by(e.name)
+                        if why:
+                            e.next_due = now + min(e.interval, 0.5)   # resumes promptly
+                            if why != e.paused:
+                                e.paused = why
+                                log.info("monitor: %s paused (%s)", e.name, why)
+                                self._notify({"channel": e.name, "t": time.time(),
+                                              "paused": why})
+                            next_wake = min(next_wake, e.next_due)
+                            continue
+                        if e.paused:
+                            log.info("monitor: %s resumed", e.name)
+                            e.paused = ""
                         group = self._group_of(e.name)
                         w = self._pool.get(group)
                         if w is None or not w.alive:
@@ -162,11 +208,7 @@ class Monitor:
         finally:
             e.busy = False
             self._wake.set()
-        for cb in list(self.listeners):
-            try:
-                cb(msg)
-            except Exception:
-                pass
+        self._notify(msg)
 
 
 class _PollWorker:

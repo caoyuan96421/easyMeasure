@@ -9,6 +9,14 @@ Values are pushed to every GUI and the web app.
 Choose the channel at the top of the dock, set the interval, and click **Monitor**.
 ✕ on a tile removes it.
 
+A tile is **paused** (grey "⏸ paused: …") while an instrument behind its channel is
+not connected. This covers an instrument read directly, and one reached through an
+alias or a composite. It applies after **Disconnect**, after a failed connection or a
+call that failed, and while a call is hung. The channel is not polled meanwhile, so the
+monitor does not connect the instrument again behind your back, and it does not fill
+the log with errors. The tile goes on by itself once the instrument is connected
+again, for example with **Reconnect**. Tiles of other instruments keep updating.
+
 ![A monitored VNA trace](../images/t4-monitor.png)
 
 ??? example "From Python"

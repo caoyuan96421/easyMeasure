@@ -106,7 +106,16 @@ class MonitorTile(QFrame):
         self.view.currentIndexChanged.connect(lambda *_: setattr(self, "dirty", True))
 
     def push(self, msg: dict) -> None:
+        if msg.get("paused"):
+            # not polled while an instrument behind it is not connected
+            self.err.setStyleSheet("color: #999")
+            self.err.setText("⏸ paused: " + str(msg["paused"])[:200])
+            self.err.setVisible(True)
+            self.paused = True
+            return
+        self.paused = False
         if "error" in msg:
+            self.err.setStyleSheet("color: #d55")
             self.err.setText("⚠ " + str(msg["error"])[:200])
             self.err.setVisible(True)
             return
@@ -292,6 +301,8 @@ class MonitorPanel(QWidget):
         for m in st.get("monitor", []):
             tile = self._tile(m["channel"])
             tile.every.setText("every %.3g s" % m["interval"])
+            if m.get("paused") and not getattr(tile, "paused", False):
+                tile.push({"channel": m["channel"], "paused": m["paused"]})
 
     def _tile(self, name: str) -> MonitorTile:
         t = self.tiles.get(name)

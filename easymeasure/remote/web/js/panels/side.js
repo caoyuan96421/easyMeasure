@@ -46,6 +46,10 @@ class MonitorTile {
   }
 
   push(msg) {
+    // not polled while an instrument behind it is not connected
+    this.paused = !!msg.paused;
+    this.err.classList.toggle("paused", this.paused);
+    if (msg.paused) { this.err.textContent = "⏸ paused: " + String(msg.paused).slice(0, 200); return; }
     if (msg.error !== undefined) { this.err.textContent = "⚠ " + String(msg.error).slice(0, 200); return; }
     this.err.textContent = "";
     const v = msg.value, t = Number(msg.t || Date.now() / 1000);
@@ -169,6 +173,7 @@ export class MonitorPanel {
     for (const m of st.monitor || []) {
       const t = this.tiles.get(m.channel);
       if (t && t.kind === null && m.last_value !== null && m.last_value !== undefined) t.push({ value: m.last_value, t: m.last_time });
+      if (t && m.paused && !t.paused) t.push({ channel: m.channel, paused: m.paused });
     }
     this.msg.textContent = names.length ? "" : "no monitored channels";
   }
