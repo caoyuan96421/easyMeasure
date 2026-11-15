@@ -12,10 +12,10 @@ That is why the ``ami430`` driver times out on a 420.  What matters here:
   current in the leads, not the magnet's;
 * ``STATE?`` codes: 8 is HEATING SWITCH and 9 AT ZERO (on the 430, 8 is AT ZERO);
   there is no "cooling" state and no cooling time;
-* no ``PSwitch:INSTalled?``.  Whether a switch is installed (the programmer's Load
-  menu) is found out at connection: a heater that is on means yes; with the heater
-  off, ``PSwitch 0`` (no change: it is off) is refused with error -107 "No switch
-  installed" when the Load menu says there is none (one beep), accepted otherwise.
+* no query for the Load menu's "Persistent Switch Installed" (and ``PSwitch 0`` is
+  accepted without a switch).  So the driver goes by what it can see: a heater that
+  is on (the 420 only turns it on with a switch), or a persistent field it recorded.
+  Neither: no switch, and the field is the measured one, as on the front panel.
 
 Field
     Writing ``field`` sets the programmed field and starts the ramp (``RAMP``) and
@@ -26,9 +26,9 @@ Persistent switch
     manual tells the operator to write it down).  The driver does that: entering
     persistent mode records the current in a file of the easyMeasure home folder,
     *before* it turns the heater off, so it survives a restart of the backend.  The
-    channel ``persistent_field`` shows it.  If it is unknown (a magnet left
-    persistent by hand), ``exit_persistent`` is refused until you set
-    ``persistent_field`` to the field the magnet was left at.
+    channel ``persistent_field`` shows it.  A magnet left persistent by hand (heater
+    off, nothing on record) cannot be told from one without a switch: set
+    ``persistent_field`` to the field it was left at, which also says there is a switch.
 
     ``enter_persistent``
         1. the supply holds the field (``HOLDING`` / ``PAUSED``); wait ``settle_time``
@@ -122,9 +122,9 @@ class AMI420(SCPIInstrument):
                     "know it): recorded by enter_persistent; set it by hand only for a magnet "
                     "made persistent without this driver.  NaN: unknown or driven"),
         ChannelSpec("IsPersistentSwitchInstalled", "r", "str", (), "",
-                    "the programmer is set up with a persistent switch (its Load menu; read "
-                    "when connecting): field changes need the heater on, and "
-                    "enter/exit_persistent are available"),
+                    "a persistent switch is in use: its heater was on, or a persistent field "
+                    "is on record (the 420 cannot be asked); field changes then need the "
+                    "heater on, and enter/exit_persistent are available"),
     ]
     ACTIONS = [
         ActionSpec("enter_persistent", "Enter Persistent: wait for a steady field, record the "
@@ -169,40 +169,26 @@ class AMI420(SCPIInstrument):
         self.limit = self.qf("CURRent:LIMit?")
         self.heat_time = self.qf("PSwitch:TIME?")
         heater = self.qb("PSwitch?")
-        self.switch_installed = True if heater else self._probe_switch()
         self.seq: Optional[dict] = None
         self.operation = "idle"
         self.cool_until = 0.0
         self.memory_path = memory_file(self.address)
         self.memory = self._load_memory()
+        # no query for it: a heater that is on, or a persistent field on record, says so
+        self.switch_installed = bool(heater or self.memory is not None)
+        if not self.switch_installed:
+            log.info("%s: heater off and no persistent field on record: no persistent switch "
+                     "assumed (the 420 cannot be asked)", self.name)
         if heater and self.memory is not None:
             log.warning("%s: the switch heater is on: the magnet is driven, the recorded "
                         "persistent current (%.5g A) is dropped" % (self.name,
                                                                      self.memory["current"]))
             self._forget()
         if self.switch_installed and not heater:
-            self.operation = ("idle (persistent at %.5g T, recorded)" % self.memory["field"]
-                              if self.memory else
-                              "idle (persistent; the field it was left at is unknown: set "
-                              "persistent_field before exit_persistent)")
+            self.operation = "idle (persistent at %.5g T, recorded)" % self.memory["field"]
         self.fault = None
         self._state = self._query_state()
         self._state_t = time.monotonic()
-
-    def _probe_switch(self) -> bool:
-        """Whether the Load menu says a persistent switch is installed, with the heater
-        off.  The 420 has no query for it, but refuses ``PSwitch`` with -107 "No switch
-        installed" when there is none; ``PSwitch 0`` changes nothing (it is off)."""
-        self.read_errors()
-        self.w("PSwitch 0")
-        errs = self.read_errors()
-        if any(e.split(",", 1)[0].strip() in ("-107", "-107.0") for e in errs):
-            log.info("%s: no persistent switch (the programmer's Load menu)", self.name)
-            return False
-        if errs:
-            raise IOError("%s: cannot tell whether a persistent switch is installed: %s"
-                          % (self.name, "; ".join(errs)))
-        return True
 
     def read_errors(self):
         out = []
@@ -299,6 +285,12 @@ class AMI420(SCPIInstrument):
         if not self.switch_installed:
             return None
         return self.qb("PSwitch?")
+
+    def _notice_switch(self) -> None:
+        """A heater turned on (front panel) since connecting: there is a switch."""
+        if not self.switch_installed and self.qb("PSwitch?"):
+            log.info("%s: the switch heater is on: a persistent switch is installed", self.name)
+            self.switch_installed = True
 
     def _persistent(self) -> bool:
         return bool(self.switch_installed) and self._heater() is False
@@ -407,6 +399,7 @@ class AMI420(SCPIInstrument):
     def _set_field(self, b: float) -> None:
         s = self._tick(force=True)
         self._refuse_when_faulted("set the field")
+        self._notice_switch()
         self._busy_checks(s)
         if self._persistent():
             raise ChannelError(
@@ -422,9 +415,11 @@ class AMI420(SCPIInstrument):
     def _set_persistent_field(self, b: float) -> None:
         s = self._tick(force=True)
         self._busy_checks(s)
-        if not self._persistent():
+        if self.qb("PSwitch?"):
             raise ChannelError("%s: the magnet is driven (switch heater on): its field is the "
                                "supply's, there is no persistent field to set" % self.name)
+        # the operator says so: a switch, cold, the magnet left at this field
+        self.switch_installed = True
         if not math.isfinite(b) or (self.limit and abs(b) > self.limit * self.coil * (1 + 1e-9)):
             raise ChannelError("%s: %g T is not a field this magnet can carry" % (self.name, b))
         self._remember(b / self.coil, "set by hand")
@@ -434,9 +429,10 @@ class AMI420(SCPIInstrument):
     def _common_checks(self, what: str) -> int:
         s = self._tick(force=True)
         self._refuse_when_faulted(what)
+        self._notice_switch()
         if not self.switch_installed:
-            raise ChannelError("%s: no persistent switch (the programmer's Load menu says "
-                               "none)" % self.name)
+            raise ChannelError("%s: no persistent switch in use (its heater is off and no "
+                               "persistent field is on record)" % self.name)
         self._busy_checks(s)
         return s
 

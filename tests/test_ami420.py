@@ -139,23 +139,36 @@ def test_the_recorded_current_survives_a_restart(backend):
 
 
 def test_a_magnet_left_persistent_without_the_driver(backend):
-    """At power-on the heater is off: persistent, at a field the 420 does not know."""
+    """Heater off and nothing on record: the 420 cannot tell a cold switch from no
+    switch, so none is assumed - unless the operator records the field it was left at."""
     h, emu = add_magnet(backend, heater=False)
-    assert h.read("status") == "PERSISTENT" and h.read("switch") == "OFF"
-    assert math.isnan(h.read("field")) and "unknown" in h.read("operation")
-    with pytest.raises(ChannelError, match="persistent mode"):
-        h.write("field", 0.5)
-    with pytest.raises(ChannelError, match="unknown"):
+    assert h.read("IsPersistentSwitchInstalled") == "No"
+    assert h.read("field") == 0.0 and h.read("status") == "PAUSED"   # measured, not NaN
+    with pytest.raises(ChannelError, match="no persistent switch in use"):
         h.run_action("exit_persistent")
-    assert not emu.heater
     with pytest.raises(ChannelError, match="not a field"):
         h.write("persistent_field", 99.0)
-    h.write("persistent_field", 0.0)                              # it was at zero
-    assert h.read("field") == 0.0
+    h.write("persistent_field", 0.0)                 # "persistent, it was left at 0 T"
+    assert h.read("IsPersistentSwitchInstalled") == "Yes"
+    assert h.read("status") == "PERSISTENT" and h.read("field") == 0.0
+    with pytest.raises(ChannelError, match="persistent mode"):
+        h.write("field", 0.5)
     h.run_action("exit_persistent")
     wait(lambda: h.read("status") == "HOLDING")
     assert emu.heater and emu.quench_count == 0
     only_the_420s_commands(emu)
+
+
+def test_a_heater_turned_on_later_is_noticed(backend):
+    h, emu = add_magnet(backend, heater=False)
+    assert h.read("IsPersistentSwitchInstalled") == "No"
+    emu.handle("PSwitch 1")                          # the front panel
+    wait(lambda: emu.switch == "warm", what="heated")
+    h.write("field", 0.3)
+    assert h.read("IsPersistentSwitchInstalled") == "Yes"
+    wait(lambda: h.read("status") == "HOLDING")
+    h.run_action("enter_persistent")
+    wait(lambda: h.read("status") == "PERSISTENT")
 
 
 def test_exit_never_heats_a_mismatched_switch(backend):
@@ -201,26 +214,19 @@ def test_cooling_is_waited_for(backend):
     assert h.read("field") == pytest.approx(0.5)   # recorded before the heater went off
 
 
-def test_whether_a_switch_is_installed_is_read_from_the_programmer(backend):
-    """No query for it on the 420: a heater that is on says yes; with the heater off,
-    ``PSwitch 0`` (no change) is refused with -107 when the Load menu says none."""
+def test_without_a_switch(backend):
+    """A system without a switch (Load menu: none): heater off, nothing on record."""
     h, emu = add_magnet(backend, switch=False)
     assert h.read("IsPersistentSwitchInstalled") == "No" and h.read("switch") == "NONE"
-    assert list(emu.errors) == [] and emu.beeps == 1             # the probe's -107, drained
     with pytest.raises(ChannelError, match="no persistent switch"):
         h.run_action("enter_persistent")
     with pytest.raises(ChannelError, match="read-only"):
         h.write("IsPersistentSwitchInstalled", "Yes")
     h.write("field", 0.5)
     wait(lambda: h.read("status") == "HOLDING")
-    assert h.read("field") == pytest.approx(0.5)                 # not NaN: no switch
-    # a switch, heater off: the probe is accepted and changes nothing
-    h2, emu2 = add_magnet(backend, "m2", heater=False)
-    assert h2.read("IsPersistentSwitchInstalled") == "Yes" and emu2.beeps == 0
-    assert not emu2.heater and not any(e.startswith("PSwitch") for _, e in emu2.history)
-    # heater on: no probe at all
-    h3, emu3 = add_magnet(backend, "m3")
-    assert h3.read("IsPersistentSwitchInstalled") == "Yes" and "PSwitch 0" not in emu3.log
+    assert h.read("field") == pytest.approx(0.5) == h.read("target")   # not NaN
+    assert h.read("status") == "HOLDING"
+    only_the_420s_commands(emu)                       # nothing probed, no beep
 
 
 def test_quench_aborts_and_is_cleared(backend):
