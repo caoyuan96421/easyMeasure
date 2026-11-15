@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 from typing import Callable, List, Optional, Sequence
 
-from ..backend.instrument import Instrument
-from ..backend.resources import BYTE_PORTS, GPIB_LIKE  # noqa: F401
+from ..backend.instrument import ActionSpec, Instrument
+from ..backend.resources import BYTE_PORTS
 from ..common.errors import ChannelError
 
 #: replies of 9.9E37 mean "overload" on most SCPI meters
@@ -30,6 +30,10 @@ def fmt(x: float) -> str:
     return "%.10g" % x
 
 
+#: the ``*CLS`` action most SCPI drivers offer (``SCPIInstrument._action_clear_status``)
+CLEAR_STATUS = ActionSpec("clear_status", "*CLS: clear the error queue and status")
+
+
 class SCPIInstrument(Instrument):
     """Base of SCPI drivers: identification, error queue, emulator for ``SIM::``.
 
@@ -44,7 +48,7 @@ class SCPIInstrument(Instrument):
     EMULATOR: Optional[Callable] = None
     INTERFACES = BYTE_PORTS
     DEFAULT_OPTIONS = {"timeout": 5.0, "reset": False, "check_errors": True,
-                       "read_termination": "\n", "write_termination": "\n"}
+                       "read_termination": "\n", "write_termination": "\n", "gpib_addr": None}
 
     idn = ""
 
@@ -52,7 +56,7 @@ class SCPIInstrument(Instrument):
     def select(self, resource) -> None:
         """Shared port behind a Prologix GPIB-USB/Ethernet adapter: with option
         ``gpib_addr`` the adapter is pointed at this instrument before each use."""
-        a = self.options.get("gpib_addr")
+        a = self.options["gpib_addr"]
         if a is not None:
             resource.write("++addr %d" % int(a))
 
@@ -66,7 +70,7 @@ class SCPIInstrument(Instrument):
     def attach_emulator(self) -> None:
         if self.address.upper().startswith("SIM::") and self.EMULATOR is not None:
             from .emulators import ensure_emulator
-            ensure_emulator(self.address, int(self.options.get("gpib_addr", 0)),
+            ensure_emulator(self.address, int(self.options["gpib_addr"] or 0),
                             lambda: self.EMULATOR(self.options))
 
     def identify(self) -> str:
@@ -81,7 +85,7 @@ class SCPIInstrument(Instrument):
 
     def connect(self):
         self.identify()
-        if self.options.get("reset"):
+        if self.options["reset"]:
             self.w("*RST")
         self.clear_errors()
 
@@ -121,13 +125,16 @@ class SCPIInstrument(Instrument):
     def clear_errors(self) -> None:
         self.w("*CLS")
 
+    def _action_clear_status(self) -> None:
+        self.w("*CLS")
+
     def checked(self, *cmds: str) -> None:
         """Send commands, then make sure the instrument accepted them: a refused
         setting raises :class:`ChannelError` (not retried) with the instrument's
         own message."""
         for c in cmds:
             self.w(c)
-        if self.options.get("check_errors", True):
+        if self.options["check_errors"]:
             errs = self.read_errors()
             if errs:
                 raise ChannelError("%s refused %s: %s" % (self.name, "; ".join(cmds),

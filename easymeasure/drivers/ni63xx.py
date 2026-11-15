@@ -9,7 +9,7 @@ from NI's specifications (:mod:`._nidaq_models`).
 
 Needs NI's NI-DAQmx driver runtime (from ni.com); the ``nidaqmx`` Python package
 is installed with easyMeasure.  Address: the device name in NI MAX, ``DAQ::Dev1``.
-``DAQ::SIM…`` (or option ``simulate``) uses the built-in emulation of the chosen
+``DAQ::SIM…`` uses the built-in emulation of the chosen
 model (``auto`` → USB-6363); NI MAX can also create a simulated device that the
 driver drives like a real one.
 
@@ -52,12 +52,11 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
+from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.logsys import get_logger
 from ..common.errors import ChannelError
-from ._nidaq_ai import DaqAnalogInput
+from ._nidaq import DaqBase, parse_list
 from ._nidaq_models import MODELS, X_COUNTER_SOURCE_PFI, X_SERIES, DaqModel, fmt_range, lookup
-from .ni6211 import _parse_list
 
 log = get_logger("drivers.ni63xx")
 
@@ -78,69 +77,41 @@ def _rate_text(m: DaqModel) -> str:
     return "%.4g kS/s for all scanned inputs together" % (m.ai_aggregate / 1e3)
 
 
-class NI63xx(DaqAnalogInput, Instrument):
+class NI63xx(DaqBase):
     DESCRIPTION = ("NI USB-63xx X Series DAQ (USB-6341 … 6366, NI-DAQmx): analog / digital "
                    "channels follow the model")
-    INTERFACES = ("daq",)
-
-    @classmethod
-    def suggested_addresses(cls, driver_name: str):
-        return [{"address": "DAQ::SIM", "description": "built-in emulation"}]
     IDN_MATCH = tuple(X_SERIES)
     ACTIONS = [ActionSpec("reset_counters", "restart the running edge counters at 0"),
                ActionSpec("release_digital", "make every digital line an input again "
                           "(outputs off, high impedance)")]
-    DEFAULT_OPTIONS = {"model": "auto", "ai_channels": "all", "simulate": False,
-                       "rate": 10000.0, "samples": 100, "terminal": "RSE",
-                       "ai_range": "±10 V", "ao_range": "±10 V"}
+    DEFAULT_OPTIONS = {"model": "auto", "ai_channels": "all", "rate": 10000.0, "samples": 100,
+                       "terminal": "RSE", "ai_range": "±10 V", "ao_range": "±10 V"}
 
     def __init__(self, name, address, options=None):
         super().__init__(name, address, options)
-        choice = str(self.options.get("model") or "auto")
-        self.model: DaqModel = MODELS.get(choice) if choice in X_SERIES else MODELS[SIM_DEFAULT]
+        choice = str(self.options["model"])
+        # the channels before connecting: those of the model chosen (auto: a USB-6363)
+        self.model: DaqModel = MODELS[choice if choice in X_SERIES else SIM_DEFAULT]
         self.model_choice = choice
         self.product: Optional[str] = None
-        self.tasks: Dict[str, object] = {}
         self.ao_last: Dict[int, float] = {}
         self.dout: Dict[str, bool] = {}                 # channel -> level driven
         self._settings_from_options()
         self._fit_settings(quiet=True)
 
     # -- connection -----------------------------------------------------------------------
-    @property
-    def simulated(self) -> bool:
-        return bool(self.options.get("simulate")) or self.device.upper().startswith("SIM")
-
-    def _module(self):
-        if self.simulated:
-            from .emulators import nidaqmx_sim
-            return nidaqmx_sim
-        try:
-            import nidaqmx                          # noqa: F401
-        except ImportError:
-            raise IOError("the nidaqmx package is missing (it comes with easyMeasure: "
-                          "pip install -e . again, or pip install nidaqmx)") from None
-        return nidaqmx
-
-    @property
-    def device(self) -> str:
-        a = self.address
-        if a.upper().startswith("DAQ::"):
-            return a[5:]
-        return self.options.get("device") or "Dev1"
-
     def _settings_from_options(self) -> None:
-        self.rate = float(self.options.get("rate", 10000.0))
-        self.samples = int(self.options.get("samples", 100))
-        self.terminal = str(self.options.get("terminal", "RSE")).upper()
-        self.ai_range = str(self.options.get("ai_range", "±10 V"))
-        self.ao_range = str(self.options.get("ao_range", "±10 V"))
+        self.rate = float(self.options["rate"])
+        self.samples = int(self.options["samples"])
+        self.terminal = str(self.options["terminal"]).upper()
+        self.ai_range = str(self.options["ai_range"])
+        self.ao_range = str(self.options["ao_range"])
 
     def connect(self):
         self.daq = self._module()
         self.C = self.daq.constants
         self.tasks, self.ao_last, self.dout = {}, {}, {}
-        choice = str(self.options.get("model") or "auto")
+        choice = str(self.options["model"])
         if self.simulated:
             self.daq.define(self.device, choice if choice in X_SERIES else SIM_DEFAULT)
         try:
@@ -153,32 +124,12 @@ class NI63xx(DaqAnalogInput, Instrument):
             raise IOError(str(exc)) from None
         self.model_choice = choice
         self._settings_from_options()
-        self._fit_settings()
+        self._check_settings()
         self._check_rate(self.rate, 1)
-
-    def disconnect(self):
-        self._close_all()
 
     def recover(self):
         self._close_all()                         # tasks are recreated on demand
         self.ao_last = {}
-
-    def _close_all(self):
-        for t in list(self.tasks.values()):
-            try:
-                t.close()
-            except Exception:
-                pass
-        self.tasks = {}
-        self._ai_active = None
-
-    def _close(self, key: str) -> None:
-        t = self.tasks.pop(key, None)
-        if t is not None:
-            try:
-                t.close()
-            except Exception:
-                pass
 
     # -- model ------------------------------------------------------------------------------
     def _resolve(self, choice: str) -> DaqModel:
@@ -201,8 +152,20 @@ class NI63xx(DaqAnalogInput, Instrument):
                         % (self.name, self.product, choice))
         return MODELS[choice]
 
+    def _check_settings(self) -> None:
+        """The options must fit the model (connecting is refused otherwise)."""
+        m = self.model
+        if self.terminal not in m.terminals():
+            raise ChannelError("option terminal %s: the %s supports %s" % (
+                self.terminal, m.product, " / ".join(m.terminals())))
+        for attr, ranges in (("ai_range", m.ai_ranges), ("ao_range", m.ao_ranges)):
+            ok = [fmt_range(v) for v in ranges]
+            if getattr(self, attr) not in ok:
+                raise ChannelError("option %s %s: the %s has %s" % (
+                    attr, getattr(self, attr), m.product, " / ".join(ok)))
+
     def _fit_settings(self, quiet: bool = False) -> None:
-        """Bring terminal / ranges into what the model supports."""
+        """A model change: bring terminal / ranges into what the new model supports."""
         m = self.model
         fixes = []
         if self.terminal not in m.terminals():
@@ -238,7 +201,7 @@ class NI63xx(DaqAnalogInput, Instrument):
         m = self.model
         usable = m.diff_inputs() if self.terminal == "DIFF" else list(range(m.ai))
         try:
-            chans = _parse_list(self.options.get("ai_channels", "all"), m.ai - 1)
+            chans = parse_list(self.options["ai_channels"], m.ai - 1)
         except ValueError as exc:
             raise ChannelError("%s (%s): %s" % (self.name, m.product, exc)) from None
         return [k for k in chans if k in usable]
@@ -294,9 +257,6 @@ class NI63xx(DaqAnalogInput, Instrument):
         ]
         return ch
 
-    def get_actions(self):
-        return list(self.ACTIONS)
-
     # -- analog input ---------------------------------------------------------------------
     def _ai_limit(self, n: int) -> float:
         m = self.model
@@ -312,18 +272,6 @@ class NI63xx(DaqAnalogInput, Instrument):
         return self.acquire(self.ai_list())
 
     # -- outputs ------------------------------------------------------------------------
-    def _task(self, key: str, make):
-        t = self.tasks.get(key)
-        if t is None:
-            t = self.daq.Task()
-            try:
-                make(t)
-            except Exception:
-                t.close()
-                raise
-            self.tasks[key] = t
-        return t
-
     def _ao_lim(self) -> float:
         return float(self.ao_range.strip("±V "))
 
@@ -331,20 +279,6 @@ class NI63xx(DaqAnalogInput, Instrument):
         lim = self._ao_lim()
         return self._task("ao%d" % k, lambda t: t.ao_channels.add_ao_voltage_chan(
             "%s/ao%d" % (self.device, k), min_val=-lim, max_val=lim))
-
-    def _ao_readback(self, k: int) -> float:
-        """An output nobody has written since connect: measured on the internal
-        ``_aoK_vs_aognd`` channel (the AI task makes way for it)."""
-        self._ai_release()
-        t = self.daq.Task()
-        try:
-            t.ai_channels.add_ai_voltage_chan("%s/_ao%d_vs_aognd" % (self.device, k),
-                                              min_val=-10.0, max_val=10.0)
-            return float(np.asarray(t.read(), dtype=float).ravel()[0])
-        except Exception:
-            return math.nan
-        finally:
-            t.close()
 
     # -- digital lines ----------------------------------------------------------------------
     def _line(self, channel: str) -> Optional[str]:

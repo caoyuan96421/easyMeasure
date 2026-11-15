@@ -36,8 +36,8 @@ set ``output<n>`` to ON to (re)program an SMU.
 4155/4156: the driver switches the analyzer into the 4145 syntax command mode
 by itself if it is not there yet (``CMD?``: 0 = SCPI, 1 = FLEX, 2 = 4145 syntax):
 from FLEX it returns to SCPI with ``:PAGE``, from SCPI it selects 4145 syntax with
-``:SYST:LANG COMP``, and checks ``CMD?`` after each step (option
-``force_4145_syntax`` = false leaves the mode alone).  Address e.g.
+``:SYST:LANG COMP``, and checks ``CMD?`` after each step (each step waits up to
+option ``mode_switch_timeout`` s).  Address e.g.
 ``GPIB0::17::INSTR``.  ``SIM::<name>`` uses the built-in emulator (option
 ``emulate_model`` = ``4145B`` or ``4155C``).
 
@@ -91,8 +91,8 @@ class HP4145(SCPIInstrument):
     DESCRIPTION = "HP 4145A/B (or 4155/4156 in 4145 syntax) parameter analyzer, user mode"
     INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     ACTIONS = [ActionSpec("disable_all", "DS: disable every SMU and source (outputs OFF)")]
-    DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
-                       "smus": [1, 2, 3, 4], "vs_vm": True, "force_4145_syntax": True}
+    DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, timeout=10.0, write_termination="\r\n",
+                           smus=[1, 2, 3, 4], vs_vm=True, mode_switch_timeout=5.0)
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -101,19 +101,19 @@ class HP4145(SCPIInstrument):
 
     model = "4145B"
     integration = "short"
+    st: dict = {}                     # SMU n -> what was programmed (no queries in user mode)
 
     def _smus(self) -> List[int]:
-        smus = [int(n) for n in (self.options.get("smus") or [1, 2, 3, 4])]
+        smus = [int(n) for n in self.options["smus"]]
         if not smus or any(not 1 <= n <= 4 for n in smus):
             raise ChannelError("option smus: SMU numbers 1 … 4")
         return smus
 
     # -- channel list -----------------------------------------------------------------
     def get_channels(self):
-        st = getattr(self, "st", None) or {}
         ch: List[ChannelSpec] = []
         for n in self._smus():
-            mode = st.get(n, {}).get("mode", "Voltage")
+            mode = self.st[n]["mode"] if n in self.st else "Voltage"
             v = mode == "Voltage"
             what = " (SMU%d)" % n
             ch += [
@@ -131,7 +131,7 @@ class HP4145(SCPIInstrument):
                 ChannelSpec("range%d" % n, "rw", "str", (), "", "source range" + what, config=True,
                             allowed=[r[1] for r in (V_RANGES if v else I_RANGES)]),
             ]
-        if self.options.get("vs_vm", True):
+        if self.options["vs_vm"]:
             ch += [ChannelSpec("vs%d" % k, "rw", "float", (), "V", "voltage source VS%d (±20 V)" % k)
                    for k in (1, 2)]
             ch += [ChannelSpec("vm%d" % k, "r", "float", (), "V", "voltmeter VM%d" % k)
@@ -155,10 +155,12 @@ class HP4145(SCPIInstrument):
         self.idn = idn
         self.w("US")                              # user mode: direct SMU control
         self.w("IT%d" % (INTEGRATION.index(self.integration) + 1))
-        # nothing is known about the outputs: assume OFF, leave the hardware alone
-        old = getattr(self, "st", None) or {}
-        self.st = {n: {"mode": old.get(n, {}).get("mode", "Voltage"), "on": False, "value": 0.0,
-                       "comp": old.get(n, {}).get("comp"), "range": "AUTO"} for n in self._smus()}
+        # nothing is known about the outputs: assume OFF, leave the hardware alone (a
+        # reconnect keeps the mode and compliance this driver programmed)
+        old = self.st
+        self.st = {n: {"mode": old[n]["mode"] if n in old else "Voltage", "on": False,
+                       "value": 0.0, "comp": old[n]["comp"] if n in old else None,
+                       "range": "AUTO"} for n in self._smus()}
         self.vs = {1: None, 2: None}
 
     def _cmd_mode(self) -> str:
@@ -177,10 +179,7 @@ class HP4145(SCPIInstrument):
         mode = self._cmd_mode()
         if mode == "2":
             return
-        if not self.options.get("force_4145_syntax", True):
-            raise IOError("the %s is not in 4145 syntax mode (CMD? = %s) and option "
-                          "force_4145_syntax is off" % (self.model, mode))
-        limit = float(self.options.get("mode_switch_timeout", 5.0))
+        limit = float(self.options["mode_switch_timeout"])
         log.info("%s: %s is in %s command mode; switching to 4145 syntax", self.name, self.model,
                  {"0": "SCPI", "1": "FLEX"}.get(mode, "unknown (%s)" % mode))
         if mode == "1":
@@ -251,7 +250,7 @@ class HP4145(SCPIInstrument):
         if channel == "integration":
             return self.integration
         m = re.fullmatch(r"(vs|vm)([12])", channel)
-        if m and self.options.get("vs_vm", True):
+        if m and self.options["vs_vm"]:
             k = int(m.group(2))
             if m.group(1) == "vm":
                 return self._measure("V", 4 + k)
@@ -279,7 +278,7 @@ class HP4145(SCPIInstrument):
             self.integration = value
             return
         m = re.fullmatch(r"vs([12])", channel)
-        if m and self.options.get("vs_vm", True):
+        if m and self.options["vs_vm"]:
             k = int(m.group(1))
             if abs(value) > 20.0:
                 raise ChannelError("VS%d is limited to ±20 V" % k)
@@ -343,5 +342,5 @@ class HP4145(SCPIInstrument):
         self.vs = {1: None, 2: None}
 
 
-HP4145.CHANNELS = HP4145("static", "SIM::x").get_channels()
+HP4145.CHANNELS = HP4145("static", "NONE").get_channels()
 DRIVER = HP4145

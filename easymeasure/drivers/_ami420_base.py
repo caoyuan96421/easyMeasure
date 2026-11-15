@@ -259,7 +259,7 @@ class AMI420Base(SCPIInstrument):
         """Read STATE? (at most every ``status_interval`` s unless *force*), detect a
         quench, advance a running persistent-switch procedure.  Returns the state."""
         now = time.monotonic()
-        iv = float(self.options.get("status_interval", 0.25) or 0)
+        iv = float(self.options["status_interval"])
         if force or self._state is None or now - self._state_t >= iv or self.seq is not None:
             self._state = self._query_state()
             self._state_t = now
@@ -315,10 +315,7 @@ class AMI420Base(SCPIInstrument):
 
     def _rate_A_s(self) -> float:
         """The ramp rate in A/s (for the time a ramp may take)."""
-        try:
-            return max(abs(self.qf("RAMP:RATE:CURRent?")) * self.per_min / 60.0, 1e-6)
-        except Exception:
-            return 1e-3
+        return max(abs(self.qf("RAMP:RATE:CURRent?")) * self.per_min / 60.0, 1e-6)
 
     def poll(self) -> None:
         self._tick(force=True)
@@ -445,7 +442,7 @@ class AMI420Base(SCPIInstrument):
         now = time.monotonic()
         self.seq = {"op": "enter", "step": "settle", "t0": now, "since": now}
         self.operation = "entering persistent mode: waiting %.0f s for a steady field" % \
-            float(self.options.get("settle_time", 10.0))
+            float(self.options["settle_time"])
         log.info("%s: entering persistent mode at %.5g T", self.name, self._field_or_nan())
         self._advance(s)
 
@@ -525,13 +522,13 @@ class AMI420Base(SCPIInstrument):
                 if self._heater() is not True:
                     return self._fail("the switch heater went off (front panel?)")
                 v = self.qf("VOLTage:MAGnet?")
-                vmax = float(self.options.get("max_magnet_voltage", 0.05))
+                vmax = float(self.options["max_magnet_voltage"])
                 if abs(v) > vmax:
                     seq["since"] = now
                     self.operation = "entering persistent mode: waiting for the magnet " \
                                      "voltage (%.3g V) to decay" % v
                     return None
-                if now - seq["since"] < float(self.options.get("settle_time", 10.0)):
+                if now - seq["since"] < float(self.options["settle_time"]):
                     return None
                 # the current goes on record before the heater goes off
                 im = self.qf("CURRent:MAGnet?")
@@ -541,7 +538,7 @@ class AMI420Base(SCPIInstrument):
                     return self._fail("the persistent current could not be recorded (%s); the "
                                       "switch heater was left on" % exc)
                 self.checked("PSwitch 0")
-                cool = float(self.options.get("cool_time", 60.0))
+                cool = float(self.options["cool_time"])
                 self.cool_until = now + cool
                 seq.update(step="cool", t0=now)
                 self.operation = "entering persistent mode: cooling the switch (%.0f s)" % cool
@@ -555,7 +552,7 @@ class AMI420Base(SCPIInstrument):
                                       % STATES.get(s, s), pause=True)
                 if self._cooling():
                     return None
-                if not self.options.get("zero_leads", True):
+                if not self.options["zero_leads"]:
                     return self._done("persistent at %.5g T" % self.memory["field"])
                 if s != AT_ZERO:
                     self.checked("ZERO")
@@ -577,7 +574,7 @@ class AMI420Base(SCPIInstrument):
                 im = seq["current"]
                 if s == HOLDING:
                     is_ = self.qf("CURRent:MAGnet?")
-                    tol = float(self.options.get("match_tolerance", 0.05))
+                    tol = float(self.options["match_tolerance"])
                     if abs(im - is_) <= tol:
                         # nothing may have changed since: heater still off, still holding
                         if self._heater() is not False or self._query_state() != HOLDING:

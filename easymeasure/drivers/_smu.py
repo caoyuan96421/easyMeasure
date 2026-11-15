@@ -28,6 +28,8 @@ from ..backend.instrument import ChannelSpec
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument
 
+#: quantity -> SCPI function name
+Q = {"V": "VOLT", "I": "CURR"}
 MODES = ["Voltage", "Current"]
 ONOFF = ["ON", "OFF"]
 SENSE = ["2-wire", "4-wire"]
@@ -39,6 +41,8 @@ class SMUBase(SCPIInstrument):
     #: is more than one output
     OUTPUTS: List[str] = ["1"]
     NPLC_RANGE = (0.01, 10.0)
+    DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, verify_writes=False)
+    st = None                                    # per output: mode, on (after connect)
 
     # -- channel list ---------------------------------------------------------
     def suffix(self, o: str) -> str:
@@ -71,17 +75,10 @@ class SMUBase(SCPIInstrument):
         return []
 
     def get_channels(self):
-        st = getattr(self, "st", None)
         out = []
         for o in self.OUTPUTS:
-            out += self.output_channels(o, st[o]["mode"] if st else "Voltage")
+            out += self.output_channels(o, self.st[o]["mode"] if self.st else "Voltage")
         return out
-
-    @classmethod
-    def static_channels(cls) -> List[ChannelSpec]:
-        inst = cls.__new__(cls)
-        inst.st = None
-        return SMUBase.get_channels(inst)
 
     # -- state ------------------------------------------------------------------------
     def connect(self):
@@ -90,7 +87,6 @@ class SMUBase(SCPIInstrument):
         for o in self.OUTPUTS:
             self.setup_output(o)
             self.st[o] = {"mode": self.hw_mode(o), "on": self.hw_output(o)}
-        self.clear_errors()
 
     def setup_output(self, o: str) -> None:
         """Bring the output into the state this driver relies on (once per connect)."""
@@ -158,7 +154,7 @@ class SMUBase(SCPIInstrument):
                 raise ChannelError("%s: %s%s is measured in %s mode; set mode%s first"
                                    % (self.name, base, self.suffix(o), st["mode"], self.suffix(o)))
             self.hw_set_level(o, q, float(value))
-            if self.options.get("verify_writes"):
+            if self.options["verify_writes"]:
                 got = self.hw_level(o, q)
                 if abs(got - value) > 1e-6 * max(abs(value), 1e-9):
                     # e.g. a command lost on a noisy serial line: the framework retries

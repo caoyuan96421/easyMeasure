@@ -7,7 +7,7 @@ magnet.  The 420 does not know the persistent field: the driver records it (see
 ``ami420_noPersistent``.
 """
 
-from ._ami420_base import AMI420Base, memory_file  # noqa: F401
+from ._ami420_base import AMI420Base
 
 
 class AMI420Persistent(AMI420Base):

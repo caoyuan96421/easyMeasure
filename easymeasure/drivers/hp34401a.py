@@ -33,7 +33,7 @@ from __future__ import annotations
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
-from ._scpi import SCPIInstrument
+from ._scpi import CLEAR_STATUS, SCPIInstrument
 
 MODES = ["vdc", "vac", "idc", "iac", "ohm", "ohm4w"]
 #: mode -> (FUNC name, command prefix, reading channel, unit, description)
@@ -56,6 +56,8 @@ RANGES = {
 RANGES["ohm4w"] = RANGES["ohm"]
 NPLC = [0.02, 0.2, 1, 10, 100]
 AC_FILTERS = ["3 Hz", "20 Hz", "200 Hz"]
+#: AC filter -> read timeout (s): the 3 Hz filter settles in ~7 s, 20 Hz in ~1 s
+AC_TIMEOUT = {"3 Hz": 30.0, "20 Hz": 10.0, "200 Hz": 5.0}
 
 
 def _is_ac(mode: str) -> bool:
@@ -66,9 +68,7 @@ class HP34401A(SCPIInstrument):
     DESCRIPTION = "HP/Agilent 34401A 6.5 digit multimeter (V, I, R; DC and AC)"
     INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     IDN_MATCH = ("34401",)
-    ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue"),
-               ActionSpec("beep", "beep once")]
-    DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, timeout=5.0)
+    ACTIONS = [CLEAR_STATUS, ActionSpec("beep", "beep once")]
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -84,8 +84,7 @@ class HP34401A(SCPIInstrument):
         m = self.mode
         _, _, name, unit, what = FUNCS[m]
         if _is_ac(m):
-            # 3 Hz filter: ~7 s to settle; 20 Hz ~1 s
-            t = {"3 Hz": 30.0, "20 Hz": 10.0}.get(self.ac_filter, 5.0)
+            t = AC_TIMEOUT[self.ac_filter]
         else:
             t = 5.0 + 0.1 * self.nplc            # NPLC 100 with auto-zero: ~4 s per reading
         ch = [
@@ -151,7 +150,7 @@ class HP34401A(SCPIInstrument):
             for v, label in RANGES[self.mode]:
                 if abs(v - r) <= 1e-6 * v:
                     return label
-            return "%g" % r
+            raise IOError("unexpected range %g for %s" % (r, self.mode))
         if channel == "nplc" and not _is_ac(self.mode):
             self.nplc = self.qf("%s:NPLC?" % self.prefix)
             return self.nplc
@@ -189,12 +188,9 @@ class HP34401A(SCPIInstrument):
             raise ChannelError("%s: channel %s is not writable in mode %s"
                                % (self.name, channel, self.mode))
 
-    def _action_clear_status(self):
-        self.w("*CLS")
-
     def _action_beep(self):
         self.w("SYST:BEEP")
 
 
-HP34401A.CHANNELS = HP34401A.get_channels(HP34401A.__new__(HP34401A))
+HP34401A.CHANNELS = HP34401A("static", "NONE").get_channels()
 DRIVER = HP34401A

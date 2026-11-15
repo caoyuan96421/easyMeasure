@@ -113,7 +113,7 @@ class E8358A(SCPIInstrument):
                    "settings"),
     ]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, timeout=10.0, channel=1,
-                           parameters="", sweep_timeout=30.0, poll_interval=0.05)
+                           parameters="", sweep_timeout=30.0, sweep_poll=0.05)
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -123,7 +123,7 @@ class E8358A(SCPIInstrument):
     # -- connection -----------------------------------------------------------------------
     def connect(self):
         super().connect()
-        self.ch = int(self.options.get("channel", 1))
+        self.ch = int(self.options["channel"])
         model = next((m for m in F_RANGE if m in self.idn.upper()), "E8358A")
         self.f_max = F_RANGE[model]
         self.w("FORM:DATA ASC,0")                  # comma-separated numbers
@@ -131,7 +131,7 @@ class E8358A(SCPIInstrument):
         self.w("INIT:CONT ON")
         self.measured = self._catalog()
         self._fresh()
-        for p in [p.strip().upper() for p in str(self.options.get("parameters", "")).split(",")]:
+        for p in [p.strip().upper() for p in str(self.options["parameters"]).split(",")]:
             if p:
                 if p not in PARAMS:
                     raise ChannelError("%s: option parameters: %r is not one of %s"
@@ -189,9 +189,9 @@ class E8358A(SCPIInstrument):
             self.w("SENS%d:SWE:MODE GRO;*OPC" % self.ch)
         else:
             self.w("SENS%d:SWE:MODE SING;*OPC" % self.ch)
-        limit = 3.0 * t_sweep * directions * count + float(self.options.get("sweep_timeout", 30.0))
+        limit = 3.0 * t_sweep * directions * count + float(self.options["sweep_timeout"])
         deadline = time.monotonic() + limit
-        poll = float(self.options.get("poll_interval", 0.05))
+        poll = float(self.options["sweep_poll"])
         while not int(self.qf("*ESR?")) & 1:
             if time.monotonic() > deadline:
                 raise InstrumentTimeout("%s: the sweep did not end in %.0f s" % (self.name, limit))
@@ -302,7 +302,7 @@ class E8358A(SCPIInstrument):
 
     # -- actions ----------------------------------------------------------------------------------
     def _action_single_sweep(self):
-        for p in [p.strip().upper() for p in str(self.options.get("parameters", "")).split(",")]:
+        for p in [p.strip().upper() for p in str(self.options["parameters"]).split(",")]:
             if p in PARAMS:
                 self._define(p)
         if not self.measured:

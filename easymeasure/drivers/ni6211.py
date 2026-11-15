@@ -2,7 +2,7 @@
 
 Needs NI's NI-DAQmx driver runtime (from ni.com); the ``nidaqmx`` Python package
 is installed with easyMeasure.  The address names the device as shown in NI MAX:
-``DAQ::Dev1``.  ``DAQ::SIM`` (or option ``simulate``) uses a built-in emulation
+``DAQ::Dev1``.  ``DAQ::SIM`` uses a built-in emulation
 of the card (no NI software needed); NI MAX can also create a simulated
 USB-6211 that this driver drives like a real one.
 
@@ -35,68 +35,33 @@ from typing import Dict, List
 
 import numpy as np
 
-from ..backend.instrument import ActionSpec, ChannelSpec, Instrument
-from ._nidaq_ai import DaqAnalogInput
+from ..backend.instrument import ActionSpec, ChannelSpec
 from ..common.errors import ChannelError
+from ._nidaq import DaqBase, parse_list
 
 AI_RANGES = ["±10 V", "±5 V", "±1 V", "±0.2 V"]
 TERMINALS = ["RSE", "NRSE", "DIFF"]
 MAX_AGGREGATE = 250e3
 
 
-def _parse_list(spec: str, hi: int) -> List[int]:
-    out = []
-    for part in str(spec).replace(" ", "").split(","):
-        if not part or part.lower() == "all":
-            out += list(range(hi + 1))
-            continue
-        m = re.fullmatch(r"(\d+)(?:[-:](\d+))?", part)
-        if not m:
-            raise ValueError("bad channel list %r (e.g. '0-3,8')" % spec)
-        a = int(m.group(1))
-        b = int(m.group(2) or a)
-        out += list(range(min(a, b), max(a, b) + 1))
-    bad = [k for k in out if k > hi]
-    if bad:
-        raise ValueError("no analog input ai%d" % bad[0])
-    return sorted(set(out))
-
-
-class NI6211(DaqAnalogInput, Instrument):
+class NI6211(DaqBase):
     DESCRIPTION = "NI USB-6211 DAQ: 16 AI, 2 AO, 4 DI, 4 DO, 2 counters (NI-DAQmx)"
-    INTERFACES = ("daq",)
-
-    @classmethod
-    def suggested_addresses(cls, driver_name: str):
-        return [{"address": "DAQ::SIM", "description": "built-in emulation"}]
     IDN_MATCH = ("USB-621",)
     ACTIONS = [ActionSpec("reset_counters", "restart both edge counters at 0")]
-    DEFAULT_OPTIONS = {"ai_channels": "all", "simulate": False, "rate": 10000.0,
-                       "samples": 100, "terminal": "RSE", "ai_range": "±10 V"}
+    DEFAULT_OPTIONS = {"ai_channels": "all", "rate": 10000.0, "samples": 100,
+                       "terminal": "RSE", "ai_range": "±10 V"}
 
-    terminal = "RSE"
-    rate = 10000.0
-    samples = 100
+    def __init__(self, name, address, options=None):
+        super().__init__(name, address, options)
+        self._settings_from_options()
+
+    def _settings_from_options(self) -> None:
+        self.rate = float(self.options["rate"])
+        self.samples = int(self.options["samples"])
+        self.terminal = str(self.options["terminal"]).upper()
+        self.ai_range = str(self.options["ai_range"])
 
     # -- connection ---------------------------------------------------------------------
-    def _module(self):
-        if self.options.get("simulate") or self.device.upper().startswith("SIM"):
-            from .emulators import nidaqmx_sim
-            return nidaqmx_sim
-        try:
-            import nidaqmx                          # noqa: F401
-        except ImportError:
-            raise IOError("the nidaqmx package is missing (it comes with easyMeasure: "
-                          "pip install -e . again, or pip install nidaqmx)") from None
-        return nidaqmx
-
-    @property
-    def device(self) -> str:
-        a = self.address
-        if a.upper().startswith("DAQ::"):
-            return a[5:]
-        return self.options.get("device") or "Dev1"
-
     def connect(self):
         self.daq = self._module()
         C = self.daq.constants
@@ -108,47 +73,24 @@ class NI6211(DaqAnalogInput, Instrument):
         if "621" not in str(product):
             raise IOError("%s is a %s, not a USB-621x" % (self.device, product))
         self.product = product
-        self.tasks: Dict[str, object] = {}
+        self.tasks = {}
         self.ao_last: Dict[int, float] = {}
-        self.rate = float(self.options.get("rate", 10000.0))
-        self.samples = int(self.options.get("samples", 100))
-        self.terminal = str(self.options.get("terminal", "RSE")).upper()
-        self.ai_range = str(self.options.get("ai_range", "±10 V"))
+        self._settings_from_options()
         if self.terminal not in TERMINALS or self.ai_range not in AI_RANGES:
             raise ChannelError("options terminal / ai_range must be one of %s / %s"
                                % (TERMINALS, AI_RANGES))
         self._check_rate(self.rate, 1)
         self._start_counters()
 
-    def disconnect(self):
-        self._close_all()
-
     def recover(self):
         self._close_all()                         # tasks are recreated on demand
         self._start_counters()
-
-    def _close_all(self):
-        for t in list(getattr(self, "tasks", {}).values()):
-            try:
-                t.close()
-            except Exception:
-                pass
-        self.tasks = {}
-        self._ai_active = None
-
-    def _close(self, key: str) -> None:
-        t = self.tasks.pop(key, None)
-        if t is not None:
-            try:
-                t.close()
-            except Exception:
-                pass
 
     # -- channel list -----------------------------------------------------------------------
     def ai_list(self) -> List[int]:
         hi = 7 if self.terminal == "DIFF" else 15
         try:
-            chans = _parse_list(self.options.get("ai_channels", "all"), 15)
+            chans = parse_list(self.options["ai_channels"], 15)
         except ValueError as exc:
             raise ChannelError(str(exc)) from None
         return [k for k in chans if k <= hi]
@@ -194,48 +136,22 @@ class NI6211(DaqAnalogInput, Instrument):
         return self.acquire(self.ai_list())
 
     # -- outputs ------------------------------------------------------------------------
-    def _out_task(self, key: str, make):
-        t = self.tasks.get(key)
-        if t is None:
-            t = self.daq.Task()
-            try:
-                make(t)
-            except Exception:
-                t.close()
-                raise
-            self.tasks[key] = t
-        return t
-
     def _ao_task(self, k: int):
-        return self._out_task("ao%d" % k, lambda t: t.ao_channels.add_ao_voltage_chan(
+        return self._task("ao%d" % k, lambda t: t.ao_channels.add_ao_voltage_chan(
             "%s/ao%d" % (self.device, k), min_val=-10.0, max_val=10.0))
 
     def _do_task(self, k: int):
-        return self._out_task("do%d" % k, lambda t: t.do_channels.add_do_chan(
+        return self._task("do%d" % k, lambda t: t.do_channels.add_do_chan(
             "%s/port1/line%d" % (self.device, k), line_grouping=self.C.LineGrouping.CHAN_PER_LINE))
 
     def _di_task(self):
-        return self._out_task("di", lambda t: t.di_channels.add_di_chan(
+        return self._task("di", lambda t: t.di_channels.add_di_chan(
             "%s/port0/line0:3" % self.device, line_grouping=self.C.LineGrouping.CHAN_PER_LINE))
-
-    def _ao_readback(self, k: int) -> float:
-        """The value of an output nobody has written since connect: measured on the
-        card's internal ``_aoK_vs_aognd`` channel (the AI task must make way)."""
-        self._ai_release()
-        t = self.daq.Task()
-        try:
-            t.ai_channels.add_ai_voltage_chan("%s/_ao%d_vs_aognd" % (self.device, k),
-                                              min_val=-10.0, max_val=10.0)
-            return float(np.asarray(t.read(), dtype=float).ravel()[0])
-        except Exception:
-            return math.nan
-        finally:
-            t.close()
 
     def _start_counters(self):
         for k in (0, 1):
             self._close("ctr%d" % k)
-            t = self._out_task("ctr%d" % k, lambda t, k=k: t.ci_channels.add_ci_count_edges_chan(
+            t = self._task("ctr%d" % k, lambda t, k=k: t.ci_channels.add_ci_count_edges_chan(
                 "%s/ctr%d" % (self.device, k)))
             t.start()
 

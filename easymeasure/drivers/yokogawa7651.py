@@ -32,7 +32,6 @@ and ``OS`` (settings).
 
 from __future__ import annotations
 
-import math
 import re
 
 from ..backend.instrument import ActionSpec, ChannelSpec
@@ -94,37 +93,34 @@ class Yokogawa7651(SCPIInstrument):
     def connect(self):
         self.attach_emulator()
         self.select(self.resource)
-        self.range_setting = str(self.options.get("range", "AUTO"))
         st = self._settings()                     # mode, range, limits from OS
-        od = self._od()                           # value (and function) from OD
-        self.mode = st.get("mode") or od[0] or "Voltage"
-        self.range_code = st.get("range")         # None: unknown until we set one
-        self.value = od[1]
-        self.limits = {"V": st.get("LV"), "I": st.get("LA")}
+        self.mode = st["mode"]
+        self.range_code = st["range"]
+        self.range_setting = "AUTO"
+        self.value = self._od()[1]
+        self.limits = {"V": st["LV"], "I": st["LA"]}
         self.on = self._read_output()
-        if self.range_setting != "AUTO" and self.range_setting not in [
-                r[2] for r in RANGES[self.mode]]:
-            self.range_setting = "AUTO"
 
     def _settings(self) -> dict:
         """``OS``: several lines ending with END, e.g. ``F1R4S+1.0000E+0`` / ``LV30LA120``."""
         out = {}
-        try:
-            self.w("OS")
-            for _ in range(8):
-                line = self.resource.read().strip()
-                m = re.search(r"F(\d)R(\d)S", line, re.I)
-                if m:
-                    out["mode"] = "Voltage" if m.group(1) == "1" else "Current"
-                    out["range"] = int(m.group(2))
-                m = re.search(r"LV(\d+)LA(\d+)", line, re.I)
-                if m:
-                    out["LV"], out["LA"] = int(m.group(1)), int(m.group(2))
-                if line.upper().startswith("END"):
-                    break
-        except Exception as exc:
+        self.w("OS")
+        for _ in range(8):
+            line = self.resource.read().strip()
+            m = re.search(r"F(\d)R(\d)S", line, re.I)
+            if m:
+                out["mode"] = "Voltage" if m.group(1) == "1" else "Current"
+                out["range"] = int(m.group(2))
+            m = re.search(r"LV(\d+)LA(\d+)", line, re.I)
+            if m:
+                out["LV"], out["LA"] = int(m.group(1)), int(m.group(2))
+            if line.upper().startswith("END"):
+                break
+        missing = {"mode", "LV"} - set(out)
+        if missing:
             self.resource.clear()
-            raise IOError("cannot read the settings (OS): %s" % exc) from None
+            raise IOError("incomplete settings (OS): no %s" % " / ".join(
+                {"mode": "function / range", "LV": "limits"}[k] for k in sorted(missing)))
         return out
 
     def _od(self):
@@ -164,8 +160,8 @@ class Yokogawa7651(SCPIInstrument):
         if channel in ("Icompliance", "Vcompliance"):
             self._check_compliance_name(channel)
             if channel == "Icompliance":
-                return math.nan if self.limits["I"] is None else self.limits["I"] * 1e-3
-            return math.nan if self.limits["V"] is None else float(self.limits["V"])
+                return self.limits["I"] * 1e-3
+            return float(self.limits["V"])
         if channel == "output":
             self.on = self._read_output()
             return "ON" if self.on else "OFF"
@@ -183,7 +179,7 @@ class Yokogawa7651(SCPIInstrument):
                 raise ChannelError("%s: switch the output OFF before changing the mode" % self.name)
             self._cmd("F%d" % FUNC[value])
             self.mode = value
-            self.range_code = None
+            self.range_code = None                # the 7651 picks one: set with the next value
             self.range_setting = "AUTO"
             self._verify()
         elif channel == "range":
@@ -248,7 +244,7 @@ class Yokogawa7651(SCPIInstrument):
 
     def _verify(self, v: float = None) -> None:
         """Read the output data back: an error flag or a different value is refused."""
-        if not self.options.get("check_errors", True):
+        if not self.options["check_errors"]:
             if v is not None:
                 self.value = v
             return
@@ -268,5 +264,5 @@ class Yokogawa7651(SCPIInstrument):
         self._verify(0.0)
 
 
-Yokogawa7651.CHANNELS = Yokogawa7651.get_channels(Yokogawa7651.__new__(Yokogawa7651))
+Yokogawa7651.CHANNELS = Yokogawa7651("static", "NONE").get_channels()
 DRIVER = Yokogawa7651

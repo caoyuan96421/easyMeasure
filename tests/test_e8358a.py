@@ -26,7 +26,7 @@ def ours(emu):
 
 
 def add_vna(be, name="vna", **opts):
-    o = dict({"time_scale": 100.0, "poll_interval": 0.005}, **opts)
+    o = dict({"time_scale": 100.0, "sweep_poll": 0.005}, **opts)
     be.add_instrument(name, "e8358a", "SIM::pna_" + name, o)
     h = be.instruments.get(name)
     assert h.state == "connected", h.last_error

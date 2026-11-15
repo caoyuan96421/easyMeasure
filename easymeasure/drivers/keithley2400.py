@@ -20,27 +20,23 @@ Channels (see :mod:`._smu` for the mode logic)
 
 Options: ``reset`` (send ``*RST`` on connect), ``autorange`` (source and measure
 auto-ranging, default on), ``check_errors`` (read the error queue after every
-setting so a refused value raises an error, default on).
+setting so a refused value raises an error, default on), ``verify_writes`` (read
+every new source value back).
 """
 
 from __future__ import annotations
 
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.resources import GPIB_LIKE
-from ._scpi import fmt
-from ._smu import SMUBase
-
-_Q = {"V": "VOLT", "I": "CURR"}
+from ._scpi import CLEAR_STATUS, fmt
+from ._smu import Q as _Q, SMUBase
 
 
 class Keithley2400(SMUBase):
     DESCRIPTION = "Keithley 2400 SourceMeter (voltage or current source, measure the other)"
     INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     IDN_MATCH = ("KEITHLEY",)
-    OUTPUTS = ["1"]
-    NPLC_RANGE = (0.01, 10.0)
-    ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue and status"),
-               ActionSpec("beep", "short beep (find the instrument in the rack)")]
+    ACTIONS = [CLEAR_STATUS, ActionSpec("beep", "short beep (find the instrument in the rack)")]
     DEFAULT_OPTIONS = dict(SMUBase.DEFAULT_OPTIONS, autorange=True)
 
     @staticmethod
@@ -64,7 +60,7 @@ class Keithley2400(SMUBase):
         src = "VOLT" if mode == "Voltage" else "CURR"
         self.w(":SENS:FUNC '%s'" % meas)
         self.w(":FORM:ELEM %s" % meas)          # :READ? returns just that reading
-        if self.options.get("autorange", True):
+        if self.options["autorange"]:
             self.w(":SENS:%s:RANG:AUTO ON" % meas)
             self.w(":SOUR:%s:RANG:AUTO ON" % src)
 
@@ -126,12 +122,9 @@ class Keithley2400(SMUBase):
         super().write_extra(base, o, value)
 
     # -- actions ----------------------------------------------------------------------
-    def _action_clear_status(self):
-        self.w("*CLS")
-
     def _action_beep(self):
         self.w(":SYST:BEEP 1000, 0.2")
 
 
-Keithley2400.CHANNELS = Keithley2400.static_channels()
+Keithley2400.CHANNELS = Keithley2400("static", "NONE").get_channels()
 DRIVER = Keithley2400

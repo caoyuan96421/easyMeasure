@@ -126,15 +126,12 @@ class Cygnus16430(SCPIInstrument):
 
     # -- connection -----------------------------------------------------------------------
     def connect(self):
-        self.identify()
-        if self.options.get("reset"):
-            self.w("*RST")
-        self.clear_errors()
+        super().connect()
         for which in ("V", "I"):
             self.sf[which] = int(to_float(self.q("RATE? %s" % which)))
         # the filters cannot be read back: put them where the options say
         for which in ("V", "I"):
-            self._set_filter(which, float(self.options.get(which + "filter", 1.0)))
+            self._set_filter(which, float(self.options[which + "filter"]))
         self.changed = [time.monotonic()] * N
 
     # -- errors (one-slot register, no *CLS) ------------------------------------------
@@ -160,7 +157,7 @@ class Cygnus16430(SCPIInstrument):
         return out
 
     def _wait_fresh(self, chans) -> None:
-        if not self.options.get("settle", True):
+        if not self.options["settle"]:
             return
         due = max(self.changed[c] for c in chans) + self.settle_time()
         wait = due - time.monotonic()
@@ -227,8 +224,7 @@ class Cygnus16430(SCPIInstrument):
             self.checked("CURR %d,%.8f" % (k, i))
             self._touch(k - 1)
         elif kind == "output" and k is not None:
-            on = str(value).strip().upper() in ("ON", "1", "TRUE")
-            self.checked("OUTP %d,%s" % (k, "ON" if on else "OFF"))
+            self.checked("OUTP %d,%s" % (k, value))
             self._touch(k - 1)
         elif channel in ("voltAll", "IlimitAll"):
             vals = [float(v) for v in value]
@@ -275,7 +271,7 @@ class Cygnus16430(SCPIInstrument):
         self.w("CAL:AUTO")
         # the firmware answers nothing while it calibrates: the error query waits
         self.w("SYST:ERR?")
-        deadline = time.monotonic() + float(self.options.get("cal_timeout", 600.0))
+        deadline = time.monotonic() + float(self.options["cal_timeout"])
         while True:
             try:
                 r = self.resource.read().strip()
@@ -289,4 +285,4 @@ class Cygnus16430(SCPIInstrument):
 
 
 DRIVER = Cygnus16430
-Cygnus16430.CHANNELS = Cygnus16430("static", "SIM::cygnus").get_channels()
+Cygnus16430.CHANNELS = Cygnus16430("static", "NONE").get_channels()

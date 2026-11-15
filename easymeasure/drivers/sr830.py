@@ -37,7 +37,7 @@ from typing import List
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
-from ._scpi import SCPIInstrument, fmt
+from ._scpi import CLEAR_STATUS, SCPIInstrument, fmt
 
 _PREFIX = [(1e-15, "f"), (1e-12, "p"), (1e-9, "n"), (1e-6, "µ"), (1e-3, "m"), (1.0, ""), (1e3, "k")]
 
@@ -67,6 +67,8 @@ COUPLING = ["AC", "DC"]
 GROUND = ["Float", "Ground"]
 LINE = ["Off", "Line", "2x Line", "Both"]
 INPUTS = ["A", "A-B", "I (1 MΩ)", "I (100 MΩ)"]
+REFS = {"SR830": ["External", "Internal"], "SR850": ["Internal", "Sweep", "External"]}  # FMOD i
+RESERVES = {"SR830": ["High Reserve", "Normal", "Low Noise"], "SR850": ["Max", "Manual", "Min"]}
 
 
 class SR830(SCPIInstrument):
@@ -76,7 +78,7 @@ class SR830(SCPIInstrument):
     ACTIONS = [ActionSpec("auto_gain", "choose the sensitivity for the present signal", 60.0),
                ActionSpec("auto_phase", "set the phase so that Y = 0", 30.0),
                ActionSpec("auto_reserve", "choose the dynamic reserve", 60.0),
-               ActionSpec("clear_status", "*CLS")]
+               CLEAR_STATUS]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, noise_traces=[3, 4], interface="auto")
 
     @staticmethod
@@ -89,10 +91,15 @@ class SR830(SCPIInstrument):
     ref = "Internal"
 
     # -- connection ---------------------------------------------------------------
+    @property
+    def family(self) -> str:
+        """SR850, or SR830 (the SR810 has the SR830's commands)."""
+        return "SR850" if self.model == "SR850" else "SR830"
+
     def connect(self):
         self.attach_emulator()
         self.select(self.resource)
-        iface = str(self.options.get("interface", "auto")).upper()
+        iface = str(self.options["interface"]).upper()
         if iface == "AUTO":
             a = self.address.upper()
             iface = "RS232" if a.startswith(("ASRL", "COM", "/DEV/")) else "GPIB"
@@ -100,7 +107,7 @@ class SR830(SCPIInstrument):
         self.w("OUTX %d" % (0 if iface == "RS232" else 1))
         idn = self.identify()
         self.model = "SR850" if "SR850" in idn.upper() else ("SR810" if "SR810" in idn.upper() else "SR830")
-        if self.options.get("reset"):
+        if self.options["reset"]:
             self.w("*RST")
         self.clear_errors()
         self._noise_ready = set()
@@ -123,9 +130,7 @@ class SR830(SCPIInstrument):
 
     def get_channels(self):
         u = "A" if self.current_input else "V"
-        sr850 = self.model == "SR850"
-        refs = ["Internal", "Sweep", "External"] if sr850 else ["Internal", "External"]
-        reserves = ["Max", "Manual", "Min"] if sr850 else ["High Reserve", "Normal", "Low Noise"]
+        sr850 = self.family == "SR850"
         ext = self.ref != "Internal"
         ch = [
             ChannelSpec("X", "r", "float", (), u, "in-phase component"),
@@ -148,7 +153,7 @@ class SR830(SCPIInstrument):
                for i in range(1, 5)]
         ch += [
             ChannelSpec("reference", "rw", "str", (), "", "reference source", config=True,
-                        allowed=refs),
+                        allowed=REFS[self.family]),
             ChannelSpec("sensitivity", "rw", "str", (), "", "full-scale sensitivity",
                         config=True, allowed=SENS_I if self.current_input else SENS_V),
             ChannelSpec("time_constant", "rw", "str", (), "", "low-pass filter time constant",
@@ -164,7 +169,7 @@ class SR830(SCPIInstrument):
             ChannelSpec("input", "rw", "str", (), "", "input configuration (voltage A, A-B or "
                         "current with 1 MΩ / 100 MΩ gain)", config=True, allowed=INPUTS),
             ChannelSpec("reserve", "rw", "str", (), "", "dynamic reserve", config=True,
-                        allowed=reserves),
+                        allowed=RESERVES[self.family]),
             ChannelSpec("harmonic", "rw", "float", (), "", "detection harmonic (1 … %d, "
                         "harmonic × f ≤ 102 kHz)" % (32767 if sr850 else 19999), config=True),
             ChannelSpec("sync_filter", "rw", "str", (), "", "synchronous filter (below 200 Hz)",
@@ -206,7 +211,6 @@ class SR830(SCPIInstrument):
         raise ChannelError("%s has no channel %s" % (self.name, channel))
 
     def _index_settings(self):
-        sr850 = self.model == "SR850"
         return {
             "sensitivity": ("SENS", SENS_I if self.current_input else SENS_V),
             "time_constant": ("OFLT", TIME_CONSTANTS),
@@ -214,27 +218,24 @@ class SR830(SCPIInstrument):
             "coupling": ("ICPL", COUPLING),
             "ground": ("IGND", GROUND),
             "line_filter": ("ILIN", LINE),
-            "reserve": ("RMOD", ["Max", "Manual", "Min"] if sr850 else
-                        ["High Reserve", "Normal", "Low Noise"]),
+            "reserve": ("RMOD", RESERVES[self.family]),
             "sync_filter": ("SYNC", ["Off", "On"]),
         }
 
     @staticmethod
     def _aux(channel: str) -> int:
-        i = int(channel[-1])
-        if not 1 <= i <= 4:
-            raise ChannelError("aux channels are 1 … 4")
-        return i
+        return int(channel[-1])                  # aux_in1 … aux_out4
 
     def _read_reference(self) -> str:
         i = int(float(self.q("FMOD?")))
-        if self.model == "SR850":
-            return {0: "Internal", 1: "Sweep", 2: "External"}.get(i, "Internal")
-        return "Internal" if i == 1 else "External"
+        refs = REFS[self.family]
+        if not 0 <= i < len(refs):
+            raise IOError("FMOD? returned %d" % i)
+        return refs[i]
 
     def _read_input(self) -> str:
         i = int(float(self.q("ISRC?")))
-        if self.model == "SR850":
+        if self.family == "SR850":
             if i < 2:
                 return INPUTS[i]
             return INPUTS[3] if int(float(self.q("IGAN?"))) == 1 else INPUTS[2]
@@ -242,8 +243,8 @@ class SR830(SCPIInstrument):
 
     def _noise(self, channel: str) -> float:
         k = 0 if channel == "Xn" else 1
-        if self.model == "SR850":
-            tr = int(self.options.get("noise_traces", [3, 4])[k])
+        if self.family == "SR850":
+            tr = int(self.options["noise_traces"][k])
             if channel not in self._noise_ready:
                 # trace = Xn (5) or Yn (6) × 1 / 1, not stored
                 self.checked("TRCD %d,%d,0,0,0" % (tr, 5 + k))
@@ -276,15 +277,11 @@ class SR830(SCPIInstrument):
                 raise ChannelError("phase must be within -360 … 729.99 deg")
             self.checked("PHAS %s" % fmt(value))
         elif channel == "reference":
-            if self.model == "SR850":
-                code = {"Internal": 0, "Sweep": 1, "External": 2}[value]
-            else:
-                code = {"Internal": 1, "External": 0}[value]
-            self.checked("FMOD %d" % code)
+            self.checked("FMOD %d" % REFS[self.family].index(value))
             self.ref = value
         elif channel == "input":
             i = INPUTS.index(value)
-            if self.model == "SR850":
+            if self.family == "SR850":
                 if i < 2:
                     self.checked("ISRC %d" % i)
                 else:
@@ -293,7 +290,7 @@ class SR830(SCPIInstrument):
                 self.checked("ISRC %d" % i)
             self.inp = value
         elif channel == "harmonic":
-            hi = 32767 if self.model == "SR850" else 19999
+            hi = 32767 if self.family == "SR850" else 19999
             if value != int(value) or not 1 <= value <= hi:
                 raise ChannelError("harmonic must be an integer 1 … %d" % hi)
             self.checked("HARM %d" % int(value))
@@ -326,9 +323,6 @@ class SR830(SCPIInstrument):
         self.w("ARSV")
         self._wait_idle(55)
 
-    def _action_clear_status(self):
-        self.w("*CLS")
 
-
-SR830.CHANNELS = SR830.get_channels(SR830.__new__(SR830))
+SR830.CHANNELS = SR830("static", "NONE").get_channels()
 DRIVER = SR830

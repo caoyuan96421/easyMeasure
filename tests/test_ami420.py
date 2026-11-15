@@ -14,7 +14,7 @@ import time
 import pytest
 
 from easymeasure.common.errors import ChannelError, InstrumentFault
-from easymeasure.drivers.ami420_Persistent import memory_file
+from easymeasure.drivers._ami420_base import memory_file
 from easymeasure.drivers.emulators import ensure_emulator
 
 FAST = {"time_scale": 200.0, "poll_interval": 0.05, "status_interval": 0.0,

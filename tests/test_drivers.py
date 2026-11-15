@@ -668,9 +668,6 @@ def test_hp4145_models_and_reply_status(backend):
         "emulate_model": "4155C", "emulate_cmd_mode": 0, "emulate_no_lang": True,
         "mode_switch_timeout": 0.5})
     assert h["state"] == "error" and "could not switch" in h["last_error"]
-    h = be.add_instrument("b56", "hp4145", "SIM::p56s", {
-        "emulate_model": "4156C", "emulate_cmd_mode": 0, "force_4145_syntax": False})
-    assert h["state"] == "error" and "force_4145_syntax is off" in h["last_error"]
     be.add_instrument("two", "hp4145", "SIM::p2", {"smus": [1, 3], "vs_vm": False})
     ch = be.instruments.get("two").channels
     assert "voltage3" in ch and "voltage2" not in ch and "vs1" not in ch

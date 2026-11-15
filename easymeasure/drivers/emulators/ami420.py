@@ -30,7 +30,7 @@ import threading
 import time
 from typing import List, Optional
 
-from . import SCPIEmulator, SCPIError, parse_num, split_args, _split_messages
+from . import SCPIEmulator, SCPIError, split_args, _split_messages
 from ..simbus import FaultInjector
 
 

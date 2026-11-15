@@ -1,4 +1,6 @@
-"""Analog input for the NI-DAQmx drivers (``ni6211``, ``ni63xx``).
+"""What the NI-DAQmx drivers (``ni6211``, ``ni63xx``) share: the device, the
+NI-DAQmx module (or the built-in emulation for ``DAQ::SIM…``), the task bookkeeping
+and the analog input.
 
 Every reading acquires only the inputs it returns: ``ai3`` converts one input
 (so it may run at the single-input rate), the ``ai`` vector all scanned inputs
@@ -10,20 +12,122 @@ readings of the same set stay committed and start fast.
 
 from __future__ import annotations
 
-from typing import List, Sequence
+import math
+import re
+from typing import Dict, List, Sequence
 
 import numpy as np
 
+from ..backend.instrument import Instrument
 from ..common.errors import ChannelError
 
 MAX_AI_TASKS = 8                         # channel sets kept ready (oldest closed first)
 
 
-class DaqAnalogInput:
-    """Mixin: needs ``daq``, ``C``, ``device``, ``tasks``, ``rate``, ``samples``,
-    ``terminal``, ``ai_range``, ``name``, ``_close(key)`` and ``_ai_limit(n)``."""
+def parse_list(spec: str, hi: int) -> List[int]:
+    """``"0-3,8"`` / ``"all"`` -> input numbers (0 … *hi*)."""
+    out = []
+    for part in str(spec).replace(" ", "").split(","):
+        if not part or part.lower() == "all":
+            out += list(range(hi + 1))
+            continue
+        m = re.fullmatch(r"(\d+)(?:[-:](\d+))?", part)
+        if not m:
+            raise ValueError("bad channel list %r (e.g. '0-3,8')" % spec)
+        a = int(m.group(1))
+        b = int(m.group(2) or a)
+        out += list(range(min(a, b), max(a, b) + 1))
+    bad = [k for k in out if k > hi]
+    if bad:
+        raise ValueError("no analog input ai%d" % bad[0])
+    return sorted(set(out))
 
+
+class DaqBase(Instrument):
+    """An NI-DAQmx device at ``DAQ::<name in NI MAX>`` (``DAQ::SIM…``: emulated).
+    Subclasses provide ``_ai_limit(n)`` and set ``rate``, ``samples``, ``terminal``
+    and ``ai_range``."""
+
+    INTERFACES = ("daq",)
     _ai_active = None
+
+    def __init__(self, name, address, options=None):
+        super().__init__(name, address, options)
+        self.tasks: Dict[str, object] = {}
+
+    @classmethod
+    def suggested_addresses(cls, driver_name: str):
+        return [{"address": "DAQ::SIM", "description": "built-in emulation"}]
+
+    @property
+    def device(self) -> str:
+        return self.address[5:]                  # DAQ::<device>
+
+    @property
+    def simulated(self) -> bool:
+        return self.device.upper().startswith("SIM")
+
+    def _module(self):
+        if self.simulated:
+            from .emulators import nidaqmx_sim
+            return nidaqmx_sim
+        try:
+            import nidaqmx
+        except ImportError:
+            raise IOError("the nidaqmx package is missing (it comes with easyMeasure: "
+                          "pip install -e . again, or pip install nidaqmx)") from None
+        return nidaqmx
+
+    # -- tasks ----------------------------------------------------------------------------
+    def disconnect(self):
+        self._close_all()
+
+    def _close_all(self) -> None:
+        for t in list(self.tasks.values()):
+            try:
+                t.close()
+            except Exception:                    # closing what may be broken already
+                pass
+        self.tasks = {}
+        self._ai_active = None
+
+    def _close(self, key: str) -> None:
+        t = self.tasks.pop(key, None)
+        if t is not None:
+            try:
+                t.close()
+            except Exception:
+                pass
+
+    def _task(self, key: str, make):
+        """The task *key*, made by ``make(task)`` the first time."""
+        t = self.tasks.get(key)
+        if t is None:
+            t = self.daq.Task()
+            try:
+                make(t)
+            except Exception:
+                t.close()
+                raise
+            self.tasks[key] = t
+        return t
+
+    def _ao_readback(self, k: int) -> float:
+        """An output nobody has written since connect: measured on the internal
+        ``_aoK_vs_aognd`` channel (the AI task makes way for it).  NaN where the device
+        cannot measure it."""
+        self._ai_release()
+        t = self.daq.Task()
+        try:
+            t.ai_channels.add_ai_voltage_chan("%s/_ao%d_vs_aognd" % (self.device, k),
+                                              min_val=-10.0, max_val=10.0)
+            return float(np.asarray(t.read(), dtype=float).ravel()[0])
+        except Exception:
+            return math.nan
+        finally:
+            t.close()
+
+    # -- analog input ---------------------------------------------------------------------
 
     def _ai_limit(self, n: int) -> float:
         """Highest rate per input with *n* inputs in one acquisition."""

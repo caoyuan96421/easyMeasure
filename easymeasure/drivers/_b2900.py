@@ -9,18 +9,15 @@ measurements with ``:MEAS:<func>? (@<c>)``.
 
 from __future__ import annotations
 
-from ..backend.instrument import ActionSpec, ChannelSpec
-from ._scpi import fmt
-from ._smu import SMUBase
-
-_Q = {"V": "VOLT", "I": "CURR"}
+from ..backend.instrument import ChannelSpec
+from ._scpi import CLEAR_STATUS, fmt
+from ._smu import Q as _Q, SMUBase
 
 
 class B2900Base(SMUBase):
     IDN_MATCH = ("B29",)
     NPLC_RANGE = (4e-4, 100.0)
-    ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue and status")]
-    DEFAULT_OPTIONS = dict(SMUBase.DEFAULT_OPTIONS)
+    ACTIONS = [CLEAR_STATUS]
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -86,6 +83,3 @@ class B2900Base(SMUBase):
             self.checked(":OUTP%s:LOW %s" % (o, "FLO" if value == "FLOAT" else "GRO"))
             return
         super().write_extra(base, o, value)
-
-    def _action_clear_status(self):
-        self.w("*CLS")

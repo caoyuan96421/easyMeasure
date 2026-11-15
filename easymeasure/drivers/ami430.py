@@ -180,18 +180,14 @@ class AMI430(SCPIInstrument):
             raise IOError("%s: the programmer has no coil constant; set it on the front panel"
                           % self.name)
         self.per_min = 60.0 if self.qf("RAMP:RATE:UNITS?") < 0.5 else 1.0
-        self.limit = self._optional_float("CURRent:LIMit?")
-        self.ctrl_switch = self._optional_bool("PSwitch:INSTalled?")
-        if self.ctrl_switch is None:
-            raise IOError("%s: the programmer does not answer PSwitch:INSTalled?, so whether "
-                          "the magnet has a persistent switch is unknown (firmware too old?)"
-                          % self.name)
-        self.switch_installed = self.ctrl_switch
+        self.limit = self.qf("CURRent:LIMit?")
+        self.switch_installed = self.qf("PSwitch:INSTalled?") > 0.5
         log.info("%s: %s persistent switch (the programmer's Load menu)", self.name,
                  "a" if self.switch_installed else "no")
-        self.heat_time = self._optional_float("PSwitch:HeatTIME?") or 60.0
-        self.cool_time = self._optional_float("PSwitch:CoolTIME?") or 60.0
-        self.psw_rate = self._optional_float("PSwitch:PowerSupplyRampRate?") or 1.0
+        if self.switch_installed:
+            self.heat_time = self.qf("PSwitch:HeatTIME?")
+            self.cool_time = self.qf("PSwitch:CoolTIME?")
+            self.psw_rate = self.qf("PSwitch:PowerSupplyRampRate?")
         self.read_errors()
         self.seq: Optional[dict] = None
         self.operation = "idle"
@@ -203,21 +199,6 @@ class AMI430(SCPIInstrument):
         self.fault = None
         self._state = self._query_state()
         self._state_t = time.monotonic()
-
-    def _optional_float(self, q: str) -> Optional[float]:
-        """A query an older 430 firmware may not know: None if refused."""
-        try:
-            v = self.qf(q)
-        except (IOError, OSError, ValueError, ResourceError):
-            self.resource.clear()
-            v = None
-        if self.read_errors():
-            return None
-        return v
-
-    def _optional_bool(self, q: str) -> Optional[bool]:
-        v = self._optional_float(q)
-        return None if v is None else v > 0.5
 
     def read_errors(self):
         out = []
@@ -244,7 +225,7 @@ class AMI430(SCPIInstrument):
         """Read STATE? (at most every ``status_interval`` s unless *force*), detect a
         quench, advance a running persistent-switch procedure.  Returns the state."""
         now = time.monotonic()
-        iv = float(self.options.get("status_interval", 0.25) or 0)
+        iv = float(self.options["status_interval"])
         if force or self._state is None or now - self._state_t >= iv or self.seq is not None:
             self._state = self._query_state()
             self._state_t = now
@@ -279,12 +260,9 @@ class AMI430(SCPIInstrument):
             return math.nan
 
     def _heater(self) -> Optional[bool]:
-        if not (self.switch_installed or self.ctrl_switch):
+        if not self.switch_installed:
             return None
-        try:
-            return self.qb("PSwitch?")
-        except IOError:
-            return None
+        return self.qb("PSwitch?")
 
     def _refuse_when_faulted(self, what: str) -> None:
         if self.fault is not None:
@@ -344,8 +322,7 @@ class AMI430(SCPIInstrument):
             return "HEATING"
         if s == COOLING:
             return "COOLING"
-        h = self._heater()
-        return "?" if h is None else "ON" if h else "OFF"
+        return "ON" if self._heater() else "OFF"
 
     def _magnet_voltage(self) -> Optional[float]:
         if not self._vtaps:
@@ -376,7 +353,7 @@ class AMI430(SCPIInstrument):
         if s in (HEATING, COOLING):
             raise ChannelError("%s: the persistent switch is %s: wait until it is done"
                                % (self.name, "heating" if s == HEATING else "cooling"))
-        if self.switch_installed or self.ctrl_switch:
+        if self.switch_installed:
             heater = self._heater()
             if heater is False:
                 raise ChannelError(
@@ -397,9 +374,6 @@ class AMI430(SCPIInstrument):
         if not self.switch_installed:
             raise ChannelError("%s: no persistent switch (the programmer's Load menu says "
                                "none)" % self.name)
-        if self.ctrl_switch is False:
-            raise ChannelError("%s: the programmer is configured without a persistent switch"
-                               % self.name)
         if self.seq is not None:
             raise ChannelError("%s is busy %s" % (self.name, self._seq_name()))
         if s in (HEATING, COOLING):
@@ -417,7 +391,7 @@ class AMI430(SCPIInstrument):
         now = time.monotonic()
         self.seq = {"op": "enter", "step": "settle", "t0": now, "since": now}
         self.operation = "entering persistent mode: waiting %.0f s for a steady field" % \
-            float(self.options.get("settle_time", 10.0))
+            float(self.options["settle_time"])
         log.info("%s: entering persistent mode at %.5g T", self.name, self._field_or_nan())
         self._advance(s)
 
@@ -491,13 +465,13 @@ class AMI430(SCPIInstrument):
                 if self._heater() is not True:
                     return self._fail("the switch heater went off (front panel?)")
                 v = self._magnet_voltage()
-                vmax = float(self.options.get("max_magnet_voltage", 0.05))
+                vmax = float(self.options["max_magnet_voltage"])
                 if v is not None and abs(v) > vmax:
                     seq["since"] = now
                     self.operation = "entering persistent mode: waiting for the magnet " \
                                      "voltage (%.3g V) to decay" % v
                     return None
-                if now - seq["since"] < float(self.options.get("settle_time", 10.0)):
+                if now - seq["since"] < float(self.options["settle_time"]):
                     return None
                 self.checked("PSwitch 0")
                 seq.update(step="cool", t0=now, seen=False,
@@ -514,7 +488,7 @@ class AMI430(SCPIInstrument):
                     return None
                 if self._heater() is not False:
                     return self._fail("the switch heater is on again")
-                if not self.options.get("zero_leads", True):
+                if not self.options["zero_leads"]:
                     return self._done("persistent at %.5g T" % self._field_or_nan())
                 if s not in (ZEROING, AT_ZERO):
                     self.checked("ZERO")
@@ -538,7 +512,7 @@ class AMI430(SCPIInstrument):
                 if s == HOLDING:
                     im = self.qf("CURRent:MAGnet?")
                     is_ = self.qf("CURRent:SUPPly?")
-                    tol = float(self.options.get("match_tolerance", 0.05))
+                    tol = float(self.options["match_tolerance"])
                     if abs(im - is_) <= tol:
                         # nothing may have changed since: heater still off, still holding
                         if self._heater() is not False or self._query_state() != HOLDING:

@@ -9,11 +9,18 @@ not drivers) plus ``<home>/drivers`` (drivers made with the Driver Wizard, see
 Hardware drivers
     ``keithley2400``, ``keysight_b2901``, ``keysight_b2902`` (source-measure units),
     ``sr830`` (SR830 / SR850 lock-in amplifiers), ``hp34401a`` (6.5 digit DMM),
-    ``ni6211`` (NI USB-6211 multifunction DAQ), ``ni63xx`` (NI USB-63xx X Series
-    DAQs, channels by model), ``yokogawa7651`` (DC voltage /
-    current source), ``hp4145`` (HP 4145A/B and 4155/4156 in 4145 syntax, user
-    mode), ``cygnus16430`` (Cygnus 16430 8-channel 150 V / 40 mA supply),
-    ``scpi_generic`` (any SCPI device, configured by options).
+    ``yokogawa7651`` (DC voltage / current source), ``hp4145`` (HP 4145A/B and
+    4155/4156 in 4145 syntax, user mode), ``e8358a`` (Agilent PNA network analyzer),
+    ``ami430`` (AMI 430 magnet supply; the persistent switch is read from it),
+    ``ami420_noPersistent`` / ``ami420_Persistent`` (AMI 420 magnet supply, without /
+    with a persistent switch), ``cygnus16430`` (Cygnus 16430 8-channel 150 V / 40 mA
+    supply), ``ni6211`` (NI USB-6211 DAQ), ``ni63xx`` (NI USB-63xx X Series DAQs,
+    channels by model), ``scpi_generic`` (any SCPI device, configured by options).
+
+    Shared code is in the ``_``-modules: ``_scpi`` (SCPI base: identification, error
+    queue, ``*CLS``, emulators), ``_smu`` / ``_b2900`` (source-measure units),
+    ``_ami420_base``, ``_nidaq`` / ``_nidaq_models`` (NI-DAQmx), ``_command`` (Driver
+    Wizard definitions).
 
 Simulated instruments (``sim_*``)
     Demo / test devices with fault injection, see :mod:`.simbus`.

@@ -16,5 +16,5 @@ class KeysightB2902(B2900Base):
     OUTPUTS = ["1", "2"]
 
 
-KeysightB2902.CHANNELS = KeysightB2902.static_channels()
+KeysightB2902.CHANNELS = KeysightB2902("static", "NONE").get_channels()
 DRIVER = KeysightB2902

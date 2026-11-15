@@ -22,5 +22,5 @@ class KeysightB2901(B2900Base):
         return B2900Emulator(options, outputs=1)
 
 
-KeysightB2901.CHANNELS = KeysightB2901.static_channels()
+KeysightB2901.CHANNELS = KeysightB2901("static", "NONE").get_channels()
 DRIVER = KeysightB2901
