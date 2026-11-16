@@ -127,8 +127,8 @@ class HP4145(SCPIInstrument):
     INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
     ACTIONS = [ActionSpec("disable_all", "every SMU and voltage source off (DV1 … DV4, DS1, DS2)")]
     DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
-                       "gpib_addr": None, "command_set": "HP4145", "smus": [1, 2, 3, 4],
-                       "vs_vm": True}
+                       "gpib_addr": None, "identify_timeout": 2.0, "command_set": "HP4145",
+                       "smus": [1, 2, 3, 4], "vs_vm": True}
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -196,7 +196,8 @@ class HP4145(SCPIInstrument):
         time.sleep(0.5)
         self._all_off()
         try:
-            idn = self.q("BC;ID").strip()
+            with self.resource.timeout_for(float(self.options["identify_timeout"])):
+                idn = self.q("BC;ID").strip()
         except Exception as exc:
             raise IOError("no reply to ID (%s): is option command_set right? A 4155/4156 in "
                           "its own SCPI or FLEX command set needs HP4155" % exc) from None

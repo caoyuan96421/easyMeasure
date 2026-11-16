@@ -76,14 +76,21 @@ def test_all_simulated_actions_and_effects(demo):
     f = be.read_channel("B")
     assert 0 < f < 2.0 and be.read_channel("magnet.status") == "HOLDING"
     assert be.read_channel("magnet.target") == pytest.approx(f, abs=1e-6)
-    # chaos: failures are contained and reported, never retried
-    for bad, exc in (("fail", InstrumentError), ("explode", InstrumentError),
-                     ("stall", InstrumentTimeout)):
+    # chaos: failures are contained and reported, never retried.  A driver bug
+    # (explode) fails the call only; an I/O failure or a hang stays until Reconnect
+    for bad, exc, state in (("fail", InstrumentError, "error"),
+                            ("explode", InstrumentError, "connected"),
+                            ("stall", InstrumentTimeout, "hung")):
         t = time.monotonic()
         with pytest.raises(exc):
             be.write_channel("chaos." + bad)
         assert time.monotonic() - t < 3
-    be.write_channel("chaos.ok")                        # instrument still usable
+        assert be.instruments.get("chaos").state == state
+        if state != "connected":
+            with pytest.raises(InstrumentError, match="Reconnect it"):
+                be.write_channel("chaos.ok")
+            be.reconnect_instrument("chaos")
+    be.write_channel("chaos.ok")                        # instrument usable again
     # unknown action / bad references
     for ref in ("dmm.nope", "nope.reset", "dmm", ""):
         with pytest.raises(EasyMeasureError):
@@ -143,10 +150,18 @@ def test_actions_under_hardware_faults(backend):
             ok += 1
         except EasyMeasureError:
             failed += 1
+            h = be.instruments.get(ref.split(".")[0])
+            if h.state in ("error", "hung"):     # stays so until the user reconnects
+                try:
+                    be.reconnect_instrument(h.name)
+                except Exception:
+                    pass
     assert ok > 10 and failed > 0
-    # still usable afterwards
+    # still usable afterwards (after a Reconnect, if the last fault left it in error)
     for _ in range(10):
         try:
+            if be.instruments.get("dmm").state in ("error", "hung"):
+                be.reconnect_instrument("dmm")
             be.read_channel("dmm.reading")
             break
         except EasyMeasureError:

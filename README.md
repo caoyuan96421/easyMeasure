@@ -23,12 +23,13 @@ module).
 * **Backend / frontend split.** The backend is its own process. The GUI talks to
   it only over non-blocking sockets; killing a frozen GUI never touches the
   backend, and a reopened GUI picks up the running sweep where it is.
-* **Hardened against buggy hardware.** Every driver call runs on a guarded
-  worker thread with a hard deadline. Hung drivers are abandoned and the
-  instrument reconnected; *any* exception (even `SystemExit`) is contained;
-  replies are validated against the channel type/shape; transient errors are
-  retried; a channel that keeps hanging is quarantined by a circuit breaker so
-  it cannot block the rest of its instrument.
+* **Hardened against buggy hardware.** Every driver call runs on the
+  instrument's own worker thread with a hard deadline. Hung drivers are
+  abandoned; *any* exception (even `SystemExit`) is contained; replies are
+  validated against the channel type/shape; lost or garbled replies are
+  retried. An instrument that cannot be reached stays in error until you
+  reconnect it, and instruments sharing a GPIB card take turns on the bus
+  without timing each other out.
 * **Crash-safe data.** Sweeps stream into an append-only, CRC-checked journal
   that is `fsync`-ed continuously. After a crash or power cut, everything up to
   the last fraction of a second loads as a partial dataset (missing points = NaN).
@@ -115,7 +116,7 @@ hang, disconnect and raise random exceptions, plus a deliberately pathological
  │ sweep.py    definition, validation, N-D execution    scripting.py  script API   │
  │ storage.py  crash-safe journal (.emj), HDF5 export   monitor.py    polling      │
  │ channels.py aliases (limits, ramps, scale), composite channels                  │
- │ instrument.py  guarded handles: deadlines, retries, reconnect, circuit breaker  │
+ │ instrument.py  guarded handles: deadlines, retries, sticky errors, workers      │
  │ resources.py   one object per port, exclusive/shared, fair priority arbitration │
  │ drivers/       one file per instrument (+ simulated instruments)                │
  │ logsys.py      rotating log file + ring buffer pushed to GUIs                   │
@@ -208,9 +209,11 @@ call but never retried automatically (a trigger must not fire twice); afterwards
 cached values of that instrument's aliases are discarded, so the next ramp reads back.
 
 Per-instrument guard options: `call_timeout` (deadline per call, default 10 s),
-`retries` (2), `retry_delay`, `reconnect_after` (consecutive failures before a
-reconnect, 2), `timeout_retries` (1), `breaker_threshold` (2) and
-`breaker_cooldown` (10 s, doubling on repeated trips).
+`retries` (2, for lost or garbled replies), `retry_delay` and `bus_wait` (longest
+wait for a shared GPIB bus, 60 s). A time-out, an absent instrument and a failed
+connect are not retried: the instrument goes to *error* (or *hung*) and stays there
+until it is reconnected. Time spent waiting for the GPIB bus is not part of the
+deadline.
 
 ### Aliases and protection (`backend/channels.py`)
 An alias names one instrument channel and carries the protection: `min`, `max`,
@@ -510,7 +513,7 @@ callback, files load and slides render in worker threads.
 | `ni6211` | NI USB-6211 DAQ (NI-DAQmx) | `ai0…ai15` (`ai0…7` in DIFF), vector `ai`, `ao0`, `ao1`, `di0…3`, `do0…3`, `ctr0`, `ctr1`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`* |
 | `cygnus16430` | Cygnus 16430 8-channel supply, 0–150 V / 0–40 mA per output (USB serial) | per output k = 1…8: `voltage<k>` (setpoint), `Vmeas<k>`, `Imeas<k>`, *`Ilimit<k>`*, *`output<k>`* (relay ON/OFF); vectors `voltAll`, *`IlimitAll`* (all 8 written at once), `VmeasAll`, `ImeasAll`; *`Vrate`*, *`Irate`* (ADC SF 13–255), *`Vfilter`*, *`Ifilter`* (IIR α); actions `all_off`, `reset`, `auto_calibrate` |
 | `ni63xx` | NI USB-63xx X Series DAQ: USB-6341/6343/6346/6349/6351/6353/6356/6361/6363/6366 (NI-DAQmx) | channels follow *`model`* (auto = as reported): `ai0…` (8–32), vector `ai`, `ao0…` (2–4), digital lines `dio0…` (port 0: 8 or 32) and `pfi0…15`, `ctr0…3`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`*, *`ao_range`*; actions `reset_counters`, `release_digital` |
-| `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
+| `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`*, `overload` |
 | `hp4145` | HP 4145A/B, HP 4155/4156 in its HP 4145 command set (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
 | `e8358a` | Agilent / Keysight E8358A PNA network analyzer (E8356A / E8357A too) | traces `S11`, `S21`, `S12`, `S22` (dB) with `…_phase`, `…_re`, `…_im`, axis `frequencies`; `power`, `sweep_time`; *`f_start`*, *`f_stop`*, *`f_center`*, *`f_span`*, *`points`*, *`if_bandwidth`*, *`sweep_type`*, *`averaging`*, *`average_count`*, *`output`*, *`correction`*; actions `single_sweep`, `continuous`, `delete_traces` (a first pre-sweep constant: only what is recorded is measured), `preset` |
 
@@ -544,9 +547,15 @@ channels: alias them with limits and ramp rates and sweep them.
 `Current` mode `current` (no measurement). With `range` = `AUTO` the driver picks the
 smallest range that holds the value, but while the output is ON it only ever ranges
 *up*, so a sweep coming down does not glitch the output with range changes; a fixed
-range refuses values beyond 120 % of it. Every setting is executed (`E`) and read
-back (`OD`): an error flag or a value that did not arrive raises an error (and a
-command lost on the bus is retried).
+range refuses values beyond 120 % of it. The protocol follows a 7651 driver verified
+on the hardware: commands are concatenated with no separator and executed with `E` in
+the same message (`R4S+1.5E+0E`), the limits `LA` / `LV` take effect without `E` and
+only in their own mode. Connecting sends `H1` and `DL0` and reads the settings (`OS`);
+it changes nothing, so an output that is on stays on. Every setting is read back
+(`OD`). A message the 7651 rejected (status bit 4) raises an error, and a value that
+did not arrive is retried. `overload` reads `YES` while the output sits at the limiter.
+The driver never sends a device clear, because on the 7651 that restores the power-on
+panel.
 
 **HP 4145 / 4155 / 4156 (user mode).** The protocol follows a 4155 driver verified
 on the hardware. The analyzer is put into HP-IB user mode (`US`). Every SMU is forced
@@ -749,7 +758,7 @@ I–V sweep in current-source mode runs from the example setup.
 with the instrument state, including sweeps whose pre-sweep constants switch modes.
 
 The suite covers codec fuzzing, fair/priority locks, port arbitration, hung /
-crashing / garbage-returning drivers, circuit breaker, limits and ramp rates,
+crashing / garbage-returning drivers, sticky errors, GPIB bus sharing, limits and ramp rates,
 composites, N-D sweeps with vector/image data, abort/pause, scripts (including
 an un-cooperative infinite loop), crash recovery of truncated/corrupted files,
 disk failure during a sweep, a frozen client, a SIGKILLed frontend process, a

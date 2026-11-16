@@ -11,7 +11,7 @@ python -m pytest -q tests/test_composites.py -k loops     # one file / test
 | file | covers |
 |---|---|
 | `test_codec_exprs.py` | the wire codec (fuzzed), the expression sandbox |
-| `test_resources_instruments.py` | fair / priority locks, port arbitration, hung / crashing / garbage-returning drivers, circuit breaker |
+| `test_resources_instruments.py` | fair / priority locks, port arbitration, hung / crashing / garbage-returning drivers, sticky errors, GPIB bus sharing |
 | `test_channels.py`, `test_composites.py` | limits, ramp rates, scaling; composite writes, reads, mappings, nesting, loops |
 | `test_sweep.py` | N-D sweeps with vector and image data, mappings, hooks, flow control, abort / pause |
 | `test_storage.py` | crash recovery of truncated or corrupted files, disk failure during a sweep, HDF5 |

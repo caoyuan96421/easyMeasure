@@ -40,6 +40,8 @@ ports of this computer by interface, optionally with their ``*IDN?``.
 
 from __future__ import annotations
 
+import contextlib
+import re
 import socket
 import threading
 import time
@@ -209,6 +211,35 @@ class FairLock:
 
 
 # ---------------------------------------------------------------------------
+# Buses: one GPIB card carries one transfer at a time
+# ---------------------------------------------------------------------------
+_BUSES: Dict[str, FairLock] = {}
+_BUSES_LOCK = threading.Lock()
+_TLS = threading.local()
+
+
+def bus_of(address: str, options: dict) -> Optional[str]:
+    """The bus an address is on: ``GPIB0::17::INSTR`` -> ``GPIB0``; others none
+    (a ``SIM::`` port joins a simulated one with option ``bus``)."""
+    m = re.match(r"GPIB(\d*)::", address.strip().upper())
+    if m:
+        return "GPIB%d" % int(m.group(1) or 0)
+    b = options.get("bus")
+    return str(b) if b else None
+
+
+def bus_lock(name: str) -> FairLock:
+    with _BUSES_LOCK:
+        return _BUSES.setdefault(name, FairLock())
+
+
+def set_wait_sink(sink) -> None:
+    """The object (an instrument call) that the bus waits of this thread are
+    counted on: ``sink.bus_waiting`` while waiting, ``sink.bus_waited`` seconds."""
+    _TLS.sink = sink
+
+
+# ---------------------------------------------------------------------------
 # Port backends (the thing that actually moves bytes)
 # ---------------------------------------------------------------------------
 class PortBackend:
@@ -237,6 +268,10 @@ class PortBackend:
 
     def clear(self) -> None:
         """Flush input buffers (best effort)."""
+
+    def set_timeout(self, seconds: float) -> None:
+        """The read timeout from now on."""
+        self.timeout = float(seconds)
 
     # convenience used by Resource
     def write(self, data: Data) -> None:
@@ -286,6 +321,11 @@ class SocketBackend(PortBackend):
         s.settimeout(self.timeout)
         self._sock = s
         self._rx.clear()
+
+    def set_timeout(self, seconds):
+        self.timeout = float(seconds)
+        if self._sock is not None:
+            self._sock.settimeout(self.timeout)
 
     def close(self):
         s, self._sock = self._sock, None
@@ -375,6 +415,11 @@ class SerialBackend(PortBackend):
         except Exception as exc:
             raise ResourceError("cannot open serial port %s: %s" % (self.port, exc)) from exc
 
+    def set_timeout(self, seconds):
+        self.timeout = float(seconds)
+        if self._ser is not None:
+            self._ser.timeout = self.timeout
+
     def close(self):
         s, self._ser = self._ser, None
         if s is not None:
@@ -424,6 +469,14 @@ class SerialBackend(PortBackend):
             pass
 
 
+#: VISA: nothing answered the addressing on the GPIB bus
+VI_ERROR_NLISTENERS = -1073807265
+
+
+class NoListener(ResourceError):
+    """Nothing at a GPIB address: switched off, or the wrong address."""
+
+
 class VisaBackend(PortBackend):
     """GPIB / USBTMC / VXI-11 / HiSLIP through pyvisa."""
 
@@ -466,12 +519,20 @@ class VisaBackend(PortBackend):
             except Exception:
                 pass
 
+    def set_timeout(self, seconds):
+        self.timeout = float(seconds)
+        if self._inst is not None:
+            self._inst.timeout = int(self.timeout * 1000)
+
     def write_raw(self, data):
         if self._inst is None:
             raise ResourceError("VISA resource %s not open" % self.address)
         try:
             self._inst.write_raw(data)
         except Exception as exc:
+            if getattr(exc, "error_code", None) == VI_ERROR_NLISTENERS:
+                raise NoListener("no listener at %s: the instrument is switched off, or the "
+                                 "address is wrong" % self.address) from exc
             raise ResourceError("VISA write failed on %s: %s" % (self.address, exc)) from exc
 
     def read_raw(self, size=None):
@@ -548,6 +609,11 @@ class Resource:
         self._last_owner: Optional[str] = None
         self.lock_timeout = float(options.get("lock_timeout", 30.0))
         self.stats = {"opens": 0, "errors": 0, "invalidations": 0}
+        #: a GPIB card: every transfer takes its turn (the time waited for it is not
+        #: the instrument's: it does not count against a call's deadline)
+        self.bus = bus_of(address, options)
+        self.bus_lock = bus_lock(self.bus) if self.bus else None
+        self.bus_wait = float(options.get("bus_wait", 60.0))
 
     # -- lifecycle ------------------------------------------------------------
     def _ensure_open(self) -> PortBackend:
@@ -616,7 +682,36 @@ class Resource:
             raise ResourceError("I/O on %s outside of a transaction" % self.address)
         return self._ensure_open()
 
+    @contextlib.contextmanager
+    def _on_bus(self):
+        """One transfer on the bus (if the port is on one)."""
+        lk = self.bus_lock
+        if lk is None or lk.held_by_me():
+            yield
+            return
+        sink = getattr(_TLS, "sink", None)
+        t0 = time.monotonic()
+        if sink is not None:
+            sink.bus_waiting = True
+        try:
+            ok = lk.acquire(self.bus_wait, tag=self.address)
+        finally:
+            if sink is not None:
+                sink.bus_waiting = False
+                sink.bus_waited += time.monotonic() - t0
+        if not ok:
+            raise ResourceBusyError("the %s bus is busy: %s has been using it for more than "
+                                    "%.0f s" % (self.bus, lk.owner_tag, self.bus_wait))
+        try:
+            yield
+        finally:
+            lk.release()
+
     def write(self, data: Data) -> None:
+        with self._on_bus():
+            self._write(data)
+
+    def _write(self, data: Data) -> None:
         try:
             self._io().write(data)
         except ResourceError:
@@ -627,6 +722,10 @@ class Resource:
             raise ResourceError("write on %s failed: %s" % (self.address, exc)) from exc
 
     def read(self) -> str:
+        with self._on_bus():
+            return self._read()
+
+    def _read(self) -> str:
         try:
             return self._io().read()
         except ResourceError:
@@ -637,6 +736,10 @@ class Resource:
             raise ResourceError("read on %s failed: %s" % (self.address, exc)) from exc
 
     def read_raw(self, size: Optional[int] = None) -> bytes:
+        with self._on_bus():
+            return self._read_raw(size)
+
+    def _read_raw(self, size: Optional[int] = None) -> bytes:
         try:
             return self._io().read_raw(size)
         except ResourceError:
@@ -647,16 +750,30 @@ class Resource:
             raise ResourceError("read on %s failed: %s" % (self.address, exc)) from exc
 
     def query(self, cmd: Data, delay: float = 0.0) -> str:
-        self.write(cmd)
-        if delay:
-            time.sleep(delay)
-        return self.read()
+        with self._on_bus():                      # the write and its reply together
+            self._write(cmd)
+            if delay:
+                time.sleep(delay)
+            return self._read()
 
     def clear(self) -> None:
         try:
-            self._io().clear()
+            with self._on_bus():
+                self._io().clear()
         except Exception:
             pass
+
+    @contextlib.contextmanager
+    def timeout_for(self, seconds: float):
+        """A different read timeout for the transfers inside (e.g. a short one for
+        the identification of an instrument that may not be there)."""
+        be = self._io()
+        old = be.timeout
+        be.set_timeout(seconds)
+        try:
+            yield
+        finally:
+            be.set_timeout(old)
 
     @property
     def backend(self) -> PortBackend:

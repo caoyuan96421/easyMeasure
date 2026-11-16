@@ -43,14 +43,20 @@ The new instrument appears in the list with its state:
 | `connected` | ready |
 | `disconnected` | switched off with **Disconnect** |
 | `error` | could not be reached. The *Last error* column says why |
+| `hung` | a call did not return within its deadline |
 
 **Disconnect** closes the instrument's port, so another program can use it. If
 another instrument shares the port, for example on one GPIB bus, the port stays open
 for that instrument. The instrument then **stays disconnected** until you click
 **Reconnect**. That holds even if it was in `error`. Reads, retries,
 the monitor and sweeps do not connect it again by themselves; they fail with "*name*
-is disconnected". Any other instrument in `error` is tried again whenever something
-uses it.
+is disconnected".
+
+An instrument in `error` or `hung` also **stays so until you click Reconnect**.
+Calls to it are refused at once ("*name* is in error … Reconnect it to use it
+again") without touching the bus, and the monitor pauses its channels. The backend
+never reconnects it by itself, so a failing instrument on a GPIB bus cannot keep
+disturbing the others.
 
 **Shutting the backend down** closes every port, including the port of an
 instrument whose call never ended (a stuck driver). The ports are freed when the
@@ -254,10 +260,7 @@ Every instrument, whatever its driver, takes these options:
 | `call_timeout` | 10 s | deadline for every driver call |
 | `retries` | 2 | retries of a failed read / write |
 | `retry_delay` | 0.05 s | pause between retries |
-| `reconnect_after` | 2 | consecutive failures before a reconnect |
-| `timeout_retries` | 1 | retries after a timeout |
-| `breaker_threshold` | 2 | hangs before a channel is quarantined |
-| `breaker_cooldown` | 10 s | quarantine time (doubles on repeated trips) |
+| `bus_wait` | 60 s | longest wait for a shared GPIB bus |
 | `shared` | driver default | the port may be shared with other instruments |
 
 Common driver options of the hardware drivers:
@@ -268,6 +271,7 @@ Common driver options of the hardware drivers:
 | `check_errors` | read the error queue after every setting, so a refused value raises the instrument's own message (default on) |
 | `verify_writes` | SMUs: read every source value back (worth it on RS-232) |
 | `gpib_addr` | GPIB address behind a Prologix adapter |
+| `identify_timeout` | time-out of the first reply on connect (2 s), so an absent instrument fails fast |
 | `timeout`, `read_termination`, `baudrate` | port settings |
 
 See [Robustness](robustness.md) for what happens when an instrument misbehaves.

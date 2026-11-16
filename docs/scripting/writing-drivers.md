@@ -139,8 +139,14 @@ library directly in `connect` / `_read_â€¦`, with the address `NONE` or `DAQ::â€
 
 * Raise `ChannelError` for a refused value (out of range, not supported). It is
   reported, and not retried.
-* Any other exception counts as an I/O problem. It is retried and, after
-  `reconnect_after` failures, the instrument is reconnected.
+* An `OSError` (`IOError`) or a port error counts as an I/O problem. It is retried,
+  and if it persists the instrument goes to *error* and stays there until the user
+  reconnects it. Raise one when a reply makes no sense or a setting did not arrive.
+* Any other exception is a driver bug: that call fails, and the instrument stays
+  connected.
+* `recover()` runs between retries. By default it clears the port (on GPIB, a
+  device clear). Override it when a device clear does harm, as on the Yokogawa 7651,
+  where it restores the power-on panel.
 
 ### Channel lists that follow the instrument
 

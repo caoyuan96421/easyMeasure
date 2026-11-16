@@ -48,7 +48,8 @@ class SCPIInstrument(Instrument):
     EMULATOR: Optional[Callable] = None
     INTERFACES = BYTE_PORTS
     DEFAULT_OPTIONS = {"timeout": 5.0, "reset": False, "check_errors": True,
-                       "read_termination": "\n", "write_termination": "\n", "gpib_addr": None}
+                       "read_termination": "\n", "write_termination": "\n", "gpib_addr": None,
+                       "identify_timeout": 2.0}
 
     idn = ""
 
@@ -76,7 +77,9 @@ class SCPIInstrument(Instrument):
     def identify(self) -> str:
         self.attach_emulator()
         self.select(self.resource)
-        idn = self.resource.query("*IDN?").strip()
+        # short: an instrument that is not there must not hold a shared bus for long
+        with self.resource.timeout_for(float(self.options["identify_timeout"])):
+            idn = self.resource.query("*IDN?").strip()
         if self.IDN_MATCH and not any(m.upper() in idn.upper() for m in self.IDN_MATCH):
             raise IOError("%s: unexpected instrument %r (expected %s)"
                           % (type(self).__name__, idn, " / ".join(self.IDN_MATCH)))

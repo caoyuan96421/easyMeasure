@@ -61,10 +61,23 @@ def test_faulty_instruments_full_sweep(faulty):
     assert item["status"] == "finished", item
     ds = DataSet.load(item["path"])
     assert ds.points == 80
-    good = np.isfinite(ds.data["I"]).mean()
-    assert good > 0.7          # most points survive retries
+    assert np.isfinite(ds.data["I"]).any()    # lost / garbled replies are retried
     stats = {h.name: h.stats for h in be.instruments.handles()}
     assert sum(s["errors"] for s in stats.values()) > 0   # faults really happened
+    # an instrument that hung or lost its port stays so (its points are NaN) until
+    # Reconnect: nothing reconnects behind the user's back
+    for h in be.instruments.handles():
+        assert h.state in ("connected", "error", "hung"), (h.name, h.state)
+        if h.state != "connected":
+            assert h.last_error
+    for h in be.instruments.handles():
+        for _ in range(5):
+            if h.state == "connected":
+                break
+            try:
+                be.reconnect_instrument(h.name)
+            except Exception:
+                pass
     # backend still fully functional afterwards (the faulty source may silently drop
     # a command, like real flaky hardware, so only responsiveness is checked)
     from easymeasure.common.errors import EasyMeasureError
@@ -89,6 +102,14 @@ def test_chaos_channels_never_crash(faulty):
                     assert isinstance(v, float)
             except Exception:
                 pass
+    # the hang left the chaos instrument hung: refused at once until Reconnect
+    h = be.instruments.get("chaos")
+    if h.state != "connected":
+        t = time.monotonic()
+        with pytest.raises(Exception, match="Reconnect it"):
+            be.read_channel("chaos_value")
+        assert time.monotonic() - t < 0.5
+        be.reconnect_instrument("chaos")
     # backend alive and responsive
     assert be.read_channel("chaos_value") is not None
     be.write_channel("chaos_value", 1.0)
@@ -105,8 +126,10 @@ def test_monitor_survives_chaos(faulty):
     vg = [m for m in got if m["channel"] == "Vg" and "value" in m]
     # a hanging channel on another instrument must not stall Vg monitoring
     assert len(vg) >= 30
-    # errors of the chaos instrument are reported as monitor messages, not crashes
-    assert any("error" in m for m in got if m["channel"].startswith("chaos_"))
+    # errors of the chaos instrument are reported as monitor messages, not crashes;
+    # once it is hung its channels are paused
+    assert any("error" in m or m.get("paused") for m in got
+               if m["channel"].startswith("chaos_"))
 
 
 def test_hung_instrument_during_sweep(backend):

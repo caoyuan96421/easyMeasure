@@ -167,8 +167,7 @@ class AMI430(SCPIInstrument):
                 if "420" in u and "430" not in u:
                     # its queries are not the 430's: each unknown one beeps and times out
                     raise IOError("%s: %r is a Model 420: use the ami420_noPersistent or "
-                                  "ami420_Persistent driver" % (self.name,
-                                                                                    line))
+                                  "ami420_Persistent driver" % (self.name, line))
                 self.idn = line
                 return line
         raise IOError("%s: no identification from the programmer" % self.name)

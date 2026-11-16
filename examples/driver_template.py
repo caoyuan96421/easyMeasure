@@ -35,7 +35,7 @@ class MyPowerSupply(Instrument):
 
     # options are user-editable per instrument; port options (timeout, baudrate,
     # read_termination ...) and framework options (call_timeout, retries,
-    # reconnect_after, breaker_cooldown, shared) live in the same dict
+    # retry_delay, bus_wait, shared) live in the same dict
     DEFAULT_OPTIONS = {"timeout": 2.0, "baudrate": 9600, "call_timeout": 10.0, "retries": 2}
 
     # set True if several instruments may share this port (GPIB bus, RS-485, ...)

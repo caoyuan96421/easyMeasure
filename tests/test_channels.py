@@ -219,6 +219,8 @@ def test_actions_and_config_channels(demo):
     for bad in ("chaos.fail", "chaos.explode", "chaos.stall", "chaos.nope", "nodot"):
         with pytest.raises(Exception):
             be.write_channel(bad)
+        if be.instruments.get("chaos").state != "connected":
+            be.reconnect_instrument("chaos")       # an I/O failure or a hang stays
     be.write_channel("chaos.ok")
     # an action makes cached alias values stale -> next ramp reads back
     be.write_channel("Vg", 0.2)

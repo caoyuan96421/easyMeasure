@@ -170,6 +170,10 @@ class SimPortBackend(PortBackend):
             with self.bus.lock:
                 dev = self.bus.devices.get(self._addr)
             if dev is None:
+                if self.options.get("bus"):          # a (simulated) GPIB card says so
+                    from ..backend.resources import NoListener
+                    raise NoListener("no listener at %s: the instrument is switched off, or "
+                                     "the address is wrong" % self.address)
                 continue  # nobody listening -> the read will time out
             f = dev.faults
             if f.latency:
@@ -204,8 +208,14 @@ class SimPortBackend(PortBackend):
         return (line + (self.read_termination or "\n")).encode(self.encoding)
 
     def clear(self):
+        """A device clear: the input is dropped and the device told (``device_clear``)."""
         self._rx = []
         self._hang_until = 0.0
+        with self.bus.lock:
+            dev = self.bus.devices.get(self._addr)
+        hook = getattr(dev, "device_clear", None)
+        if hook is not None:
+            hook()
 
 
 class SCPIDevice(SimDevice):

@@ -53,12 +53,12 @@ to measure next, control from a Jupyter notebook.
   backend, and a reopened GUI picks up the running sweep where it is.
 * **Hardened against buggy hardware.**
     * Every driver call runs on a guarded worker thread with a hard deadline.
-    * Hung drivers are abandoned and the instrument reconnected.
+    * Hung drivers are abandoned; the instrument stays in error until you reconnect it.
     * *Any* exception is contained, even `SystemExit`.
     * Replies are validated against the channel type and shape.
-    * Transient errors are retried.
-    * A channel that keeps hanging is quarantined by a circuit breaker, so it
-      cannot block the rest of its instrument.
+    * Lost or garbled replies are retried.
+    * Instruments on one GPIB card take turns on the bus without timing each
+      other out, and an absent instrument fails at once.
 * **Crash-safe data.** Sweeps stream into an append-only, CRC-checked journal
   that is `fsync`-ed continuously. After a crash or power cut, everything up to
   the last fraction of a second loads as a partial dataset; missing points are NaN.
@@ -109,7 +109,7 @@ to measure next, control from a Jupyter notebook.
  │ sweep.py    definition, validation, N-D execution    scripting.py  script API   │
  │ storage.py  crash-safe journal (.emj), HDF5 export   monitor.py    polling      │
  │ channels.py aliases (limits, ramps, scale), composite channels                  │
- │ instrument.py  guarded handles: deadlines, retries, reconnect, circuit breaker  │
+ │ instrument.py  guarded handles: deadlines, retries, sticky errors, workers      │
  │ resources.py   one object per port, exclusive/shared, fair priority arbitration │
  │ drivers/       one file per instrument (+ simulated instruments)                │
  └─────────────────────────────────────────────────────────────────────────────────┘

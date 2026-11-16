@@ -156,8 +156,9 @@ def test_keithley2400_iv_sweep_with_mode_from_pre_constants(k24):
 def test_keithley2400_survives_a_noisy_line(backend):
     be = backend
     be.add_instrument("smu", "keithley2400", "SIM::noisy",
-                      {"error_rate": 0.05, "garble_rate": 0.05, "seed": 3, "retries": 4,
-                       "timeout": 0.2, "verify_writes": True})
+                      {"seed": 3, "retries": 4, "timeout": 0.2, "verify_writes": True})
+    f = emu("SIM::noisy").faults                   # noise after connecting: a failed
+    f.error_rate = f.garble_rate = 0.05            # connect is final
     be.define_alias(name="V", target="smu.voltage")
     h = be.instruments.get("smu")
     for i in range(40):
@@ -492,25 +493,31 @@ def test_yokogawa7651(backend):
     e = emu("SIM::yk")
     h = be.instruments.get("yk")
     assert h.state == "connected", h.last_error
+    # connect only prepares the session and reads the settings: nothing is changed
+    assert e.log[:6] == ["H1", "DL0", "OC", "OS", "OD", "OC"]
+    assert h.driver.idn == "MDL7651REV1.10"
     # a pure source: one channel named after the mode, no measurement
-    assert [c for c in h.channels if not h.channels[c].config] == ["voltage"]
+    assert [c for c in h.channels if not h.channels[c].config] == ["voltage", "overload"]
     assert be.read_channel("yk.mode") == "Voltage" and be.read_channel("yk.range") == "AUTO"
     assert be.read_channel("yk.Icompliance") == pytest.approx(0.12)   # from OS
     be.define_alias(name="Vy", target="yk.voltage", min=-20, max=20)
     be.write_channel("Vy", 0.005, ramp=False)      # output off: AUTO goes to the 10 mV range
     assert e.range == 2 and e.value == pytest.approx(0.005)
+    assert e.log[-2] == "R2S+5E-3E"                # range and value executed together
     be.write_channel("yk.Icompliance", 0.05)
-    assert e.la == 50
+    assert e.la == 50 and "LA50" in e.log          # a limit takes effect without E
     with pytest.raises(ChannelError, match="1 mA steps"):
         be.write_channel("yk.Icompliance", 0.0505)
     be.write_channel("yk.output", "ON")
-    assert e.on and be.read_channel("yk.output") == "ON"
+    assert e.on and be.read_channel("yk.output") == "ON" and "O1E" in e.log
     ranges = []
     for v in (0.5, 5.0, 11.9, 2.0, 0.001):
         be.write_channel("Vy", v, ramp=False)
         assert be.read_channel("Vy") == pytest.approx(v)
         ranges.append(e.range)
     assert ranges == [4, 5, 5, 5, 5]               # up as needed, never down while ON
+    be.write_channel("Vy", 1.234567, ramp=False)   # rounded to the 10 V range's 100 µV
+    assert e.value == pytest.approx(1.2346) and e.log[-2] == "S+1.2346E+0E"
     with pytest.raises(LimitError):
         be.write_channel("Vy", 25)                 # alias limit first
     with pytest.raises(ChannelError, match="largest range"):
@@ -526,7 +533,7 @@ def test_yokogawa7651(backend):
         be.write_channel("yk.mode", "Current")
     be.write_channel("yk.output", "OFF")
     be.write_channel("yk.mode", "current")
-    assert e.func == 5
+    assert e.func == 5 and e.range == 4 and e.log[-3] == "F5R4S+0E+0E"
     assert "current" in h.channels and "voltage" not in h.channels
     assert h.spec("Vcompliance").unit == "V"
     assert h.spec("range").allowed == ["AUTO", "1 mA", "10 mA", "100 mA"]
@@ -537,27 +544,64 @@ def test_yokogawa7651(backend):
     assert e.range == 5 and be.read_channel("Iy") == pytest.approx(2e-3)
     be.write_channel("yk.zero")
     assert e.value == 0.0
-    assert e.unknown == []
+    # the 7651's command set: no separators, no SCPI, short messages, never a device clear
+    assert e.errors == [] and e.clears == 0
+    assert not any(";" in c or "*" in c or len(c) > 50 for c in e.log)
 
 
-def test_yokogawa7651_error_flag_and_lost_commands(backend):
+def test_yokogawa7651_keeps_its_output_and_overload(backend):
+    be = backend
+    be.add_instrument("yk", "yokogawa7651", "SIM::ykl", {"load_ohm": 1000.0})
+    e = emu("SIM::ykl")
+    be.write_channel("yk.Icompliance", 0.005)
+    be.write_channel("yk.voltage", 2.0, ramp=False)
+    be.write_channel("yk.output", "ON")
+    assert be.read_channel("yk.overload") == "NO"  # 2 mA through 1 kΩ
+    be.write_channel("yk.voltage", 10.0, ramp=False)
+    assert be.read_channel("yk.overload") == "YES"  # 10 mA > 5 mA: at the limiter
+    assert e.output() == pytest.approx(5.0)
+    assert be.read_channel("yk.voltage") == pytest.approx(10.0)   # still the programmed value
+    be.reconnect_instrument("yk")                  # a reconnect changes nothing
+    assert e.on and e.value == pytest.approx(10.0) and e.la == 5 and e.clears == 0
+    assert be.read_channel("yk.output") == "ON" and be.read_channel("yk.range") == "AUTO"
+
+
+def test_yokogawa7651_rejected_and_lost_commands(backend):
     be = backend
     be.add_instrument("yk", "yokogawa7651", "SIM::yk2")
     e = emu("SIM::yk2")
+    h = be.instruments.get("yk")
     be.write_channel("yk.range", "1 V")
-    be.raw_write("yk", "S+5.0E+0;E")               # behind the driver's back: too big
-    assert e.error
-    with pytest.raises(ChannelError, match="reports an error"):
-        be.read_channel("yk.voltage")
+    be.raw_write("yk", "S+1.0E+0;E")              # a separator: rejected as a whole
+    assert e.error and e.value == 0.0
+    be.raw_write("yk", "F5R4S+0E+0E")             # behind the driver's back: current mode
+    with pytest.raises(ChannelError, match="rejected current limit"):
+        be.write_channel("yk.Icompliance", 0.01)  # LA in current mode: error 11
+    assert h.state == "connected"                  # a rejected command is not a link failure
+    be.reconnect_instrument("yk")
+    assert be.read_channel("yk.mode") == "Current"
     # a noisy line: lost / garbled commands are caught by the read-back and retried
-    be.add_instrument("yn", "yokogawa7651", "SIM::yk3",
-                      {"error_rate": 0.05, "garble_rate": 0.05, "seed": 5, "retries": 5,
-                       "timeout": 0.2})
+    # (the noise starts after connecting: a failed connect is final)
+    be.add_instrument("yn", "yokogawa7651", "SIM::yk3", {"seed": 5, "retries": 5,
+                                                         "timeout": 0.2})
+    f = emu("SIM::yk3").faults
+    f.error_rate = f.garble_rate = 0.05
     be.define_alias(name="V", target="yn.voltage")
     for i in range(30):
         be.write_channel("V", 0.1 * i, ramp=False)
         assert emu("SIM::yk3").value == pytest.approx(0.1 * i)
     assert be.instruments.get("yn").stats["retries"] > 0
+    assert emu("SIM::yk3").clears == 0             # recovery never clears the 7651
+
+
+def test_yokogawa7651_program_memory(backend):
+    be = backend
+    be.add_instrument("yr", "yokogawa7651", "SIM::ykr", {"emulate_program": "running"})
+    assert be.instruments.get("yr").state == "connected"
+    assert "RU0" in emu("SIM::ykr").log and not emu("SIM::ykr").running
+    be.add_instrument("ye", "yokogawa7651", "SIM::yke", {"emulate_program": "editing"})
+    h = be.instruments.get("ye")
+    assert h.state == "error" and "program editing" in h.last_error
 
 
 # ---------------------------------------------------------------------------

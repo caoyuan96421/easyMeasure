@@ -154,10 +154,19 @@ def test_retry_recovers_transient(mgr):
 
 def test_exhausted_retries_raise_instrument_error(mgr):
     h = mgr.add("f", "flaky", options={"retries": 1, "retry_delay": 0.0})
-    for ch in ("boom", "exit", "garble"):
+    for ch in ("boom", "exit"):                   # a driver bug: the call fails, not the link
         with pytest.raises(InstrumentError):
             h.read(ch)
-    # instrument still usable afterwards
+    assert h.state == "connected" and h.read("v") == 1.0
+    with pytest.raises(InstrumentError):           # garbled replies: the link is not right
+        h.read("garble")
+    assert h.state == "error"
+    # in error it stays so: refused at once, nothing reconnected behind the user's back
+    n = FlakyDriver.connects
+    with pytest.raises(InstrumentNotConnected, match="Reconnect it"):
+        h.read("v")
+    assert FlakyDriver.connects == n
+    h.reconnect()
     assert h.read("v") == 1.0
 
 
@@ -167,8 +176,11 @@ def test_hung_driver_is_abandoned(mgr):
     with pytest.raises(InstrumentTimeout):
         h.read("hang")
     assert time.monotonic() - t < 2
-    assert h.stats["timeouts"] == 1
+    assert h.stats["timeouts"] == 1 and h.state == "hung"
+    with pytest.raises(InstrumentNotConnected, match="hung"):
+        h.read("v")                    # stays hung until Reconnect
     before = FlakyDriver.connects
+    h.reconnect()
     assert h.read("v") == 1.0          # fresh worker, reconnected
     assert FlakyDriver.connects == before + 1
 
@@ -242,18 +254,13 @@ def test_fairlock_priority():
     assert order == ["sweep", "gui1", "gui2"]
 
 
-def test_circuit_breaker(mgr):
-    h = mgr.add("f", "flaky", options={"retries": 2, "call_timeout": 0.2, "breaker_threshold": 2,
-                                       "breaker_cooldown": 30})
-    for _ in range(2):
-        with pytest.raises(InstrumentTimeout):
-            h.read("hang")
+def test_a_time_out_is_not_retried(mgr):
+    h = mgr.add("f", "flaky", options={"retries": 2, "call_timeout": 0.2})
     t = time.monotonic()
-    with pytest.raises(InstrumentTimeout, match="quarantined"):
+    with pytest.raises(InstrumentTimeout):
         h.read("hang")
-    assert time.monotonic() - t < 0.05        # fails fast
-    assert h.read("v") == 1.0                 # other channels unaffected
-    assert "read hang" in h.describe()["quarantined"]
+    assert time.monotonic() - t < 1 and h.stats["retries"] == 0      # once, not 3 times
+    assert h.state == "hung"
 
 
 def test_recovers_after_failed_initial_connect(mgr):
@@ -270,9 +277,14 @@ def test_recovers_after_failed_initial_connect(mgr):
             return 5.0
     mgr.drivers.register("shy", Shy)
     h = mgr.add("s", "shy", options={"retries": 2, "retry_delay": 0})
-    assert h.state == "error"
-    assert h.read("x") == 5.0          # reconnects on demand
-    assert h.state == "connected"
+    assert h.state == "error" and Shy.tries == 1
+    with pytest.raises(InstrumentNotConnected):
+        h.read("x")                    # not tried again by a call
+    assert Shy.tries == 1
+    with pytest.raises(InstrumentError):
+        h.reconnect()                  # Reconnect tries (and fails once more)
+    h.reconnect()
+    assert h.read("x") == 5.0 and h.state == "connected"
 
 
 def test_dynamic_channels_after_failed_connect(mgr):
@@ -292,6 +304,7 @@ def test_dynamic_channels_after_failed_connect(mgr):
     h = mgr.add("d", "dyn")
     assert h.state == "error"
     Dyn.ok = True
+    h.reconnect()
     assert h.read("y") == 2.0
 
 
@@ -310,8 +323,7 @@ def test_review_hanging_open_does_not_deadlock():
     try:
         m = InstrumentManager(ResourceManager(), DriverRegistry())
         h = m.add("src", "sim_source", "SIM::HO", {"gpib_addr": 1, "call_timeout": 0.5,
-                                                   "connect_timeout": 0.5, "retries": 1,
-                                                   "breaker_cooldown": 0.1})
+                                                   "connect_timeout": 0.5, "retries": 1})
         h.resource.invalidate("glitch")
         hang["on"] = True
         t = time.monotonic()
@@ -320,6 +332,7 @@ def test_review_hanging_open_does_not_deadlock():
         assert time.monotonic() - t < 6
         hang["on"] = False
         time.sleep(0.2)
+        h.reconnect()
         assert h.read("V1") == 0.0
     finally:
         simbus.SimPortBackend.open = orig
@@ -543,3 +556,58 @@ def test_a_waiting_action_polls_without_holding_the_instrument(mgr):
             raise Stop()
     with pytest.raises(Stop):
         h.run_action("never", check)
+
+
+def test_a_busy_gpib_bus_is_waited_for_not_a_hang(mgr):
+    """Instruments on one GPIB card take turns; a call waiting for the bus (another
+    instrument's transfer) is not timed: it neither times out nor makes it hung."""
+    from easymeasure.backend.resources import bus_lock
+    o = {"bus": "GPIB7", "call_timeout": 0.4, "gpib_addr": 3}
+    h = mgr.add("d1", "sim_dmm", "SIM::bus_a", dict(o))
+    assert h.state == "connected" and h.resource.bus == "GPIB7"
+    lk = bus_lock("GPIB7")
+    got = {}
+
+    def other_instrument():                       # e.g. a 10 s read timeout elsewhere
+        lk.acquire()
+        got["held"] = True
+        time.sleep(1.2)
+        lk.release()
+    th = threading.Thread(target=other_instrument)
+    th.start()
+    while "held" not in got:
+        time.sleep(0.01)
+    t0 = time.monotonic()
+    v = h.read("reading")
+    assert time.monotonic() - t0 > 1.0 and isinstance(v, float)
+    assert h.state == "connected" and h.stats["timeouts"] == 0
+    th.join()
+    # held for longer than bus_wait: a "busy" error - the instrument stays connected
+    h2 = mgr.add("d2", "sim_dmm", "SIM::bus_b", dict(o, bus_wait=0.3))
+    lk.acquire()
+    try:
+        with pytest.raises(ResourceBusyError, match="GPIB7 bus is busy"):
+            h2.read("reading")
+    finally:
+        lk.release()
+    assert h2.state == "connected" and h2.read("reading") is not None
+    # an address on another card is not affected
+    assert bus_lock("GPIB8") is not lk
+
+
+def test_no_listener_fails_at_once_and_stays_in_error(mgr):
+    from easymeasure.backend.resources import NoListener, Resource, bus_of
+    assert bus_of("GPIB0::17::INSTR", {}) == "GPIB0" and bus_of("GPIB::5", {}) == "GPIB0"
+    assert bus_of("GPIB2::5::INSTR", {}) == "GPIB2" and bus_of("COM3", {}) is None
+    r = Resource("SIM::nobody_here", False, {"bus": "GPIB9"})
+    with r.transaction("t"):
+        t0 = time.monotonic()
+        with pytest.raises(NoListener, match="switched off, or the address is wrong"):
+            r.query("*IDN?")
+        assert time.monotonic() - t0 < 0.1
+        # a temporary timeout (the identification's) is put back
+        be = r._io()
+        old = be.timeout
+        with r.timeout_for(0.05):
+            assert be.timeout == 0.05
+        assert be.timeout == old
