@@ -14,8 +14,8 @@ measured quantity while the output is off gives NaN (nothing is measured, and
 some SMUs would otherwise switch the output on by themselves).
 
 Option ``verify_writes`` reads every new source value back (one extra query) and
-retries when it did not arrive - worth it on RS-232 lines, where a command can be
-lost without the instrument noticing.
+sends it once more when it did not arrive - worth it on RS-232 lines, where a command
+can be lost without the instrument noticing.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import re
 from typing import Dict, List
 
 from ..backend.instrument import ChannelSpec
-from ..common.errors import ChannelError
+from ..common.errors import ChannelError, ResourceError
 from ._scpi import SCPIInstrument
 
 #: quantity -> SCPI function name
@@ -122,7 +122,15 @@ class SMUBase(SCPIInstrument):
                 st["on"] = self.hw_output(o)          # maybe switched on at the front panel
                 if not st["on"]:
                     return math.nan                   # nothing is measured with the output off
-            return self.hw_measure(o, q)
+            try:
+                return self.hw_measure(o, q)
+            except ResourceError:
+                # no reading: switched off at the front panel (or tripped)?  Else the
+                # instrument is not answering, and that goes on
+                st["on"] = self.hw_output(o)
+                if not st["on"]:
+                    return math.nan
+                raise
         if base in ("Icompliance", "Vcompliance"):
             self._check_compliance_name(base, o)
             return self.hw_compliance(o, self._sensed(o))
@@ -155,11 +163,15 @@ class SMUBase(SCPIInstrument):
                                    % (self.name, base, self.suffix(o), st["mode"], self.suffix(o)))
             self.hw_set_level(o, q, float(value))
             if self.options["verify_writes"]:
-                got = self.hw_level(o, q)
-                if abs(got - value) > 1e-6 * max(abs(value), 1e-9):
-                    # e.g. a command lost on a noisy serial line: the framework retries
-                    raise IOError("%s%s read back %g after setting %g" % (base, self.suffix(o),
-                                                                          got, value))
+                for again in (True, False):
+                    got = self.hw_level(o, q)
+                    if abs(got - value) <= 1e-6 * max(abs(value), 1e-9):
+                        break
+                    if not again:
+                        raise IOError("%s%s read back %g after setting %g"
+                                      % (base, self.suffix(o), got, value))
+                    # a command lost on a noisy serial line: once more
+                    self.hw_set_level(o, q, float(value))
             return
         if base in ("Icompliance", "Vcompliance"):
             self._check_compliance_name(base, o)
@@ -192,15 +204,6 @@ class SMUBase(SCPIInstrument):
 
     def write_extra(self, base, o, value):
         raise ChannelError("%s: channel %s is not writable" % (self.name, base))
-
-    def recover(self):
-        super().recover()
-        # the output may have been switched at the front panel / tripped
-        try:
-            for o in self.OUTPUTS:
-                self.st[o]["on"] = self.hw_output(o)
-        except Exception:
-            pass
 
     # -- hardware commands (subclasses) ------------------------------------------------
     def hw_mode(self, o): raise NotImplementedError

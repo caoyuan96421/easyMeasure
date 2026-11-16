@@ -162,8 +162,8 @@ def test_digital_lines_and_counters(x):
     be.channels.set("x.pfi9", 1)                 # the others are free
     be.write_channel("x.reset_counters")
     assert be.read_channel("x.ctr0") < 20
-    # a recovery closes every task: driven lines come back at their level
-    be.instruments.get("x").driver.recover()
+    # after a DAQmx error every task is closed: driven lines come back at their level
+    be.instruments.get("x").driver._reset_tasks()
     assert be.read_channel("x.pfi9") == 1.0 and be.read_channel("x.pfi13") == 1.0
     assert be.instruments.get("x").state == "connected"
 

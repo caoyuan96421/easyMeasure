@@ -233,8 +233,7 @@ Instrument actions, such as *auto phase*, *reset* or *preset*, are listed below 
 channels. An action is a write-only channel, `instrument.action`, without a value:
 writing it runs it. Select one and click **▶ Run action**; in scripts and point
 actions: `set('lockin.auto_gain')`; in a sweep: a pre- or post-sweep constant with no
-value. Actions are guarded like every other call but never retried automatically,
-because a trigger must not fire twice. Afterwards the cached values of that
+value. Actions are guarded like every other call. Afterwards the cached values of that
 instrument's aliases are discarded, so the next ramp reads back where the instrument
 really is.
 
@@ -268,7 +267,7 @@ Every instrument, whatever its driver, takes these options:
 | option | default | meaning |
 |---|---|---|
 | `call_timeout` | 10 s | deadline for every driver call |
-| `retries` | 2 | retries of a failed read / write |
+| `retries` | 3 | how often the port tries a failed transfer again |
 | `retry_delay` | 0.05 s | pause between retries |
 | `bus_wait` | 60 s | longest wait for a shared GPIB bus |
 | `shared` | driver default | the port may be shared with other instruments |

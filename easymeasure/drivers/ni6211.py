@@ -82,7 +82,7 @@ class NI6211(DaqBase):
         self._check_rate(self.rate, 1)
         self._start_counters()
 
-    def recover(self):
+    def _reset_tasks(self):
         self._close_all()                         # tasks are recreated on demand
         self._start_counters()
 
@@ -156,7 +156,7 @@ class NI6211(DaqBase):
             t.start()
 
     # -- channel I/O ------------------------------------------------------------------------
-    def read(self, channel):
+    def daq_read(self, channel):
         if channel == "ai":
             return self.scan()
         m = re.fullmatch(r"(ai|ao|di|do|ctr)(\d+)", channel)
@@ -194,7 +194,7 @@ class NI6211(DaqBase):
             return self.ai_range
         raise ChannelError("%s has no channel %s" % (self.name, channel))
 
-    def write(self, channel, value):
+    def daq_write(self, channel, value):
         m = re.fullmatch(r"(ao|do)(\d)", channel)
         if m:
             k = int(m.group(2))

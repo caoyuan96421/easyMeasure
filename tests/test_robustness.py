@@ -294,3 +294,21 @@ def test_monitor_pauses_while_an_instrument_behind_a_channel_is_not_connected(ba
     dmm.state, dmm.last_error = "error", "no reply to *IDN?"
     assert until(lambda: {e["channel"]: e for e in be.monitor.status()}["I"]["paused"]
                  .startswith("dmm is in error: no reply"))
+
+
+def test_every_front_end_hears_of_a_state_change(backend):
+    """A hang inside a call (not a user action) is announced at once: instrument_state."""
+    be = backend
+    events = []
+    be.add_listener(lambda k, d: events.append((k, d)))
+    be.add_instrument("chaos", "sim_chaos", options={"call_timeout": 0.3})
+    assert ("instrument_state", {"instrument": "chaos", "state": "connected",
+                                 "last_error": ""}) in events
+    with pytest.raises(Exception):
+        be.read_channel("chaos.hang")
+    st = [d for k, d in events if k == "instrument_state"]
+    assert st[-1]["instrument"] == "chaos" and st[-1]["state"] == "hung"
+    assert be.list_instruments()[0]["state"] == "hung"
+    be.reconnect_instrument("chaos")
+    st = [d for k, d in events if k == "instrument_state"]
+    assert [d["state"] for d in st[-2:]] == ["disconnected", "connected"]

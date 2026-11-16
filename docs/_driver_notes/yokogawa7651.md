@@ -31,8 +31,7 @@ with `RU0`. A program being edited is refused: leave editing on the front panel,
 Reconnect.
 
 **Verified settings.** Every setting is read back (`OD`). A message the 7651 rejected
-(status bit 4) raises an error. A value that did not arrive counts as a command lost
-on the bus, and is retried.
+(status bit 4) raises an error, and so does a value that did not arrive.
 
 **No device clear.** On the 7651 a device clear restores the power-on panel (output
 off, settings lost), so the driver never sends one, not even to recover from a failed

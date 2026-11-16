@@ -76,9 +76,9 @@ def test_all_simulated_actions_and_effects(demo):
     f = be.read_channel("B")
     assert 0 < f < 2.0 and be.read_channel("magnet.status") == "HOLDING"
     assert be.read_channel("magnet.target") == pytest.approx(f, abs=1e-6)
-    # chaos: failures are contained and reported, never retried.  A driver bug
-    # (explode) fails the call only; an I/O failure or a hang stays until Reconnect
-    for bad, exc, state in (("fail", InstrumentError, "error"),
+    # chaos: failures are contained and reported.  The driver's own error (fail) or
+    # a bug (explode) fails the call only; a hang stays until Reconnect
+    for bad, exc, state in (("fail", InstrumentError, "connected"),
                             ("explode", InstrumentError, "connected"),
                             ("stall", InstrumentTimeout, "hung")):
         t = time.monotonic()

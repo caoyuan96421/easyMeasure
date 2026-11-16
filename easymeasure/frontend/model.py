@@ -47,7 +47,7 @@ class BackendModel(QObject):
         self.rampsChanged.emit(list(st.get("ramps") or []))
 
     def _on_event(self, kind: str, data) -> None:
-        if kind in ("changed", "settings", "user_action"):
+        if kind in ("changed", "settings", "user_action", "instrument_state"):
             self.schedule_refresh()
         elif kind == "queue" and isinstance(data, dict):
             self.state["queue"] = data

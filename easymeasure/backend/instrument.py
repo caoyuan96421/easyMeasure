@@ -28,7 +28,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -37,8 +37,8 @@ from ..common.errors import (ChannelError, EasyMeasureError, InstrumentError, In
                              InstrumentNotConnected, InstrumentTimeout, ResourceBusyError,
                              ResourceError)
 from .logsys import RateLimitedLogger, get_logger
-from .resources import (INTERFACE_NAMES, INTERFACES, PRIO_MEASUREMENT, FairLock, NoListener,
-                        Resource, ResourceManager, abort_check, interface_of, set_thread_priority,
+from .resources import (INTERFACE_NAMES, INTERFACES, PRIO_MEASUREMENT, FairLock,
+                        Resource, ResourceManager, interface_of, set_thread_priority,
                         set_wait_sink, thread_priority)
 
 log = get_logger("instrument")
@@ -364,11 +364,6 @@ class Instrument:
         except (TypeError, ValueError):
             return float(self.POLL_INTERVAL or 0)
 
-    def recover(self) -> None:
-        """Light-weight recovery after a failed call (e.g. clear the port)."""
-        if self.resource is not None:
-            self.resource.clear()
-
     def raw_query(self, command: str) -> str:
         """Pass-through query, used by scripts for things not exposed as channels."""
         if self.resource is None:
@@ -386,7 +381,7 @@ class Instrument:
 # ---------------------------------------------------------------------------
 class _Job:
     __slots__ = ("fn", "done", "result", "error", "abandoned", "priority", "bus_waiting",
-                 "bus_waited")
+                 "bus_waited", "io_since", "io_limit", "io_spent", "retries")
     # (abort checks stay in the calling thread: drivers are never interrupted)
 
     def __init__(self, fn: Callable[[], Any]):
@@ -399,6 +394,12 @@ class _Job:
         # waiting for the bus (another instrument's transfer) is not this call's time
         self.bus_waiting = False
         self.bus_waited = 0.0
+        # nor the transfers' own time (up to their time-outs) and the pauses between
+        # their attempts (resources.Resource._transfer)
+        self.io_since: Optional[float] = None
+        self.io_limit = 0.0
+        self.io_spent = 0.0
+        self.retries = 0
 
 
 class _Worker(threading.Thread):
@@ -441,8 +442,10 @@ class InstrumentHandle:
         self._driver_cls = driver_cls
         self.driver: Optional[Instrument] = None
         self.resource: Optional[Resource] = None
-        self.state = "disconnected"   # disconnected | connected | error | hung
         self.last_error = ""
+        #: called with the handle whenever :attr:`state` changes (keep it quick)
+        self.on_state: Optional[Callable[["InstrumentHandle"], None]] = None
+        self._state = "disconnected"   # disconnected | connected | error | hung
         #: called (outside the call lock) when the driver's channel/action list changed
         self.on_specs_changed: Optional[Callable[["InstrumentHandle"], None]] = None
         #: a safety fault reported by the driver (InstrumentFault) and not cleared yet
@@ -464,17 +467,15 @@ class InstrumentHandle:
         #: disconnected by the user (Disconnect): nothing connects it again by itself
         #: - not a call, a retry or a reconnect - until it is connected explicitly
         self.held = False
-        self._consecutive_failures = 0
+        #: retries: transfers tried again by the port (Resource), during this one's calls
         self.stats = {"calls": 0, "errors": 0, "timeouts": 0, "reconnects": 0, "retries": 0}
         self._rl = RateLimitedLogger(log, 5.0)
         o = self.options
         self.call_timeout = float(o.get("call_timeout", 10.0))
-        self.retries = int(o.get("retries", 2))
-        self.retry_delay = float(o.get("retry_delay", 0.05))
         self.shared = bool(o.get("shared", getattr(driver_cls, "SHARED_RESOURCE", False)))
         # how long a caller waits for another call on this instrument to finish;
         # bounded so a hung instrument can never pile up blocked threads forever
-        self.lock_wait = float(o.get("lock_wait", max(30.0, self.call_timeout * (self.retries + 2))))
+        self.lock_wait = float(o.get("lock_wait", max(30.0, self.call_timeout * 3)))
         self.max_waiters = int(o.get("max_waiters", 4))
 
     def _locked(self):
@@ -510,6 +511,22 @@ class InstrumentHandle:
             w.start()
             self._worker = w
         return w
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        if value == self._state:
+            return
+        self._state = value
+        cb = self.on_state
+        if cb is not None:
+            try:
+                cb(self)
+            except Exception as exc:
+                log.error("%s: state listener failed: %s", self.name, exc)
 
     def _abandon_worker(self, reason: str) -> None:
         w = self._worker
@@ -552,13 +569,19 @@ class InstrumentHandle:
         worker.jobs.put(job)
         t0 = time.monotonic()
         while not job.done.is_set():
-            # the deadline is for this instrument's own time: not while its call
-            # waits for the bus (another instrument's transfer on the same GPIB card)
-            left = timeout - (time.monotonic() - t0 - job.bus_waited)
+            # the deadline is for the driver's own time: not while its call waits for
+            # the bus (another instrument's transfer on the same GPIB card), nor the
+            # transfers themselves up to their time-outs, nor their retries
+            now = time.monotonic()
+            since = job.io_since
+            io = job.io_spent + (min(now - since, job.io_limit) if since is not None else 0.0)
+            left = timeout - (now - t0 - job.bus_waited - io)
             if left <= 0 and not job.bus_waiting:
                 break
             job.done.wait(min(max(left, 0.0), 0.05) if left > 0 else 0.05)
+        self.stats["retries"] += job.retries
         if not job.done.is_set():
+            # the worker is stuck in the driver: abandoned, with the driver object
             job.abandoned = True
             self.stats["timeouts"] += 1
             self.state = "hung"
@@ -599,6 +622,7 @@ class InstrumentHandle:
                                          % self.name)
 
     def _connect_locked(self) -> None:
+        """Connect.  A failure puts the instrument in error (until Reconnect)."""
         if self.driver is not None and self.state == "connected" and not self._needs_reconnect:
             return
         try:
@@ -620,7 +644,6 @@ class InstrumentHandle:
             self.state = "connected"
             self.last_error = ""
             self._needs_reconnect = False
-            self._consecutive_failures = 0
             log.info("instrument %s (%s @ %s) connected, %d channels", self.name,
                      self.driver_name, self.address, len(self._channels))
         except BaseException as exc:
@@ -765,7 +788,7 @@ class InstrumentHandle:
         return dict(self._actions)
 
     def run_action(self, name: str, check: Optional[Callable[[], None]] = None) -> None:
-        """Execute an action (guarded like any other call: deadline, retries).  A
+        """Execute an action (guarded like any other call: a deadline).  A
         waiting action is polled until its condition holds; *check* (raises to stop:
         an abort) is called between polls."""
         act = self.actions.get(name)
@@ -783,7 +806,7 @@ class InstrumentHandle:
             drv.action(name)
             self._refresh_specs(drv)        # e.g. a reset may change the mode
 
-        self._guarded("action %s" % name, spec, do, retries=0)
+        self._guarded("action %s" % name, spec, do)
         log.info("%s: action %s executed", self.name, name)
 
     def _wait_action(self, act: ActionSpec, check: Optional[Callable[[], None]]) -> None:
@@ -830,11 +853,10 @@ class InstrumentHandle:
         return spec
 
     # -- guarded operations -------------------------------------------------
-    def _guarded(self, what: str, spec: ChannelSpec, fn: Callable[[Instrument], Any],
-                 retries: Optional[int] = None) -> Any:
+    def _guarded(self, what: str, spec: ChannelSpec, fn: Callable[[Instrument], Any]) -> Any:
         timeout = spec.timeout or self.call_timeout
         try:
-            return self._guarded_inner(what, spec, fn, timeout, retries)
+            return self._guarded_inner(what, fn, timeout)
         finally:
             self._fire_specs_changed()     # a connect or config write changed them
 
@@ -846,72 +868,51 @@ class InstrumentHandle:
                 self.name, "in error" if self.state == "error" else "hung",
                 self.last_error or "no reply"))
 
-    def _guarded_inner(self, what, spec, fn, timeout, retries=None) -> Any:
-        last_exc: Optional[BaseException] = None
-        attempts = 1 + max(0, self.retries if retries is None else retries)
+    def _guarded_inner(self, what, fn, timeout) -> Any:
+        """One driver call.  Its transfers are retried by the port; what still fails
+        reaches the driver, which may handle it.  What the driver lets through:
+
+        * a communication failure (or a failed connect): the instrument is in error,
+        * no return within the deadline: it is hung,
+
+        both until Reconnect; anything else (a bug, a reply that makes no sense)
+        fails this call only."""
         self._refuse_when_held()           # fast, and not counted as a failure
         self._refuse_when_failed()
         with self._locked():
             self._refuse_when_held()
             self._refuse_when_failed()
-            for attempt in range(attempts):
-                connecting = False
-                try:
-                    if self.driver is None or self.state == "disconnected":
-                        if not self.options.get("auto_connect", True):
-                            raise InstrumentNotConnected("%s is not connected" % self.name)
-                        connecting = True
-                        self._connect_locked()      # never connected yet: a failure is final
-                        connecting = False
-                    drv = self.driver
-                    self.stats["calls"] += 1
-                    result = self._run(lambda: fn(drv), timeout)
-                    if self.state != "connected":
-                        self.state = "connected"
-                    self._fault_cleared(drv)
-                    return result
-                except InstrumentFault as exc:
-                    # a safety fault: never retried, reported to the backend once
-                    self._report_fault(exc)
+            try:
+                if self.driver is None or self._needs_reconnect or self.state == "disconnected":
+                    if not self.options.get("auto_connect", True):
+                        raise InstrumentNotConnected("%s is not connected" % self.name)
+                    self._connect_locked()          # first use: a failure is an error
+                drv = self.driver
+                self.stats["calls"] += 1
+                result = self._run(lambda: fn(drv), timeout)
+                self._fault_cleared(drv)
+                return result
+            except InstrumentFault as exc:
+                self._report_fault(exc)              # a safety fault, reported once
+                raise
+            except (ChannelError, ResourceBusyError, InstrumentNotConnected):
+                # a wrong channel or value; the bus busy with another instrument: not
+                # this instrument's failure, it stays as it is
+                raise
+            except BaseException as exc:  # noqa: B902
+                self.stats["errors"] += 1
+                self.last_error = "%s: %s" % (type(exc).__name__, exc)
+                if self.state == "hung" or _comm_failure(exc):
+                    if self.state != "hung":
+                        self.state = "error"
+                    log.error("%s is %s: %s (Reconnect it to use it again)", self.name,
+                              "hung" if self.state == "hung" else "in error", self.last_error)
+                else:
+                    self._rl.log(30, "%s.%s" % (self.name, what), "%s %s failed: %s",
+                                 self.name, what, self.last_error)
+                if isinstance(exc, InstrumentError):
                     raise
-                except ChannelError:
-                    # wrong channel / wrong value type: retrying will not help.
-                    # (but a ChannelError from coercing a *garbled reply* is retryable;
-                    # those are raised as _GarbledReply below)
-                    raise
-                except ResourceBusyError:
-                    # the bus (another instrument) was busy for too long: not this
-                    # instrument's failure - it stays as it is
-                    raise
-                except BaseException as exc:  # noqa: B902
-                    last_exc = exc
-                    self.stats["errors"] += 1
-                    self.last_error = "%s: %s" % (type(exc).__name__, exc)
-                    self._rl.log(30, "%s.%s" % (self.name, what),
-                                 "%s %s attempt %d/%d failed: %s", self.name, what,
-                                 attempt + 1, attempts, self.last_error)
-                    # a time-out, an absent instrument or a failed connection is final;
-                    # anything else (a lost or garbled reply) is tried again
-                    if attempt + 1 >= attempts or self.state == "hung" or connecting or \
-                            isinstance(exc, (InstrumentTimeout, NoListener)):
-                        break
-                    abort_check()   # an abort is honoured between attempts
-                    self.stats["retries"] += 1
-                    try:
-                        self._run(self.driver.recover, min(timeout, 5.0))
-                    except Exception:
-                        pass
-                    time.sleep(self.retry_delay * (attempt + 1))
-        if self.state == "hung" or connecting or _link_failure(last_exc):
-            # the instrument cannot be reached: it stays so until Reconnect
-            if self.state != "hung":
-                self.state = "error"
-            log.error("%s is %s: %s (Reconnect it to use it again)", self.name,
-                      "hung" if self.state == "hung" else "in error", self.last_error)
-        if isinstance(last_exc, InstrumentError):
-            raise type(last_exc)("%s (after %d attempts)" % (last_exc, attempt + 1))
-        raise InstrumentError("%s %s failed after %d attempts: %s"
-                              % (self.name, what, attempt + 1, last_exc))
+                raise InstrumentError("%s %s failed: %s" % (self.name, what, exc)) from exc
 
     # -- safety faults and the watchdog ------------------------------------------------
     def _report_fault(self, exc: BaseException) -> None:
@@ -937,14 +938,15 @@ class InstrumentHandle:
 
     def poll_due(self, now: float) -> bool:
         drv = self.driver
-        if drv is None or self.state != "connected":
+        if drv is None or self.state != "connected" or self.held:
             return False
         iv = drv.poll_interval()
         return iv > 0 and now >= self._next_poll
 
     def poll(self) -> None:
         """One watchdog call of the driver's ``poll`` - skipped when another call is
-        using the instrument (that call checks the instrument itself)."""
+        using the instrument (that call checks the instrument itself).  It fails like
+        any call: a communication failure is an error, no return a hang."""
         drv = self.driver
         if drv is None:
             return
@@ -953,15 +955,22 @@ class InstrumentHandle:
         if not lk.acquire(0.02, tag=self.name):
             return
         try:
-            if self.driver is not drv or self.state != "connected":
+            if self.driver is not drv or self.state != "connected" or self.held:
                 return
             self._run(drv.poll, min(self.call_timeout, 10.0))
             self._fault_cleared(drv)
         except InstrumentFault as exc:
             self._report_fault(exc)
         except Exception as exc:
-            self._rl.log(30, "%s.poll" % self.name, "%s: watchdog poll failed: %s",
-                         self.name, exc)
+            self.last_error = "%s: %s" % (type(exc).__name__, exc)
+            if self.state == "hung" or _comm_failure(exc):
+                if self.state != "hung":
+                    self.state = "error"
+                log.error("%s is %s: the watchdog poll failed: %s (Reconnect it to use it "
+                          "again)", self.name, self.state, self.last_error)
+            else:
+                self._rl.log(30, "%s.poll" % self.name, "%s: watchdog poll failed: %s",
+                             self.name, exc)
         finally:
             try:
                 lk.release()
@@ -1073,16 +1082,20 @@ class InstrumentHandle:
 
 
 class _GarbledReply(InstrumentError):
-    """Reply could not be coerced to the channel type: retryable I/O problem."""
+    """A reply that could not be coerced to the channel type: that call fails."""
 
 
-def _link_failure(exc: Optional[BaseException]) -> bool:
-    """Whether *exc* says the instrument cannot be reached (port, time-out, no or a
-    wrong reply) - not a bug in a driver, which fails the call but not the link."""
-    if isinstance(exc, (InstrumentTimeout, ResourceError, _GarbledReply, OSError)):
-        return True
-    cause = getattr(exc, "__cause__", None)
-    return isinstance(exc, InstrumentError) and isinstance(cause, (OSError, ResourceError))
+def _comm_failure(exc: Optional[BaseException]) -> bool:
+    """Whether *exc* is (or was caused by) a failed transfer the port already tried
+    again: the instrument cannot be reached.  A driver's own error (a bug, a reply
+    that makes no sense) is not."""
+    seen = 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, ResourceError) and not isinstance(exc, ResourceBusyError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1101,6 +1114,9 @@ class InstrumentManager:
         #: callbacks ``f(instrument_name, message)`` run when an instrument reports a
         #: new safety fault (:class:`InstrumentFault`, e.g. a magnet quench)
         self.fault_listeners: List[Callable[[str, str], None]] = []
+        #: callbacks ``f(instrument_name, state, last_error)`` run when an instrument's
+        #: state changes (connected, error, hung, disconnected); must not block
+        self.state_listeners: List[Callable[[str, str, str], None]] = []
         # the watchdog: calls ``poll`` of the drivers that ask for it (POLL_INTERVAL)
         self._stop = threading.Event()
         self._watchdog = threading.Thread(target=self._watch, name="instrument-watchdog",
@@ -1116,6 +1132,15 @@ class InstrumentManager:
                         h.poll()
                 except Exception as exc:          # never let the watchdog die
                     log.warning("watchdog: %s: %s", h.name, exc)
+
+    def _state_changed(self, h: InstrumentHandle) -> None:
+        if self._handles.get(h.name) is not h:
+            return
+        for cb in list(self.state_listeners):
+            try:
+                cb(h.name, h.state, h.last_error)
+            except Exception as exc:
+                log.error("state listener failed: %s", exc)
 
     def _fault(self, h: InstrumentHandle, message: str) -> None:
         if self._handles.get(h.name) is not h:
@@ -1138,6 +1163,7 @@ class InstrumentManager:
             h = InstrumentHandle(name, driver, cls, address, options or {}, self.resources)
             h.on_specs_changed = self._specs_changed
             h.on_fault = self._fault
+            h.on_state = self._state_changed
             self._handles[name] = h
         if connect:
             try:

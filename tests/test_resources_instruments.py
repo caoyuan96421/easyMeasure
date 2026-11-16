@@ -7,7 +7,8 @@ import pytest
 from easymeasure.backend.registry import DriverRegistry
 from easymeasure.backend.instrument import (ActionSpec, ChannelSpec, Instrument,
                                             InstrumentManager, coerce_value)
-from easymeasure.backend.resources import FairLock, NoListener, ResourceManager
+from easymeasure.backend.resources import FairLock, NoListener, Resource, ResourceManager
+from easymeasure.drivers.simbus import FaultInjector, SimDevice, attach_device
 from easymeasure.common.errors import (ChannelError, InstrumentError, InstrumentNotConnected,
                                        InstrumentTimeout, ResourceBusyError, ResourceError)
 
@@ -112,7 +113,8 @@ def test_coerce():
 class FlakyDriver(Instrument):
     CHANNELS = [ChannelSpec("v", "rw", "float"), ChannelSpec("hang", "r", "float"),
                 ChannelSpec("boom", "r", "float"), ChannelSpec("exit", "r", "float"),
-                ChannelSpec("garble", "r", "float"), ChannelSpec("wrong", "r", "float")]
+                ChannelSpec("garble", "r", "float"), ChannelSpec("wrong", "r", "float"),
+                ChannelSpec("comm", "r", "float")]
     fail_next = 0
     connects = 0
 
@@ -140,6 +142,13 @@ class FlakyDriver(Instrument):
     def _read_garble(self):
         return "@@@"
 
+    def _read_wrong(self):
+        raise IOError("a reply that makes no sense")   # the driver's own check
+
+    def _read_comm(self):
+        # what the port raises when a transfer failed every attempt
+        raise ResourceError("read timeout on X (4 attempts)")
+
 
 @pytest.fixture
 def mgr():
@@ -152,21 +161,70 @@ def mgr():
     m.shutdown()
 
 
-def test_retry_recovers_transient(mgr):
-    h = mgr.add("f", "flaky", options={"retries": 3, "retry_delay": 0.0})
-    FlakyDriver.fail_next = 2
-    assert h.read("v") == 1.0
-    assert h.stats["errors"] == 2 and h.state == "connected"
+class _Drops(SimDevice):
+    """Answers ``X?`` with 1.5, after dropping the first *n* queries (no reply)."""
+
+    def __init__(self, n):
+        super().__init__(FaultInjector({}))
+        self.n, self.seen = n, 0
+
+    def handle(self, command):
+        self.seen += 1
+        if self.n > 0:
+            self.n -= 1
+            return None
+        return "1.5"
 
 
-def test_exhausted_retries_raise_instrument_error(mgr):
-    h = mgr.add("f", "flaky", options={"retries": 1, "retry_delay": 0.0})
-    for ch in ("boom", "exit"):                   # a driver bug: the call fails, not the link
+def test_the_port_retries_a_failed_transfer():
+    dev = _Drops(2)
+    attach_device("rt", 0, dev)
+    r = Resource("SIM::rt", False, {"timeout": 0.1, "retry_delay": 0.0})
+    assert r.retries == 3                          # the default
+    with r.transaction("t"):
+        assert r.query("X?") == "1.5"              # two lost replies: sent again
+        assert dev.seen == 3 and r.stats["retries"] == 2
+        dev.n = 10
+        with pytest.raises(ResourceError, match=r"read timeout.*\(4 attempts\)"):
+            r.query("X?")                          # 1 + 3 retries, then the driver gets it
+        assert dev.seen == 7
+        dev.n, dev.seen = 10, 0
+        with pytest.raises(ResourceError):
+            r.query("X?", retries=0)               # a driver can ask for one attempt
+        assert dev.seen == 1
+
+
+def test_retries_do_not_count_against_the_deadline(mgr):
+    """A call whose transfers are tried again is not hung: the transfers' own time
+    (up to their time-outs) is not the driver's."""
+    dev = _Drops(3)
+    attach_device("rt2", 0, dev)
+
+    class Q(Instrument):
+        CHANNELS = [ChannelSpec("x", "r", "float")]
+
+        def _read_x(self):
+            return self.resource.query("X?")
+
+    mgr.drivers.register("q", Q)
+    h = mgr.add("q", "q", "SIM::rt2", {"timeout": 0.3, "retry_delay": 0.0,
+                                         "call_timeout": 0.5})
+    assert h.read("x") == 1.5                      # 3 × 0.3 s lost, within a 0.5 s deadline
+    assert h.state == "connected" and h.stats["retries"] == 3
+
+
+def test_what_fails_the_call_and_what_the_instrument(mgr):
+    h = mgr.add("f", "flaky", options={"retry_delay": 0.0})
+    # a driver bug, a garbled reply, the driver's own check: that call fails
+    for ch in ("boom", "exit", "garble", "wrong"):
         with pytest.raises(InstrumentError):
             h.read(ch)
-    assert h.state == "connected" and h.read("v") == 1.0
-    with pytest.raises(InstrumentError):           # garbled replies: the link is not right
-        h.read("garble")
+        assert h.state == "connected", ch
+    assert h.read("v") == 1.0
+    # a transfer that failed every attempt, and the driver let it through: the
+    # instrument cannot be reached
+    with pytest.raises(InstrumentError):
+        h.read("comm")
     assert h.state == "error"
     # in error it stays so: refused at once, nothing reconnected behind the user's back
     n = FlakyDriver.connects
@@ -178,7 +236,7 @@ def test_exhausted_retries_raise_instrument_error(mgr):
 
 
 def test_hung_driver_is_abandoned(mgr):
-    h = mgr.add("f", "flaky", options={"retries": 0, "call_timeout": 0.3})
+    h = mgr.add("f", "flaky", options={"call_timeout": 0.3})
     t = time.monotonic()
     with pytest.raises(InstrumentTimeout):
         h.read("hang")
@@ -609,9 +667,9 @@ def test_no_listener_fails_at_once_and_stays_in_error(mgr):
     r = Resource("SIM::nobody_here::9", False, {})
     with r.transaction("t"):
         t0 = time.monotonic()
-        with pytest.raises(NoListener, match="switched off, or the address is wrong"):
+        with pytest.raises(NoListener, match=r"switched off, or the address is wrong.*4 att"):
             r.query("*IDN?")
-        assert time.monotonic() - t0 < 0.1
+        assert time.monotonic() - t0 < 1.0          # tried again too, but no time-outs
         # a temporary timeout (the identification's) is put back
         be = r._io()
         old = be.timeout

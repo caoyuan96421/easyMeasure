@@ -78,6 +78,29 @@ class DaqBase(Instrument):
                           "pip install -e . again, or pip install nidaqmx)") from None
         return nidaqmx
 
+    # -- calls: a DAQmx error leaves the tasks rebuilt for the next call -----------------
+    def read(self, channel):
+        return self._fresh_after_error(self.daq_read, channel)
+
+    def write(self, channel, value):
+        return self._fresh_after_error(self.daq_write, channel, value)
+
+    def action(self, name):
+        return self._fresh_after_error(super().action, name)
+
+    def _fresh_after_error(self, fn, *args):
+        try:
+            return fn(*args)
+        except ChannelError:
+            raise
+        except Exception:
+            self._reset_tasks()
+            raise
+
+    def _reset_tasks(self) -> None:
+        """After an error: drop the tasks (they are made again on demand)."""
+        self._close_all()
+
     # -- tasks ----------------------------------------------------------------------------
     def disconnect(self):
         self._close_all()

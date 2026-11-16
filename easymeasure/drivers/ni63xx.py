@@ -61,8 +61,8 @@ from ._nidaq_models import MODELS, X_COUNTER_SOURCE_PFI, X_SERIES, DaqModel, fmt
 log = get_logger("drivers.ni63xx")
 
 SIM_DEFAULT = "USB-6363"
-# DAQmx errors that a retry cannot fix (reserved resource, invalid channel / value):
-# reported at once instead of retried with a recovery that would close every task
+# DAQmx errors of the request itself (reserved resource, invalid channel / value):
+# reported as such, without closing every task as after other DAQmx errors
 PERMANENT_DAQ_ERRORS = {-50103, -200170, -200077, -200559, -200524}
 MODEL_CHOICES = ["auto"] + X_SERIES
 _PFI_OF_COUNTER = {pfi: ctr for ctr, pfi in X_COUNTER_SOURCE_PFI.items()}
@@ -127,7 +127,7 @@ class NI63xx(DaqBase):
         self._check_settings()
         self._check_rate(self.rate, 1)
 
-    def recover(self):
+    def _reset_tasks(self):
         self._close_all()                         # tasks are recreated on demand
         self.ao_last = {}
 
@@ -291,7 +291,7 @@ class NI63xx(DaqBase):
         self._check_free(channel)
         if channel in self.dout:
             t = self.tasks.get("do:" + phys)
-            if t is None:                           # after a recovery: same level again
+            if t is None:                           # after an error: same level again
                 self._dio_write(channel, phys, self.dout[channel])
                 t = self.tasks["do:" + phys]
             return 1.0 if bool(np.ravel(t.read())[0]) else 0.0
@@ -344,14 +344,14 @@ class NI63xx(DaqBase):
                 self._counter(k)
 
     # -- channel I/O ------------------------------------------------------------------------
-    def read(self, channel):
+    def daq_read(self, channel):
         try:
             return self._read(channel)
         except Exception as exc:
             self._permanent(exc)
             raise
 
-    def write(self, channel, value):
+    def daq_write(self, channel, value):
         try:
             self._write(channel, value)
         except Exception as exc:

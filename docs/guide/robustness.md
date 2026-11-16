@@ -25,26 +25,32 @@ that none of this takes the measurement, the backend or the data down with it.
 Every driver call goes through an `InstrumentHandle`:
 
 * **Deadline.** It runs on the instrument's own worker thread with a hard deadline
-  (`call_timeout`). A driver that does not return in time is abandoned and the
-  instrument is *hung*. Time spent waiting for a shared GPIB bus does not count
-  against the deadline (see [GPIB buses](#gpib-buses)).
+  (`call_timeout`) for the driver's own time. A driver that does not return in time
+  is abandoned and the instrument is *hung*. Time spent waiting for a shared GPIB
+  bus, in the transfers themselves (up to their time-outs) and between their
+  attempts does not count against the deadline (see [GPIB buses](#gpib-buses)).
 * **Port arbitration.** It runs inside a transaction on its port.
 * **Contained exceptions.** Every exception is caught and converted to an
   `InstrumentError`, including `SystemExit`, `KeyboardInterrupt` and `MemoryError`
   raised by buggy driver code.
-* **Retries.** A lost or garbled reply is retried (`retries`), after the driver's
-  light `recover()`. A time-out, an absent instrument (no listener) and a failed
-  connection are never retried. Actions are never retried either, because a trigger
-  must not fire twice.
+* **Retries in the communication layer.** Every `write`, `read` and `query` of a
+  driver is tried again by the port when it fails: a time-out, a port error, no
+  listener (`retries`, 3 by default, with `retry_delay` between attempts; the bus is
+  free for others meanwhile). Only after the last attempt does the driver get the
+  error, and it may catch it. The driver call itself runs once, so a spurious error
+  costs at most that one point.
 * **Validation.** The result is converted to the channel's declared type and shape;
   a wrong one is an error, not data.
-* **Failures stay until Reconnect.** When the instrument cannot be reached (a
-  time-out, a port error, a reply that stays wrong after the retries, a failed
-  connection), it goes to *error* or *hung* and **stays there**. Every later call is
-  refused at once, without touching the bus, until you press *Reconnect*. Nothing
-  reconnects behind your back: on a shared GPIB bus that would keep disturbing the
-  instruments that do work. A bug in a driver, or a refused value, fails only that
-  call.
+* **Failures stay until Reconnect.** When a transfer failed every attempt and the
+  driver let the error through, or the connection failed, the instrument goes to
+  *error*; when the call did not return in time, to *hung*. It **stays there**:
+  every later call is refused at once, without touching the bus, until you press
+  *Reconnect*. Nothing reconnects behind your back: on a shared GPIB bus that would
+  keep disturbing the instruments that do work. A bug in a driver, a reply that
+  makes no sense, or a refused value fails only that call.
+* **Every front end sees it.** A change of state, also inside a call, is announced
+  at once (`instrument_state`), so the instrument list shows *error* or *hung*
+  straight away.
 
 ### GPIB buses
 
@@ -68,8 +74,8 @@ Per instrument, in its options:
 | option | default | meaning |
 |---|---|---|
 | `call_timeout` | 10 s | deadline per call (channels may set their own) |
-| `retries` | 2 | retries of a failed read / write |
-| `retry_delay` | 0.05 s | pause between retries |
+| `retries` | 3 | how often the port tries a failed transfer again |
+| `retry_delay` | 0.05 s | pause between attempts (grows with each attempt) |
 | `bus_wait` | 60 s | longest wait for a shared GPIB bus before a call fails as *bus busy* |
 | `identify_timeout` | 2 s | time-out of the first reply on connect (SCPI drivers, HP 4145, Yokogawa 7651) |
 
@@ -145,9 +151,10 @@ python -m easymeasure.backend --setup examples/faulty_setup.json
 
 Then run `examples/sweep_faulty.json`. The instruments drop commands, garble
 replies, hang, disconnect and raise random exceptions, and `sim_chaos` does worse.
-The sweep completes. Lost and garbled replies are retried. An instrument that hangs
-or drops its port goes to *error* and stays there, and its readings become NaN
-(`on_read_error` = `nan`) until you press *Reconnect*. The log shows each retry and
-failure, and the instrument list shows each instrument's statistics.
+The sweep completes. Lost replies are retried by the port; a garbled one costs that
+point (NaN, `on_read_error` = `nan`). An instrument that hangs or drops its port
+goes to *error* or *hung* and stays there, and its readings become NaN until you
+press *Reconnect*. The log shows each retry and failure, and the instrument list
+shows each instrument's statistics.
 
 The [stress tests](testing.md#stress-tests) go much further.

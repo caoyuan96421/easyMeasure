@@ -66,7 +66,7 @@ class MyPowerSupply(Instrument):
 
     def _write_voltage(self, value):
         if value < 0:
-            raise ChannelError("negative voltages are not supported")   # not retried
+            raise ChannelError("negative voltages are not supported")   # a refused value
         self.resource.write("VOLT %.6f" % value)   # value is already a float
 
     def _read_current(self):
@@ -107,7 +107,8 @@ become numbers and arrays, and a wrong shape is an error.
 ### Actions
 
 `ActionSpec(name, description, timeout=None)`, implemented by `_action_<name>()`,
-or by overriding `action(name)`. Actions are never retried automatically. An action
+or by overriding `action(name)`. An action call runs once (its transfers are retried
+by the port like any other: use `retries=0` for a trigger that must not go twice). An action
 is a write-only channel of the instrument (`dmm.reset`), so its name may not be the
 name of one of the driver's channels: such a driver fails to connect with a message
 saying which name.
@@ -139,14 +140,16 @@ library directly in `connect` / `_read_â€¦`, with the address `NONE` or `DAQ::â€
 
 * Raise `ChannelError` for a refused value (out of range, not supported). It is
   reported, and not retried.
-* An `OSError` (`IOError`) or a port error counts as an I/O problem. It is retried,
-  and if it persists the instrument goes to *error* and stays there until the user
-  reconnects it. Raise one when a reply makes no sense or a setting did not arrive.
-* Any other exception is a driver bug: that call fails, and the instrument stays
-  connected.
-* `recover()` runs between retries. By default it clears the port (on GPIB, a
-  device clear). Override it when a device clear does harm, as on the Yokogawa 7651,
-  where it restores the power-on panel.
+* Every `write`, `read` and `query` is retried by the port when it fails (a
+  time-out, a port error, no listener; option `retries`, 3). After the last attempt
+  your driver gets a `ResourceError`. Catch it where you know better, e.g. an SMU
+  whose measurement gets no reply checks whether the output was switched off at the
+  front panel. Pass `retries=0` for a command that must not be sent twice.
+* A `ResourceError` you let through puts the instrument in *error*, and it stays
+  there until the user reconnects it.
+* Any other exception, including an `OSError` of your own when a reply makes no
+  sense or a setting did not arrive, fails that call only: the instrument stays
+  connected. Your driver call itself is not retried.
 
 ### Channel lists that follow the instrument
 

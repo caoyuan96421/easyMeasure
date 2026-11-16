@@ -38,12 +38,11 @@ Protocol (IM 7651-01E, as used by a driver verified on the hardware):
   ``F1R4S+1.0000E+0``, program, ``LV30LA120``, ``END``) gives the settings;
   nothing is changed, so a source that is on stays on.
 * ``OD`` gives the programmed value (``NDCV+1.0000E+0``), not a measurement.
-  Every setting is read back; a value the 7651 rejected (``OC`` bit 4) is
-  reported as an error, a different value as a lost command (retried).
+  Every setting is read back; a value the 7651 rejected (``OC`` bit 4), or a
+  different value (a lost message), fails the call.
 * There is no ``*IDN?`` (an unknown command, then a time-out).  A device clear
   restores the power-on panel (output off, all settings lost) and leaves the
-  interface dead for seconds, so this driver never sends one, not even to
-  recover from a failed call.
+  interface dead for seconds, so this driver never sends one.
 
 Address e.g. ``GPIB0::1::INSTR``; ``SIM::<name>`` uses the built-in emulator.
 """
@@ -149,9 +148,6 @@ class Yokogawa7651(SCPIInstrument):
         self.limits = {"V": st["LV"], "I": st["LA"]}
         self.value = self._od()[1]
         self.on = bool(self._status() & OC_ON)
-
-    def recover(self) -> None:
-        """No device clear: on the 7651 it restores the power-on panel."""
 
     def _settings(self) -> dict:
         """``OS``: model, ``F<f>R<r>S<value>``, program, ``LV<V>LA<mA>``, ``END``."""
@@ -331,7 +327,7 @@ class Yokogawa7651(SCPIInstrument):
         res = float(next(r[3] for r in RANGES[self.mode] if r[0] == code))
         if abs(got - v) > res / 2 + 1e-6 * abs(v):
             self._rejected(what)
-            # nothing rejected: the message was lost on the bus (retried by the framework)
+            # nothing rejected: the message was lost on the way
             raise IOError("%s read back %g after setting %g" % (self.name, got, v))
         self.value, self.range_code = got, code
 

@@ -65,6 +65,7 @@ The backend pushes events. By default a client gets only the small status events
 | `user_action` | a user action started / ended |
 | `ppt` | a slide was written (or went to the pending file) |
 | `instrument_fault` | a safety fault (magnet quench): instrument, message, whether a run was aborted |
+| `instrument_state` | an instrument's state changed (connected, error, hung, disconnected), also through a failing call: instrument, state, last error |
 | `changed`, `settings` | the setup or settings changed |
 
 Ask for more with `subscribe`, or for everything with `"*"`:

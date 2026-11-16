@@ -797,12 +797,16 @@ class Resource:
         self._generation = 0
         self._state_lock = threading.Lock()
         self.lock_timeout = float(options.get("lock_timeout", 30.0))
-        self.stats = {"opens": 0, "errors": 0, "invalidations": 0}
+        self.stats = {"opens": 0, "errors": 0, "invalidations": 0, "retries": 0}
         #: a GPIB card: every transfer takes its turn (the time waited for it is not
         #: the instrument's: it does not count against a call's deadline)
         self.bus = bus_of(address)
         self.bus_lock = bus_lock(self.bus) if self.bus else None
         self.bus_wait = float(options.get("bus_wait", 60.0))
+        #: a failed transfer (time-out, port error, no listener) is tried again this
+        #: often before the error goes to the driver
+        self.retries = max(0, int(options.get("retries", 3)))
+        self.retry_delay = float(options.get("retry_delay", 0.05))
 
     # -- lifecycle ------------------------------------------------------------
     def _ensure_open(self) -> PortBackend:
@@ -880,9 +884,58 @@ class Resource:
         finally:
             lk.release()
 
-    def write(self, data: Data) -> None:
-        with self._on_bus():
-            self._write(data)
+    @contextlib.contextmanager
+    def _timed(self):
+        """A transfer's own time, up to its time-out, is not the driver's: it does not
+        count against the call's deadline (beyond that, the transfer itself hangs)."""
+        sink = getattr(_TLS, "sink", None)
+        if sink is None or sink.io_since is not None:
+            yield
+            return
+        be = self._backend
+        t = be.timeout if be is not None else float(self.options.get("timeout", 2.0))
+        sink.io_limit = 2.0 * t + 1.0
+        sink.io_since = time.monotonic()
+        try:
+            yield
+        finally:
+            sink.io_spent += min(time.monotonic() - sink.io_since, sink.io_limit)
+            sink.io_since = None
+
+    def _transfer(self, what: str, fn, retries: Optional[int] = None):
+        """One transfer (*fn*), tried again if it fails: a time-out, a port error or no
+        listener.  The bus is released between attempts, so other instruments are
+        not held up.  After the last attempt the error goes
+        to the driver (which may catch it)."""
+        if not self.lock.held_by_me():
+            raise ResourceError("I/O on %s outside of a transaction" % self.address)
+        n = 1 + (self.retries if retries is None else max(0, int(retries)))
+        for attempt in range(n):
+            try:
+                with self._on_bus(), self._timed():
+                    return fn()
+            except ResourceBusyError:
+                raise
+            except ResourceError as exc:
+                if attempt + 1 >= n:
+                    if n == 1:
+                        raise
+                    raise type(exc)("%s (%d attempts)" % (exc, n)) from exc
+                self.stats["retries"] += 1
+                sink = getattr(_TLS, "sink", None)
+                if sink is not None:
+                    sink.retries += 1
+                log.warning("%s: %s failed (attempt %d/%d), trying again: %s",
+                            self.address, what, attempt + 1, n, exc)
+                pause = self.retry_delay * (attempt + 1)
+                time.sleep(pause)
+                if sink is not None:
+                    sink.io_spent += pause
+
+    def write(self, data: Data, retries: Optional[int] = None) -> None:
+        """Write a command; *retries*: how often a failed write is tried again (default
+        the ``retries`` option; 0 for a command that must not go out twice)."""
+        self._transfer("write", lambda: self._write(data), retries)
 
     def _write(self, data: Data) -> None:
         try:
@@ -894,9 +947,8 @@ class Resource:
             self.stats["errors"] += 1
             raise ResourceError("write on %s failed: %s" % (self.address, exc)) from exc
 
-    def read(self) -> str:
-        with self._on_bus():
-            return self._read()
+    def read(self, retries: Optional[int] = None) -> str:
+        return self._transfer("read", self._read, retries)
 
     def _read(self) -> str:
         try:
@@ -908,9 +960,8 @@ class Resource:
             self.stats["errors"] += 1
             raise ResourceError("read on %s failed: %s" % (self.address, exc)) from exc
 
-    def read_raw(self, size: Optional[int] = None) -> bytes:
-        with self._on_bus():
-            return self._read_raw(size)
+    def read_raw(self, size: Optional[int] = None, retries: Optional[int] = None) -> bytes:
+        return self._transfer("read", lambda: self._read_raw(size), retries)
 
     def _read_raw(self, size: Optional[int] = None) -> bytes:
         try:
@@ -922,12 +973,16 @@ class Resource:
             self.stats["errors"] += 1
             raise ResourceError("read on %s failed: %s" % (self.address, exc)) from exc
 
-    def query(self, cmd: Data, delay: float = 0.0) -> str:
-        with self._on_bus():                      # the write and its reply together
+    def query(self, cmd: Data, delay: float = 0.0, retries: Optional[int] = None) -> str:
+        """Write *cmd* and read its reply, on the bus together; a failed query (no
+        reply in time) is sent again (*retries*, see :meth:`write`)."""
+        def q():
             self._write(cmd)
             if delay:
                 time.sleep(delay)
             return self._read()
+        return self._transfer("query %r" % (cmd if isinstance(cmd, str) else cmd[:40]), q,
+                              retries)
 
     def clear(self) -> None:
         try:

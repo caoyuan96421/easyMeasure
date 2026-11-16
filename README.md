@@ -26,10 +26,10 @@ module).
 * **Hardened against buggy hardware.** Every driver call runs on the
   instrument's own worker thread with a hard deadline. Hung drivers are
   abandoned; *any* exception (even `SystemExit`) is contained; replies are
-  validated against the channel type/shape; lost or garbled replies are
-  retried. An instrument that cannot be reached stays in error until you
-  reconnect it, and instruments sharing a GPIB card take turns on the bus
-  without timing each other out.
+  validated against the channel type/shape; a failed transfer is retried by
+  the port (3 times) before the driver hears of it. An instrument that cannot
+  be reached stays in error until you reconnect it, and instruments sharing a
+  GPIB card take turns on the bus without timing each other out.
 * **Crash-safe data.** Sweeps stream into an append-only, CRC-checked journal
   that is `fsync`-ed continuously. After a crash or power cut, everything up to
   the last fraction of a second loads as a partial dataset (missing points = NaN).
@@ -214,15 +214,21 @@ commands without arguments such as trigger, reset, auto-phase: write-only channe
 (*Channels (hardware) → Run action*), the API (`write_channel(name="dmm.reset")`),
 a sweep constant without a value, or scripts and sweep hooks (`set('dmm.reset')`; the sweep editor has a *+ action*
 button that appends this to the pre/post hook). Actions are guarded like every other
-call but never retried automatically (a trigger must not fire twice); afterwards the
+call; afterwards the
 cached values of that instrument's aliases are discarded, so the next ramp reads back.
 
-Per-instrument guard options: `call_timeout` (deadline per call, default 10 s),
-`retries` (2, for lost or garbled replies), `retry_delay` and `bus_wait` (longest
-wait for a shared GPIB bus, 60 s). A time-out, an absent instrument and a failed
-connect are not retried: the instrument goes to *error* (or *hung*) and stays there
-until it is reconnected. Time spent waiting for the GPIB bus is not part of the
-deadline.
+Per-instrument guard options: `call_timeout` (deadline for the driver's own time per
+call, default 10 s), `retries` (3: how often the port tries a failed transfer again),
+`retry_delay` and `bus_wait` (longest wait for a shared GPIB bus, 60 s).
+
+Retries happen in the communication layer, not around driver calls: every `write`,
+`read` and `query` a driver issues is tried again when it fails (a time-out, a port
+error, no listener), and only then does the driver get the error, which it may
+catch. A driver call itself runs once. A communication failure that reaches the end
+of the call puts the instrument in *error*, a call that does not return in time
+makes it *hung*; both stay until it is reconnected. Anything else (a driver bug, a
+reply that makes no sense) fails only that call. Time spent waiting for the bus, in
+the transfers themselves and between their attempts is not part of the deadline.
 
 ### Aliases and protection (`backend/channels.py`)
 An alias names one instrument channel and carries the protection: `min`, `max`,
@@ -561,8 +567,8 @@ on the hardware: commands are concatenated with no separator and executed with `
 the same message (`R4S+1.5E+0E`), the limits `LA` / `LV` take effect without `E` and
 only in their own mode. Connecting sends `H1` and `DL0` and reads the settings (`OS`);
 it changes nothing, so an output that is on stays on. Every setting is read back
-(`OD`). A message the 7651 rejected (status bit 4) raises an error, and a value that
-did not arrive is retried. `overload` reads `YES` while the output sits at the limiter.
+(`OD`). A message the 7651 rejected (status bit 4), or a value that did not arrive,
+fails the call. `overload` reads `YES` while the output sits at the limiter.
 The driver never sends a device clear, because on the 7651 that restores the power-on
 panel.
 

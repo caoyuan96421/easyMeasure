@@ -6,7 +6,7 @@ import time
 import numpy as np
 import pytest
 
-from easymeasure.common.errors import ChannelError, LimitError
+from easymeasure.common.errors import ChannelError, InstrumentError, LimitError
 from easymeasure.drivers.emulators import SCPIEmulator, compile_pattern, split_args
 from easymeasure.backend.resources import split_gpib
 from easymeasure.drivers.simbus import get_bus
@@ -128,7 +128,7 @@ def test_keithley2400_mode_switch(k24):
     # output switched on/off at the front panel is noticed
     e.out.on = False
     be.instruments.get("smu").driver.st["1"]["on"] = True
-    v = be.read_channel("Vs")       # :READ? fails (803) -> retried after recover -> NaN
+    v = be.read_channel("Vs")       # :READ? gets no reply (803): the driver finds it off -> NaN
     assert math.isnan(v)
     assert clean(e)
 
@@ -158,15 +158,23 @@ def test_keithley2400_iv_sweep_with_mode_from_pre_constants(k24):
 def test_keithley2400_survives_a_noisy_line(backend):
     be = backend
     be.add_instrument("smu", "keithley2400", "SIM::noisy",
-                      {"seed": 3, "retries": 4, "timeout": 0.2, "verify_writes": True})
+                      {"seed": 3, "timeout": 0.2, "verify_writes": True})
     f = emu("SIM::noisy").faults                   # noise after connecting: a failed
     f.error_rate = f.garble_rate = 0.05            # connect is final
     be.define_alias(name="V", target="smu.voltage")
     h = be.instruments.get("smu")
+    ok = failed = 0
     for i in range(40):
-        be.write_channel("V", i * 0.01, ramp=False)
-        assert be.read_channel("V") == pytest.approx(i * 0.01)
-    assert h.stats["retries"] > 0
+        # lost replies are sent again by the port, lost commands by the read-back
+        # (verify_writes); a garbled reply fails that one call - never the instrument
+        try:
+            be.write_channel("V", i * 0.01, ramp=False)
+            assert be.read_channel("V") == pytest.approx(i * 0.01)
+            ok += 1
+        except InstrumentError:
+            failed += 1
+        assert h.state == "connected"
+    assert h.stats["retries"] > 0 and ok > 25
 
 
 # ---------------------------------------------------------------------------
@@ -583,18 +591,24 @@ def test_yokogawa7651_rejected_and_lost_commands(backend):
     assert h.state == "connected"                  # a rejected command is not a link failure
     be.reconnect_instrument("yk")
     assert be.read_channel("yk.mode") == "Current"
-    # a noisy line: lost / garbled commands are caught by the read-back and retried
+    # a noisy line: lost replies are sent again by the port; a lost or garbled
+    # command is caught by the read-back and fails that call, not the instrument
     # (the noise starts after connecting: a failed connect is final)
-    be.add_instrument("yn", "yokogawa7651", "SIM::yk3", {"seed": 5, "retries": 5,
-                                                         "timeout": 0.2})
+    be.add_instrument("yn", "yokogawa7651", "SIM::yk3", {"seed": 5, "timeout": 0.2})
     f = emu("SIM::yk3").faults
     f.error_rate = f.garble_rate = 0.05
     be.define_alias(name="V", target="yn.voltage")
+    ok = 0
     for i in range(30):
-        be.write_channel("V", 0.1 * i, ramp=False)
-        assert emu("SIM::yk3").value == pytest.approx(0.1 * i)
-    assert be.instruments.get("yn").stats["retries"] > 0
-    assert emu("SIM::yk3").clears == 0             # recovery never clears the 7651
+        try:
+            be.write_channel("V", 0.1 * i, ramp=False)
+            assert emu("SIM::yk3").value == pytest.approx(0.1 * i)
+            ok += 1
+        except InstrumentError:
+            pass
+        assert be.instruments.get("yn").state == "connected"
+    assert be.instruments.get("yn").stats["retries"] > 0 and ok > 20
+    assert emu("SIM::yk3").clears == 0             # nothing ever clears the 7651
 
 
 def test_yokogawa7651_program_memory(backend):

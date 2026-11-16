@@ -56,7 +56,7 @@ to measure next, control from a Jupyter notebook.
     * Hung drivers are abandoned; the instrument stays in error until you reconnect it.
     * *Any* exception is contained, even `SystemExit`.
     * Replies are validated against the channel type and shape.
-    * Lost or garbled replies are retried.
+    * A failed transfer is retried by the port before the driver hears of it.
     * Instruments on one GPIB card take turns on the bus without timing each
       other out, and an absent instrument fails at once.
 * **Crash-safe data.** Sweeps stream into an append-only, CRC-checked journal

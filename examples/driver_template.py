@@ -60,7 +60,7 @@ class MyPowerSupply(Instrument):
 
     def _write_voltage(self, value):
         if value < 0:
-            raise ChannelError("negative voltages are not supported")   # ChannelError = not retried
+            raise ChannelError("negative voltages are not supported")   # a refused value
         self.resource.write("VOLT %.6f" % value)   # value is already a float
 
     def _read_current(self):

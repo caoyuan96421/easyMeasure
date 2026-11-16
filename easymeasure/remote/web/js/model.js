@@ -33,7 +33,8 @@ export class Model {
   }
 
   _event(kind, data) {
-    if (kind === "changed" || kind === "settings" || kind === "user_action") this.scheduleRefresh();
+    if (kind === "changed" || kind === "settings" || kind === "user_action" ||
+        kind === "instrument_state") this.scheduleRefresh();
     else if (kind === "queue" && data) { this.state.queue = data; this.emit("queue", data); }
     else if (kind === "ramps" && data) { this.state.ramps = data.active || []; this.emit("ramps", this.state.ramps); }
     else if (kind === "sweep_warning") this.emit("message", "warning", String(data && data.message));

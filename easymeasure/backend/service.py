@@ -120,6 +120,7 @@ class Backend:
         self.channels = ChannelManager(self.instruments)
         self.instruments.listeners.append(self._instrument_specs_changed)
         self.instruments.fault_listeners.append(self._instrument_fault)
+        self.instruments.state_listeners.append(self._instrument_state)
         self.control = RunControl()
         self.monitor = Monitor(self.channels)
         self.monitor.listeners.append(lambda m: self.emit("monitor", m))
@@ -472,6 +473,12 @@ class Backend:
         aliases are stale, and every front end must reload the state."""
         self.channels.forget_instrument(name)
         self._changed("instruments")
+
+    def _instrument_state(self, name: str, state: str, last_error: str) -> None:
+        """An instrument went connected / error / hung / disconnected, for whatever
+        reason (also a failing call): every front end hears of it at once."""
+        self.emit("instrument_state", {"instrument": name, "state": state,
+                                       "last_error": last_error})
 
     def _instrument_fault(self, name: str, message: str) -> None:
         """A safety fault (a magnet quench ...): stop everything that runs - the
