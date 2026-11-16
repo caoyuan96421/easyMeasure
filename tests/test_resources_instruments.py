@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from easymeasure.backend.registry import DriverRegistry
-from easymeasure.backend.instrument import (ChannelSpec, Instrument, InstrumentManager,
-                                            coerce_value)
+from easymeasure.backend.instrument import (ActionSpec, ChannelSpec, Instrument,
+                                            InstrumentManager, coerce_value)
 from easymeasure.backend.resources import FairLock, ResourceManager
 from easymeasure.common.errors import (ChannelError, InstrumentError, InstrumentNotConnected,
                                        InstrumentTimeout, ResourceBusyError, ResourceError)
@@ -497,3 +497,49 @@ def test_a_port_in_use_is_reported(mgr):
     mgr.add("one", "flaky", "SIM::busy")
     h = mgr.add("two", "flaky", "SIM::busy")
     assert h.state == "error" and "SIM::busy" in h.last_error
+
+
+def test_a_waiting_action_polls_without_holding_the_instrument(mgr):
+    """A waiting action is polled (each poll a short call): reads go on meanwhile;
+    it ends when its condition holds, on *check* raising, or after its timeout."""
+    import threading
+
+    class Slow(Instrument):
+        CHANNELS = [ChannelSpec("x", "r")]
+        ACTIONS = [ActionSpec("wait_done", "", 5.0, 0.05), ActionSpec("never", "", 0.3, 0.05)]
+        done_at = 0.0
+        polls = 0
+
+        def _read_x(self):
+            return 1.0
+
+        def _action_wait_done(self):
+            Slow.polls += 1
+            return time.monotonic() >= Slow.done_at
+
+        def _action_never(self):
+            return False
+    mgr.drivers.register("slow", Slow)
+    h = mgr.add("w", "slow", "SIM::wait")
+    Slow.done_at = time.monotonic() + 0.6
+    t = threading.Thread(target=h.run_action, args=("wait_done",))
+    t0 = time.monotonic()
+    t.start()
+    time.sleep(0.1)
+    r0 = time.monotonic()
+    assert h.read("x") == 1.0 and time.monotonic() - r0 < 0.2     # not blocked by the wait
+    t.join(5)
+    assert not t.is_alive() and 0.55 < time.monotonic() - t0 < 2 and Slow.polls >= 5
+    with pytest.raises(InstrumentTimeout, match="did not finish in 0 s"):
+        h.run_action("never")
+
+    class Stop(Exception):
+        pass
+    n = []
+
+    def check():
+        n.append(1)
+        if len(n) > 3:
+            raise Stop()
+    with pytest.raises(Stop):
+        h.run_action("never", check)

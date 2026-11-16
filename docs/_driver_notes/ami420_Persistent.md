@@ -41,8 +41,12 @@ Setting `field` starts the ramp and returns at once. `status` reads `RAMPING`, t
 [point action](../../guide/point-actions.md):
 
 ```python
-wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=3600)
+set('magnet.wait_steady')
 ```
+
+`wait_steady` waits until `status` is `HOLDING` or `PAUSED`, checking every 0.5 s.
+The magnet stays readable meanwhile, so the monitor keeps updating. An abort or **Stop**
+ends the wait, a quench makes it fail, and it gives up after 24 h.
 
 ## Persistent switch
 

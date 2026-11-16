@@ -29,8 +29,12 @@ Setting `field` sets the programmed field and starts the ramp. It returns at onc
 [point action](../../guide/point-actions.md):
 
 ```python
-wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=3600)
+set('magnet.wait_steady')
 ```
+
+`wait_steady` waits until `status` is `HOLDING` or `PAUSED`, checking every 0.5 s.
+The magnet stays readable meanwhile, so the monitor keeps updating. An abort or **Stop**
+ends the wait, a quench makes it fail, and it gives up after 24 h.
 
 `field` and `current` are measured at the 420's shunt, as on the front panel.
 `supply_voltage` is the voltage the 420 commands. A field beyond the current limit is

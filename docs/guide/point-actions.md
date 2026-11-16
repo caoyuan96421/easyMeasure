@@ -58,6 +58,12 @@ set('dmm.trigger')
 **Wait for a magnet to reach its field** (`post_sweep` of the field dimension):
 
 ```python
+set('magnet.wait_steady')        # the magnet drivers' action: HOLDING or PAUSED
+```
+
+or, for any instrument with a status channel:
+
+```python
 wait_until(lambda: get('magnet.status') == 'HOLDING', timeout=600, interval=0.5)
 ```
 

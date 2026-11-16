@@ -514,6 +514,9 @@ class Backend:
             try:
                 v = self.channels.set(name, value, ramp=ramp)
             except RampStopped:
+                if kind == "action":                 # a waiting action, stopped
+                    log.info("%s stopped", name)
+                    return None
                 v = self.channels.get(name)
                 log.info("ramp of %s stopped at %s", name, v)
         if kind == "parameter":

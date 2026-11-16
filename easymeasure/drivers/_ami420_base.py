@@ -71,6 +71,7 @@ from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.logsys import get_logger
 from ..common import paths
 from ..common.errors import ChannelError, InstrumentFault
+from ._magnet import STEADY_STATUS, WAIT_STEADY
 from ._scpi import SCPIInstrument, fmt, to_float
 
 log = get_logger("ami420")
@@ -134,6 +135,7 @@ class AMI420Base(SCPIInstrument):
         ChannelSpec("quench", "r", "str", (), "", "Yes while a quench is in effect"),
     ]
     ACTIONS = [
+        WAIT_STEADY,
         ActionSpec("pause", "PAUSE the supply (and stop a persistent-switch procedure)"),
         ActionSpec("clear_quench", "clear the quench condition (like RESET QUENCH)"),
     ]
@@ -475,6 +477,11 @@ class AMI420Base(SCPIInstrument):
         log.info("%s: exiting persistent mode at %.5g A", self.name, im)
         self._state = None
         self._advance(self._tick(force=True))
+
+    def _action_wait_steady(self) -> bool:
+        status = self.read("status")
+        self._refuse_when_faulted("wait for a steady field")    # a quench: not steady, ever
+        return status in STEADY_STATUS
 
     def _action_pause(self) -> None:
         self.w("PAUSE")

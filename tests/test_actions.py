@@ -38,7 +38,7 @@ def test_all_simulated_actions_and_effects(demo):
         "src": {"clear_status"},
         "dmm": {"reset", "trigger"},
         "lockin": {"auto_phase", "auto_gain"},
-        "magnet": {"hold"},
+        "magnet": {"hold", "wait_steady"},
         "spec": {"preset"},
         "cam": {"snap", "cooler_on"},
         "awg": {"start", "stop", "trigger"},

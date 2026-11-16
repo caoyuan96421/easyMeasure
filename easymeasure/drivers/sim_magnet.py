@@ -2,8 +2,8 @@
 
 Writing ``field`` sets a target and the simulated field then ramps there at
 ``rate`` T/min in real time - like the real thing.  ``field`` reads the actual
-field; ``status`` is RAMPING or HOLDING.  Combine with an alias ramp rate or a
-script that waits for HOLDING.
+field; ``status`` is RAMPING or HOLDING; the action ``wait_steady`` waits for
+HOLDING.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 
 from ..common.errors import ChannelError
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ._magnet import STEADY_STATUS, WAIT_STEADY
 from ._simbase import FAULT_OPTION_DOC, SimDirectInstrument
 from .simworld import WORLD
 
@@ -28,7 +29,7 @@ class SimMagnet(SimDirectInstrument):
         ChannelSpec("rate", "rw", "float", (), "T/min", config=True),
         ChannelSpec("status", "r", "str", (), "", "RAMPING / HOLDING"),
     ]
-    ACTIONS = [ActionSpec("hold", "stop ramping at the present field")]
+    ACTIONS = [WAIT_STEADY, ActionSpec("hold", "stop ramping at the present field")]
     DEFAULT_OPTIONS = dict(max_field=9.0, **FAULT_OPTION_DOC)
 
     def connect(self):
@@ -39,6 +40,9 @@ class SimMagnet(SimDirectInstrument):
         self.st = st
         # the field others see (lock-in, VNA …) follows the ramp even unpolled
         WORLD.set_dynamic(self.name + ".field", lambda: self._update()["field"])
+
+    def _action_wait_steady(self) -> bool:
+        return self.read("status") in STEADY_STATUS
 
     def _action_hold(self):
         self.gate()

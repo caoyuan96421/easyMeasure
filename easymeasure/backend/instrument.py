@@ -155,11 +155,18 @@ class ChannelSpec:
 @dataclass
 class ActionSpec:
     """An instrument action: a command without arguments (trigger, reset, auto-range,
-    auto-phase ...).  Implemented by ``_action_<name>()`` or ``Instrument.action()``."""
+    auto-phase ...).  Implemented by ``_action_<name>()`` or ``Instrument.action()``.
+
+    A *waiting* action (``wait`` > 0 s) waits for a condition: ``_action_<name>()``
+    returns whether it holds, and is called every ``wait`` s - each call a short call
+    of its own, so the instrument stays usable (monitor, reads) while it waits - until
+    it does, for at most ``timeout`` s.  An abort (sweep, script, queue) or Stop ramps
+    ends the wait."""
 
     name: str
     description: str = ""
     timeout: Optional[float] = None
+    wait: float = 0.0
 
     def to_dict(self) -> dict:
         return {"name": self.name, "description": self.description}
@@ -168,7 +175,8 @@ class ActionSpec:
     def from_dict(cls, d) -> "ActionSpec":
         if isinstance(d, str):
             return cls(d)
-        return cls(d["name"], d.get("description", ""), d.get("timeout"))
+        return cls(d["name"], d.get("description", ""), d.get("timeout"),
+                   float(d.get("wait", 0.0)))
 
 
 def _text_key(v) -> str:
@@ -321,11 +329,12 @@ class Instrument:
         """Return the action list (may depend on options / connected hardware)."""
         return list(self.ACTIONS)
 
-    def action(self, name: str) -> None:
+    def action(self, name: str) -> Any:
+        """Run action *name* (a waiting action: return whether its condition holds)."""
         fn = getattr(self, "_action_" + name, None)
         if fn is None:
             raise ChannelError("%s has no action %s" % (self.name, name))
-        fn()
+        return fn()
 
     def read(self, channel: str) -> Any:
         fn = getattr(self, "_read_" + channel, None)
@@ -749,14 +758,18 @@ class InstrumentHandle:
                 return {}
         return dict(self._actions)
 
-    def run_action(self, name: str) -> None:
-        """Execute an action (guarded like any other call: deadline, retries)."""
+    def run_action(self, name: str, check: Optional[Callable[[], None]] = None) -> None:
+        """Execute an action (guarded like any other call: deadline, retries).  A
+        waiting action is polled until its condition holds; *check* (raises to stop:
+        an abort) is called between polls."""
         act = self.actions.get(name)
         if act is None and not self._channels and self.state != "connected":
             self._auto_connect()
             act = self.actions.get(name)
         if act is None:
             raise ChannelError("instrument %s has no action %r" % (self.name, name))
+        if act.wait > 0:
+            return self._wait_action(act, check)
         spec = ChannelSpec("action:" + name, "w", "str", (), timeout=act.timeout)
         # never retried automatically: an action (trigger, reset) is not idempotent
 
@@ -766,6 +779,26 @@ class InstrumentHandle:
 
         self._guarded("action %s" % name, spec, do, retries=0)
         log.info("%s: action %s executed", self.name, name)
+
+    def _wait_action(self, act: ActionSpec, check: Optional[Callable[[], None]]) -> None:
+        spec = ChannelSpec("action:" + act.name, "w", "str", ())
+        t0 = time.monotonic()
+        limit = act.timeout
+        while True:
+            if self._guarded("action %s" % act.name, spec, lambda drv: drv.action(act.name)):
+                log.info("%s: %s done after %.1f s", self.name, act.name, time.monotonic() - t0)
+                return
+            if limit is not None and time.monotonic() - t0 > limit:
+                raise InstrumentTimeout("%s: %s did not finish in %.0f s" % (
+                    self.name, act.name, limit))
+            end = time.monotonic() + act.wait
+            while True:
+                if check is not None:
+                    check()
+                left = end - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(left, 0.05))
 
     def spec(self, channel: str) -> ChannelSpec:
         """Pure lookup (never does I/O, so it is safe for status queries)."""

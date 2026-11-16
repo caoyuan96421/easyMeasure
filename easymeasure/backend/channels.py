@@ -1499,9 +1499,27 @@ class ChannelManager:
     def _run_action(self, name: str, kind: str, abort_check: AbortCheck = None):
         if kind == "action":
             _, h, act = self._hw(name)
+            tok = _RAMP_TOKEN.get()                # a direct write: Stop ramps ends a wait
+            rid = None
+            if act.wait > 0 and tok is not None:
+                rid = next(_RAMP_IDS)
+                with self._ramps_lock:
+                    self.ramps[rid] = {"channels": [name], "token": tok, "since": time.time(),
+                                       "targets": {}}
+                self._ramps_changed()
+
+            def check():
+                if abort_check is not None:
+                    abort_check()
+                if tok is not None and tok.stopped:
+                    raise RampStopped("%s stopped" % name)
             try:
-                h.run_action(act.name)
+                h.run_action(act.name, check)
             finally:
+                if rid is not None:
+                    with self._ramps_lock:
+                        self.ramps.pop(rid, None)
+                    self._ramps_changed()
                 self.forget_instrument(h.name)
             self._notify(name, None)
             return None

@@ -271,3 +271,88 @@ def test_each_driver_refuses_the_other_model(backend):
     ensure_emulator("SIM::ami_y", 0, lambda: AMI430Emulator(FAST))
     backend.add_instrument("y", "ami420_noPersistent", "SIM::ami_y", dict(FAST))
     assert "use the ami430 driver" in backend.instruments.get("y").last_error
+
+
+def test_wait_steady(backend):
+    """Every magnet driver: wait_steady returns once status is HOLDING or PAUSED; the
+    magnet can be read meanwhile; a quench fails it; Stop ramps ends it."""
+    import threading
+    h, emu = add_magnet(backend, driver="ami420_noPersistent", switch=False,
+                        time_scale=5.0, rate=1.0)
+    backend.write_channel("mag.wait_steady")                         # PAUSED: at once
+    h.write("field", 0.4)                                            # 4 A at 5 A/s (sim)
+    t0 = time.monotonic()
+    out = {}
+    th = threading.Thread(target=lambda: out.update(r=backend.write_channel("mag.wait_steady")))
+    th.start()
+    time.sleep(0.2)
+    assert h.read("status") == "RAMPING" and th.is_alive()           # readable meanwhile
+    th.join(10)
+    assert not th.is_alive() and h.read("status") == "HOLDING"
+    assert 0.5 < time.monotonic() - t0 < 5
+    # a quench during the wait fails it
+    h.write("field", 2.0)
+    err = {}
+
+    def wait():
+        try:
+            backend.write_channel("mag.wait_steady")
+        except Exception as exc:
+            err["e"] = exc
+    th = threading.Thread(target=wait)
+    th.start()
+    time.sleep(0.3)
+    emu.quench("test")
+    th.join(10)
+    assert isinstance(err.get("e"), InstrumentFault), err
+    h.run_action("clear_quench")
+    # Stop ramps ends a wait from a direct write
+    h.write("field", 3.0)
+    th = threading.Thread(target=lambda: out.update(r=backend.write_channel("mag.wait_steady")))
+    th.start()
+    assert wait_for_ramps(backend)
+    assert backend.stop_ramps() == ["mag.wait_steady"]
+    th.join(5)
+    assert not th.is_alive() and out["r"] is None
+    # the other magnet drivers have it too
+    from easymeasure.drivers.ami430 import AMI430
+    from easymeasure.drivers.sim_magnet import SimMagnet
+    from easymeasure.drivers.ami420_Persistent import AMI420Persistent
+    for cls in (AMI430, AMI420Persistent, SimMagnet):
+        assert "wait_steady" in [a.name for a in cls.ACTIONS], cls
+
+
+def wait_for_ramps(be, t=5.0):
+    end = time.monotonic() + t
+    while time.monotonic() < end:
+        if be.channels.active_ramps():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_wait_steady_in_a_sweep_and_aborted(backend):
+    from easymeasure.backend.storage import DataSet
+    be = backend
+    be.add_instrument("magnet", "sim_magnet", "NONE")
+    be.write_channel("magnet.rate", 60.0)                             # 1 T/s
+    d = {"name": "steady", "dimensions": [{
+        "points": 3, "sweep": [{"channel": "magnet.field", "start": 0.2, "stop": 0.6}],
+        "record": ["magnet.field", "magnet.status"],
+        "hooks": {"post_sweep": {"enabled": True, "code": "set('magnet.wait_steady')"}}}]}
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    assert be.queue.wait_idle(30)
+    last = be.queue_state()["history"][-1]
+    assert last["status"] == "finished", last
+    ds = DataSet.load(last["path"])
+    assert list(ds.data["magnet.status"]) == ["HOLDING"] * 3
+    assert ds.data["magnet.field"] == pytest.approx([0.2, 0.4, 0.6])
+    # aborted while it waits (a slow ramp)
+    be.write_channel("magnet.rate", 0.6)                              # 0.01 T/s
+    d["dimensions"][0]["sweep"][0].update(start=0.0, stop=5.0)
+    be.queue_add({"kind": "sweep", "definition": d}, start=True)
+    time.sleep(1.0)
+    t0 = time.monotonic()
+    be.abort()
+    assert be.queue.wait_idle(10) and time.monotonic() - t0 < 3
+    assert be.queue_state()["history"][-1]["status"] == "aborted"
