@@ -557,8 +557,9 @@ the 2400.
 * **Sources.** `DV<n>` alone disables an SMU. The voltage sources are `DS<k>,<V>`,
   and the voltmeters are `TV5` / `TV6`.
 * **Settings** are remembered by the driver, since user mode has no setting queries.
-  A value written while `output<n>` is OFF is applied when it is switched ON, which
-  needs a compliance first.
+  The default compliance is 1 µA in Voltage mode and 1 V in Current mode. While
+  `output<n>` is OFF, the forced quantity can be set and reads what it will force,
+  and the measured one reads NaN. Switching ON applies it all.
 * **Output envelope.** The compliance limits are checked before anything is sent:
   100 mA on the 2 / 20 V ranges, 50 mA on 40 V, 20 mA on 100 V.
 * **Outputs.** Connecting and disconnecting switch every source off. A reconnect

@@ -580,13 +580,17 @@ def test_hp4145_user_mode_smus(pa):
     assert "2 V" not in h.spec("range1").allowed                          # the 4155's only
     be.define_alias(name="Vd", target="pa.voltage1")
     be.define_alias(name="Id", target="pa.current1")
-    assert math.isnan(be.read_channel("Id"))           # disabled: nothing measured
-    with pytest.raises(ChannelError, match="set the compliance"):
-        be.write_channel("pa.output1", "ON")
-    be.write_channel("pa.Icompliance1", 1e-3)
+    # off: the forced quantity can be set and read (what it will force), the other: NaN
+    assert be.read_channel("pa.Icompliance1") == 1e-6           # the default compliance
+    assert math.isnan(be.read_channel("Id"))
+    n = len(e.log)
     be.write_channel("Vd", 0.5, ramp=False)            # remembered while OFF ...
-    assert e.smu[1].mode is None and not e.log[-1].startswith("DV")
+    assert be.read_channel("Vd") == 0.5 and len(e.log) == n     # (nothing sent)
+    assert e.smu[1].mode is None
     be.write_channel("pa.output1", "ON")              # ... programmed when switched ON
+    assert e.log[-1] == "DV1,0,5E-1,1E-6"
+    assert be.read_channel("Id") == pytest.approx(1e-6)          # at the 1 µA compliance
+    be.write_channel("pa.Icompliance1", 1e-3)
     assert e.log[-1] == "DV1,0,5E-1,1E-3"
     assert be.read_channel("Vd") == pytest.approx(0.5)   # both read back by TV / TI
     assert e.log[-1] == "BC;TV1"
@@ -614,6 +618,8 @@ def test_hp4145_user_mode_smus(pa):
     with pytest.raises(ChannelError, match="OFF before changing the mode"):
         be.write_channel("pa.mode1", "Current")
     be.write_channel("pa.mode2", "Current")
+    assert be.read_channel("pa.Vcompliance2") == 1.0              # the default in Current mode
+    assert math.isnan(be.read_channel("pa.voltage2")) and be.read_channel("pa.current2") == 0
     assert h.spec("current2").writable and not h.spec("voltage2").writable
     assert h.spec("Vcompliance2").unit == "V" and "Icompliance2" not in h.channels
     assert h.spec("range2").allowed[1] == "1 nA"
@@ -627,7 +633,8 @@ def test_hp4145_user_mode_smus(pa):
     assert be.read_channel("pa.voltage2") == pytest.approx(10.0)   # (clamped at 10 V)
     with pytest.raises(ChannelError, match="not available at 0.05 A"):
         be.write_channel("pa.Vcompliance2", 50)       # at 50 mA only up to 40 V
-    # voltage sources (DS) and voltmeters (TV5 / TV6)
+    # voltage sources (DS) and voltmeters (TV5 / TV6); 0 V until set
+    assert be.read_channel("pa.vs1") == 0.0
     be.channels.set("pa.vs1", 3.3)
     assert e.log[-1] == "DS1,3.3E+0"
     assert be.read_channel("pa.vm1") == pytest.approx(3.3)
@@ -711,11 +718,17 @@ def test_hp4145_4155_command_sets_and_readings(backend):
     # the status of a reading
     drv = be.instruments.get("a55").driver
     for reply, want in (("NAI+1.0000E-03", 1e-3), ("CAI-2.0000E-03", -2e-3),
-                        ("TAI+5E-6", 5e-6), ("VAI+1.0000E+02", math.inf),
-                        ("XAI+0.0000E+00", math.nan), ("NAI 3.5E-06", 3.5e-6)):
+                        ("TAI+5E-6", 5e-6), ("PAI+1E-3", 1e-3), ("NAI 3.5E-06", 3.5e-6)):
         drv.q = lambda c, r=reply: r
-        got = drv._measure("I", 1)
-        assert (math.isnan(got) and math.isnan(want)) or got == pytest.approx(want), reply
+        assert drv._measure("I", 1) == pytest.approx(want), reply
+    # no value: an error with the analyzer's reply
+    for reply, why in (("VAI-1.0000E+02", "A/D overflow"), ("XAI+0.0000E+00", "oscillation")):
+        drv.q = lambda c, r=reply: r
+        with pytest.raises(ChannelError, match=why + r".*%s" % reply[:3]):
+            drv._measure("I", 1)
+    drv.q = lambda c: "VEV-1.9999E+01"
+    with pytest.raises(ChannelError, match="anything connected to the voltmeter"):
+        drv._measure("V", 5)
     drv.q = lambda c: "NBI+1E-3"
     with pytest.raises(IOError, match="answered"):
         drv._measure("I", 1)                           # another channel's reading

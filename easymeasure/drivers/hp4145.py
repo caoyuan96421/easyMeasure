@@ -25,8 +25,9 @@ pp. 2-45 … 53, precision / EOI pp. 2-59 … 64):
   ``TV5`` / ``TV6``): a fresh reading, e.g. ``NAV+1.2345E+00`` - status, channel
   letter (A … D the SMUs, E / F the voltmeters), V or I, value.  Status ``N``
   normal, ``C`` / ``T`` compliance (this / another channel: the reading is the
-  value), ``V`` A/D overflow (±inf), ``X`` oscillation (NaN), ``P`` PGU current
-  limit.  An ``ERROR`` reply is an error.  No error queue is polled.
+  value), ``P`` PGU current limit (the value); ``V`` A/D overflow and ``X``
+  oscillation are errors (no value), as is an ``ERROR`` reply.  No error queue is
+  polled.
 
 Per SMU *n* (1 … 4, option ``smus``; the same mode logic as the ``keithley2400``):
 
@@ -40,7 +41,7 @@ Per SMU *n* (1 … 4, option ``smus``; the same mode logic as the ``keithley2400
 ``range<n>``        config  source range: ``AUTO`` or a fixed one
 ==================  ======  =============================================================
 
-Plus ``vs1``, ``vs2`` (voltage sources, ±20 V, 1 mV) and ``vm1``, ``vm2``
+Plus ``vs1``, ``vs2`` (voltage sources, ±20 V, 1 mV; 0 while not set) and ``vm1``, ``vm2``
 (voltmeters) unless option ``vs_vm`` is false, and ``integration`` (short / medium /
 long, ``IT``).
 
@@ -48,8 +49,11 @@ The SMUs' output envelope is checked before anything is sent: a voltage source's
 current compliance at most 100 mA on the 2 / 20 V ranges, 50 mA on 40 V, 20 mA on
 100 V; a current source's voltage compliance at most 100 V up to 20 mA, 40 V up to
 50 mA, 20 V above.  Both quantities of an SMU are measured with TV / TI, so the
-forced value reads back as measured.  While an SMU's output is OFF its readings
-are NaN; changing its mode needs the output OFF.
+forced value reads back as measured.  An SMU starts with a compliance of 1 µA
+(Voltage mode) or 1 V (Current mode), and gets it again on a mode change.  While
+its output is OFF, the forced quantity can be set and reads what will be forced
+when it is switched ON; the other quantity reads NaN.  Changing its mode needs the
+output OFF.
 
 User mode has no setting queries: the driver remembers what it programmed.
 Connecting switches every source off, and so does disconnecting; a reconnect
@@ -84,10 +88,16 @@ I_RANGES = [(k, lab, 10.0 ** (k - 10), 10.0 ** (k - 14)) for k, lab in (
     (7, "1 mA"), (8, "10 mA"), (9, "100 mA"))]
 INTEGRATION = ["short", "medium", "long"]
 COMMAND_SETS = ("HP4145", "HP4155")
+#: the compliance an SMU starts with (and gets on a mode change): 1 µA / 1 V
+DEFAULT_COMPLIANCE = {"Voltage": 1e-6, "Current": 1.0}
 
 _READING = re.compile(
     r"([NTCPXV])([A-H])([VI])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d{1,3})?)")
 _ERROR = re.compile(r'(?:ERROR\s*:?\s*)?([+-]?\d+)\s*[:,]\s*"?([A-Za-z][^\r\n]*?)"?', re.I)
+#: reading status -> what it means (V and X are errors: there is no value)
+STATUS = {"N": "normal", "T": "another channel at its compliance",
+          "C": "this channel at its compliance", "P": "PGU current limit",
+          "X": "oscillation", "V": "A/D overflow"}
 _CH = re.compile(r"^(mode|voltage|current|Icompliance|Vcompliance|output|range)(\d)$")
 
 #: addresses switched to the HP 4145 command set in this backend session (it stays
@@ -206,7 +216,7 @@ class HP4145(SCPIInstrument):
         old, old_vs = (self.st, self.vs) if self.reconnecting else ({}, {})
         self.st = {n: {"mode": old[n]["mode"] if n in old else "Voltage", "on": False,
                        "value": old[n]["value"] if n in old else 0.0,
-                       "comp": old[n]["comp"] if n in old else None,
+                       "comp": old[n]["comp"] if n in old else DEFAULT_COMPLIANCE["Voltage"],
                        "range": old[n]["range"] if n in old else "AUTO"} for n in self._smus()}
         self.vs = {1: None, 2: None}
         for n in self._smus():
@@ -277,11 +287,13 @@ class HP4145(SCPIInstrument):
         status, letter, quantity, text = m.groups()
         if (letter, quantity) != (chr(64 + ch), kind):
             raise IOError("T%s%d answered %r" % (kind, ch, raw[:40]))
+        if status in ("V", "X"):
+            raise ChannelError("%s: T%s%d: %s (the analyzer answered %r)%s" % (
+                self.name, kind, ch, STATUS[status], raw[:40],
+                " - is anything connected to the voltmeter?" if ch > 4 else ""))
         x = float(text)
-        if status == "V":                         # A/D overflow
-            return math.copysign(math.inf, x) if x else math.inf
-        if status == "X":                         # SMU oscillating
-            return math.nan
+        if not math.isfinite(x):
+            raise IOError("T%s%d: not a number: %r" % (kind, ch, raw[:40]))
         return x                                  # N, C / T (compliance), P
 
     def _source_range(self, n: int) -> Tuple[int, float]:
@@ -304,9 +316,6 @@ class HP4145(SCPIInstrument):
     def _program(self, n: int) -> None:
         """Send DV / DI with the remembered value, range and compliance."""
         s = self.st[n]
-        if s["comp"] is None:
-            raise ChannelError("%s: set the compliance of SMU%d before switching it ON"
-                               % (self.name, n))
         v = s["mode"] == "Voltage"
         self._check_envelope(n, s["value"], s["comp"], v)
         code, res = self._source_range(n)
@@ -358,18 +367,20 @@ class HP4145(SCPIInstrument):
             k = int(m.group(2))
             if m.group(1) == "vm":
                 return self._measure("V", 4 + k)
-            return math.nan if self.vs[k] is None else self.vs[k]
+            return 0.0 if self.vs[k] is None else self.vs[k]      # off: 0 V
         base, n = self._split(channel)
         s = self.st[n]
         if base in ("voltage", "current"):
+            forced = (base == "voltage") == (s["mode"] == "Voltage")
             if not s["on"]:
-                return math.nan                    # disabled: nothing to measure
+                # off: the forced quantity is what it will force; the other is not measured
+                return s["value"] if forced else math.nan
             return self._measure("V" if base == "voltage" else "I", n)
         if base == "mode":
             return s["mode"]
         if base in ("Icompliance", "Vcompliance"):
             self._check_comp_name(base, n)
-            return math.nan if s["comp"] is None else s["comp"]
+            return s["comp"]
         if base == "output":
             return "ON" if s["on"] else "OFF"
         if base == "range":
@@ -392,8 +403,7 @@ class HP4145(SCPIInstrument):
             if (base == "voltage") != v:
                 raise ChannelError("%s: %s%d is measured in %s mode; set mode%d first"
                                    % (self.name, base, n, s["mode"], n))
-            if s["comp"] is not None:
-                self._check_envelope(n, float(value), s["comp"], v)
+            self._check_envelope(n, float(value), s["comp"], v)
             s["value"] = float(value)
             if s["on"]:
                 self._program(n)
@@ -402,7 +412,7 @@ class HP4145(SCPIInstrument):
                 return
             if s["on"]:
                 raise ChannelError("%s: switch output%d OFF before changing the mode" % (self.name, n))
-            s.update(mode=value, value=0.0, comp=None, range="AUTO")
+            s.update(mode=value, value=0.0, comp=DEFAULT_COMPLIANCE[value], range="AUTO")
         elif base in ("Icompliance", "Vcompliance"):
             self._check_comp_name(base, n)
             self._check_envelope(n, s["value"], float(value), v)
@@ -420,7 +430,7 @@ class HP4145(SCPIInstrument):
             old = s["range"]
             s["range"] = value
             try:
-                self._check_envelope(n, s["value"], s["comp"] or 0.0, v)
+                self._check_envelope(n, s["value"], s["comp"], v)
             except ChannelError:
                 s["range"] = old
                 raise
