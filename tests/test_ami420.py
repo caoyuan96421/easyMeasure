@@ -211,25 +211,32 @@ def test_without_a_switch(backend):
     wait(lambda: h.read("status") == "HOLDING")
     assert h.read("field") == pytest.approx(0.5) == h.read("target")
     assert h.read("current") == pytest.approx(5.0)
+    assert not any("PSwitch" in c for c in emu.log)                # never asked
     only_the_420s_commands(emu)
 
 
-def test_the_plain_driver_refuses_a_magnet_with_a_switch_in_use(backend):
-    # heater on: the 420 only heats with a switch
-    backend.add_instrument("a", "ami420_noPersistent", "SIM::ami_a", dict(FAST))
-    h = backend.instruments.get("a")
-    assert h.state == "error" and "use the ami420_Persistent driver" in h.last_error
-    # a magnet this driver left persistent (on record)
-    p, emu = add_magnet(backend, "b")
-    p.write("field", 0.4)
-    wait(lambda: p.read("status") == "HOLDING")
-    p.run_action("enter_persistent")
-    wait(lambda: p.read("status") == "PERSISTENT")
-    backend.remove_instrument("b")
-    backend.add_instrument("b", "ami420_noPersistent", "SIM::ami_b", dict(FAST))
-    h = backend.instruments.get("b")
-    assert h.state == "error" and "on record" in h.last_error
-    assert "use the ami420_Persistent driver" in h.last_error
+def test_the_plain_driver_ignores_the_switch_completely(backend):
+    """ami420_noPersistent: no PSwitch command or query at all, nothing on record is
+    believed - whatever the programmer says about a heater, the magnet is driven."""
+    import json
+    mem = memory_file("SIM::ami_a")
+    mem.parent.mkdir(parents=True, exist_ok=True)
+    mem.write_text(json.dumps({"current": 12.0, "field": 1.2}))   # stale, ignored
+    # the programmer claims a heater that is off: that would be "persistent"
+    h, emu = add_magnet(backend, "a", driver="ami420_noPersistent", heater=False)
+    assert h.state == "connected" and h.read("status") == "PAUSED"
+    h.write("field", 0.7)
+    wait(lambda: h.read("status") == "HOLDING")
+    assert h.read("field") == pytest.approx(0.7) == h.read("target")
+    assert h.read("current") == pytest.approx(7.0)
+    assert not any("PSwitch" in c for c in emu.log), [c for c in emu.log if "PSwitch" in c]
+    assert mem.exists()                                            # left alone
+    # a STATE? of 8 (heating) blocks nothing here: the programmer decides
+    emu.has_switch, emu.heater, emu.switch = True, True, "warm"
+    h.write("field", 0.2)
+    wait(lambda: h.read("status") == "HOLDING")
+    assert h.read("field") == pytest.approx(0.2)
+    assert not any("PSwitch" in c for c in emu.log)
 
 
 def test_quench_aborts_and_is_cleared(backend):

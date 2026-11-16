@@ -15,8 +15,8 @@ That is why the ``ami430`` driver times out on a 420.  What matters here:
 * ``STATE?`` codes: 8 is HEATING SWITCH and 9 AT ZERO (on the 430, 8 is AT ZERO);
   there is no "cooling" state and no cooling time;
 * no query for the Load menu's "Persistent Switch Installed" (and ``PSwitch 0`` is
-  accepted without a switch) - hence the two drivers.  ``ami420_noPersistent`` refuses a
-  programmer whose switch heater is on (the 420 only heats with a switch).
+  accepted without a switch) - hence the two drivers.  ``ami420_noPersistent`` sends no
+  ``PSwitch`` command or query at all.
 
 Field
     Writing ``field`` sets the programmed field and starts the ramp (``RAMP``) and
@@ -170,36 +170,36 @@ class AMI420Base(SCPIInstrument):
                           "menu" % self.name)
         self.per_min = 60.0 if self.qf("RAMP:RATE:UNITS?") < 0.5 else 1.0
         self.limit = self.qf("CURRent:LIMit?")
-        self.heat_time = self.qf("PSwitch:TIME?")
-        heater = self.qb("PSwitch?")
         self.seq: Optional[dict] = None
         self.operation = "idle"
         self.cool_until = 0.0
+        self.memory = None
+        self.switch_installed = self.PERSISTENT
+        if self.PERSISTENT:
+            self._connect_switch()
+        # without a switch nothing about it is asked or believed: a 420 without one
+        # does not report its heater or persistent state correctly; the magnet is
+        # driven directly at all times
+        self.fault = None
+        self._state = self._query_state()
+        self._state_t = time.monotonic()
+
+    def _connect_switch(self) -> None:
+        """The persistent switch's state, and the field on record."""
+        self.heat_time = self.qf("PSwitch:TIME?")
+        heater = self.qb("PSwitch?")
         self.memory_path = memory_file(self.address)
         self.memory = self._load_memory()
-        self.switch_installed = self.PERSISTENT
-        if not self.PERSISTENT:
-            if heater:
-                raise IOError("%s: the switch heater is on, so the magnet has a persistent "
-                              "switch: use the ami420_Persistent driver" % self.name)
-            if self.memory is not None:
-                raise IOError("%s: a persistent field (%.5g T) is on record for this "
-                              "programmer (%s): the magnet was left persistent - use the "
-                              "ami420_Persistent driver" % (self.name, self.memory["field"],
-                                                            self.memory_path))
-        elif heater and self.memory is not None:
+        if heater and self.memory is not None:
             log.warning("%s: the switch heater is on: the magnet is driven, the recorded "
                         "persistent current (%.5g A) is dropped" % (self.name,
                                                                      self.memory["current"]))
             self._forget()
-        if self.switch_installed and not heater:
+        if not heater:
             self.operation = ("idle (persistent at %.5g T, recorded)" % self.memory["field"]
                               if self.memory else
                               "idle (persistent; the field it was left at is unknown: set "
                               "persistent_field before exit_persistent)")
-        self.fault = None
-        self._state = self._query_state()
-        self._state_t = time.monotonic()
 
     def read_errors(self):
         out = []
@@ -358,6 +358,8 @@ class AMI420Base(SCPIInstrument):
     def _status(self, s: int) -> str:
         if s == QUENCH or self.fault is not None:
             return "QUENCH"
+        if not self.switch_installed:
+            return STATES.get(s, "STATE %d" % s)
         if self.seq is not None:
             return "ENTERING PERSISTENT" if self.seq["op"] == "enter" else "EXITING PERSISTENT"
         if s == HEATING:
@@ -387,6 +389,8 @@ class AMI420Base(SCPIInstrument):
             raise ChannelError("%s: %s cannot be set" % (self.name, channel))
 
     def _busy_checks(self, s: int) -> None:
+        if not self.switch_installed:
+            return                              # no switch: nothing to wait for
         if self.seq is not None:
             raise ChannelError("%s is busy %s (%s)" % (self.name, self._seq_name(), self.operation))
         if s == HEATING:

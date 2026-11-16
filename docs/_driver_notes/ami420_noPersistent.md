@@ -16,11 +16,11 @@ older 430: when it gets a query it does not know, it beeps and sends no reply, s
 Field units (kG or T) and ramp-rate units are read and converted: `field` is always
 in T and `ramp_rate` in T/min.
 
-**Refused at connection**, with a message naming `ami420_Persistent`, when:
-
-* the programmer's switch heater is on (the 420 heats only with a switch installed);
-* a persistent field is on record for this address. `ami420_Persistent` leaves a
-  record when it puts a magnet in persistent mode.
+**The persistent switch is ignored completely.** A 420 without a switch does not
+report its heater or persistent state correctly, so this driver never sends a
+`PSwitch` command or query. It does not read a record of a persistent field, and it
+does not refuse anything because of the switch. The magnet is driven directly at all
+times, and `status` is the programmer's own state.
 
 ## Setting the field
 
