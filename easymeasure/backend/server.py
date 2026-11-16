@@ -53,7 +53,7 @@ MAX_QUEUE_BYTES = 16 * 1024 * 1024
 HOPELESS_BYTES = 64 * 1024 * 1024
 MAX_QUEUE_MSGS = 20000
 STALL_TIMEOUT = 60.0
-_DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress"}
+_DROPPABLE = {"monitor", "log", "sweep_point", "sweep_progress", "plugin_ui"}
 #: events a client gets when it does not say otherwise (scripts, notebooks): the
 #: small status events only - no monitor values, sweep data or log lines
 DEFAULT_EVENTS = ("queue", "item_end", "sweep_start", "sweep_end", "sweep_paused",
@@ -75,6 +75,8 @@ CONTROL_COMMANDS = {
     "remove_user_action", "move_user_action",
     # these end an instrument at once, also while every command thread waits on it
     "disconnect_instrument", "remove_instrument",
+    # a plugin's panel stays responsive (the event is queued for the plugin's thread)
+    "plugin_event",
 }
 
 

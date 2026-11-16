@@ -52,6 +52,9 @@ DEFAULT_SETTINGS = {
     "ppt_colormap": "viridis",   # colormap of the heat maps on slides
     "remote_access": False,      # start the internet gateway with the backend
     "folders_confirmed": False,  # the GUI asked for the data folder / PowerPoint file once
+    "plugins_enabled": [],       # plugins enabled (again when the backend starts)
+    "plugin_options": {},        # plugin -> its options
+    "plugin_paths": [],          # extra folders with plugins (besides <home>/plugins)
 }
 
 
@@ -90,6 +93,8 @@ class Backend:
         "save_setup", "load_setup", "get_setup", "make_ppt", "recent_logs", "run_script_now",
         "shutdown", "start_tray", "remote_status", "remote_start", "remote_stop",
         "remote_set_user", "remote_remove_user", "remote_cert_request", "remote_cert_use",
+        "list_plugins", "rescan_plugins", "enable_plugin", "disable_plugin",
+        "set_plugin_options", "plugin_event",
     )
 
     def __init__(self, settings: Optional[dict] = None, home: Optional[Path] = None,
@@ -137,6 +142,9 @@ class Backend:
         self.channels.user_actions = self.user_actions
         self.user_actions.claim = lambda n, replace: self.channels.claim(n, "user_action", replace)
         self.ring.add_listener(self._on_log)
+        from .plugins import PluginManager
+        self.plugins = PluginManager(self)
+        self.plugins.scan()
         self.monitor.start()
         self.started = time.time()
         self._tray = None
@@ -186,8 +194,9 @@ class Backend:
     def get_state(self) -> dict:
         """Everything a front end shows, in one dict: ``uptime``, ``settings``,
         ``instruments``, ``channels`` (see :meth:`list_channels`), ``monitor``,
-        ``actions`` (user actions), ``queue``, ``current_run``, ``resources`` and
-        ``ramps`` (ramps of direct writes now running, see ``ramp_state``)."""
+        ``actions`` (user actions), ``queue``, ``current_run``, ``resources``,
+        ``ramps`` (ramps of direct writes now running, see ``ramp_state``) and
+        ``plugins`` (see :meth:`list_plugins`)."""
         return {
             "uptime": time.time() - self.started,
             "settings": self.get_settings(),
@@ -199,6 +208,7 @@ class Backend:
             "current_run": self.current_run(),
             "resources": self.resources.list(),
             "ramps": self.channels.active_ramps(),
+            "plugins": self.plugins.describe(),
         }
 
     def get_settings(self) -> dict:
@@ -224,12 +234,18 @@ class Backend:
         elif "data_dir" in kwargs:
             kwargs.pop("data_dir")                 # empty: keep the current one
         self.settings.update(kwargs)
+        self._save_settings()
+        if "plugin_paths" in kwargs:
+            self.plugins.scan()
+            self.plugins._emit_plugins()
+        return self.get_settings()
+
+    def _save_settings(self) -> None:
         try:
             setup_io.atomic_write_json(self._settings_file, self.settings)
         except Exception as exc:
             log.warning("cannot persist settings: %s", exc)
         self.emit("settings", self.get_settings())
-        return self.get_settings()
 
     def recent_logs(self, n: int = 500, min_level: int = 0) -> list:
         """The last *n* log records at or above *min_level* (logging levels)."""
@@ -422,8 +438,15 @@ class Backend:
         self._changed("instruments")
         return h.describe()
 
+    def _not_a_plugins(self, name: str) -> None:
+        owner = self.instruments.get(name).owner
+        if owner is not None:
+            raise ChannelError("instrument %s is provided by plugin %s: disable the plugin to "
+                               "remove it" % (name, owner))
+
     def remove_instrument(self, name: str) -> None:
         """Disconnect and remove an instrument (refused while aliases use it)."""
+        self._not_a_plugins(name)
         used = [a.name for a in self.channels.aliases() if a.target.split(".")[0] == name]
         if used:
             raise ChannelError("instrument %s is used by alias(es) %s" % (name, ", ".join(used)))
@@ -433,6 +456,7 @@ class Backend:
     def update_instrument(self, name: str, address: Optional[str] = None,
                           options: Optional[dict] = None, driver: Optional[str] = None) -> dict:
         """Change address/options/driver of an instrument (it is reconnected)."""
+        self._not_a_plugins(name)
         old = self.instruments.get(name)
         if self.runner is not None:
             raise ChannelError("cannot modify instruments while a sweep is running")
@@ -1451,9 +1475,48 @@ class Backend:
             threading.Timer(0.2, cb).start()
         return "shutting down"
 
+    # ---------------------------------------------------------------- plugins --
+    def list_plugins(self) -> dict:
+        """The plugins: ``{plugins: [{name, title, description, version, source,
+        builtin, enabled, state (off / starting / running / stopping / error),
+        last_error, errors, options, defaults, panels, instrument}], errors: {file:
+        why it did not load}, folders: [where plugins are looked for]}``."""
+        return self.plugins.describe()
+
+    def rescan_plugins(self) -> dict:
+        """Look for plugins again (after adding or changing a plugin file); a running
+        plugin goes on with the code it was started with."""
+        self.plugins.scan()
+        self.plugins._emit_plugins()
+        return self.plugins.describe()
+
+    def enable_plugin(self, name: str) -> dict:
+        """Start a plugin; it stays enabled when the backend starts again.  A plugin
+        whose ``start`` fails is left off (the error is returned)."""
+        return self.plugins.enable(name)
+
+    def disable_plugin(self, name: str) -> dict:
+        """Stop a plugin at once: its panels, channels and timers are removed and it
+        can no longer use the backend, also when it is stuck."""
+        return self.plugins.disable(name)
+
+    def set_plugin_options(self, name: str, options: dict) -> dict:
+        """Change a plugin's options (it is restarted if it runs)."""
+        return self.plugins.set_options(name, dict(options or {}))
+
+    def plugin_event(self, plugin: str, widget: str, event: str, value: Any = None) -> None:
+        """A widget of a plugin's panel was operated: ``click``, ``turn`` (*value*: the
+        steps) or ``change`` (*value*: the new value).  Handled on the plugin's thread;
+        this returns at once."""
+        self.plugins.ui_event(plugin, widget, event, value)
+
     def close(self) -> None:
         """Stop everything (used by the server on exit and by tests)."""
         self._closing = True
+        try:
+            self.plugins.stop_all()
+        except Exception:
+            pass
         self._remote_want = False
         remote, self._remote = self._remote, None
         if remote is not None and remote.poll() is None:

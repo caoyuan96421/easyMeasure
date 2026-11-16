@@ -67,6 +67,7 @@ The backend pushes events. By default a client gets only the small status events
 | `instrument_fault` | a safety fault (magnet quench): instrument, message, whether a run was aborted |
 | `instrument_state` | an instrument's state changed (connected, error, hung, disconnected), also through a failing call: instrument, state, last error |
 | `changed`, `settings` | the setup or settings changed |
+| `plugins` | the plugins changed (enabled, disabled, panels): the same as `list_plugins` |
 
 Ask for more with `subscribe`, or for everything with `"*"`:
 
@@ -75,6 +76,7 @@ Ask for more with `subscribe`, or for everything with `"*"`:
 | `monitor` | monitored channel values |
 | `sweep_point`, `sweep_phase`, `sweep_progress` | live sweep data, progress |
 | `log` | log records |
+| `plugin_ui` | a plugin changed properties of its widgets: plugin, `set` (widget → properties) |
 
 ```python
 c.on_event = lambda kind, data: print(kind, data)

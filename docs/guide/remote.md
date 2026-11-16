@@ -62,8 +62,8 @@ or of a user whose password or role changed, are closed.
 | role | may |
 |---|---|
 | `viewer` | watch everything (state, monitor, live and stored data, logs, queue), read channels, download data |
-| `operator` | + write channels (aliases and composites, with their limits and ramp rates; parameters), run instrument actions and user actions (writing them), monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments. **Not** an instrument's own channels (`src.V1`, settings such as `lockin.sensitivity`): those are written without limits, so an operator can read them but not set them, sweep them or use them as sweep constants; the backend refuses it, and the web app does not offer them |
-| `admin` | + scripts and sweep hook code (Python on the backend computer = full control), user actions' code, Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
+| `operator` | + write channels (aliases and composites, with their limits and ramp rates; parameters), run instrument actions and user actions (writing them), operate the panels of plugins, monitor, queue / start / pause / abort sweeps, PPT slides, reconnect instruments. **Not** an instrument's own channels (`src.V1`, settings such as `lockin.sensitivity`): those are written without limits, so an operator can read them but not set them, sweep them or use them as sweep constants; the backend refuses it, and the web app does not offer them |
+| `admin` | + scripts and sweep hook code (Python on the backend computer = full control), user actions' code, enabling and configuring plugins, Driver Wizard, instruments, aliases and limits, raw commands, setups, settings, shutdown |
 
 Operators cannot run code:
 

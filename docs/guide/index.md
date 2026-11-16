@@ -52,16 +52,21 @@ examples/demo_setup.json`.
 
 14. [Remote access and the web app](remote.md): measuring from home, accounts, roles.
 
+**Add-ons**
+
+15. [Plugins](plugins.md): panels, data tabs, channels and actions of their own, such
+    as the SR830 front panel.
+
 **Instruments without a driver**
 
-15. [Driver Wizard](driver-wizard.md): a driver from a form, no programming.
-16. [Simulated instruments](simulation.md): trying things out, fault injection.
+16. [Driver Wizard](driver-wizard.md): a driver from a form, no programming.
+17. [Simulated instruments](simulation.md): trying things out, fault injection.
 
 **Under the hood**
 
-17. [Robustness](robustness.md): what protects a measurement from misbehaving
+18. [Robustness](robustness.md): what protects a measurement from misbehaving
     hardware.
-18. [Testing](testing.md): the test suite and stress tests.
+19. [Testing](testing.md): the test suite and stress tests.
 
 Python clients and writing drivers in Python are in the
 [Scripting and Python](../scripting/index.md) chapter.

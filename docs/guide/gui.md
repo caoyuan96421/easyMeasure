@@ -126,6 +126,8 @@ and search.
   Using one brings its tab to the front.
 * **Backend**: Start backend, Reconnect, Restart backend…, Show tray icon, Remote
   access…, Driver wizard…, Shut down backend….
+* **Plugins**: Manage plugins…, and the panels and tabs of the running plugins (see
+  [Plugins](plugins.md)).
 * **View**: show or hide the Monitor, Manual and Log docks and the *Running sweep* view.
 
 The toolbar has the queue controls, *Add slide to PPT* and *Open data…*.
@@ -165,7 +167,8 @@ Greyed out:
 * adding / removing monitors;
 * *Add slide to PPT* and *Settings*;
 * the *Setup* and *Sweep* menus;
-* the *Backend* menu, except *Reconnect*.
+* the *Backend* menu, except *Reconnect*;
+* the keys, knobs and fields of plugins' panels, and *Manage plugins…*.
 
 Still usable:
 

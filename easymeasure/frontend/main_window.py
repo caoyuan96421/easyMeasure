@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
 
 from .. import __version__
 from .connection import BackendConnection
+from .plugins import PluginTabs
 from .model import BackendModel
 from .panels.data_panel import FileDataView, LiveDataView
 from .panels.log_panel import LogPanel
@@ -359,6 +360,8 @@ class MainWindow(QMainWindow):
             b.addAction(act)
             if fn != self._reconnect:
                 self.lock_group.addAction(act)
+        # Plugins: manage them; the panels and tabs of the running ones
+        self.plugin_tabs = PluginTabs(self)
         v = self.menuBar().addMenu("&View")
         v.addAction(md.toggleViewAction())
         v.addAction(mand.toggleViewAction())
@@ -605,6 +608,8 @@ class MainWindow(QMainWindow):
             w.setEnabled(not on)
         self.lock_group.setEnabled(not on)          # actions keep their own state underneath
         self.monitor.set_locked(on)
+        if hasattr(self, "plugin_tabs"):
+            self.plugin_tabs.set_locked(on)
         for i in range(self.data_tabs.count()):
             v = self.data_tabs.widget(i)
             if hasattr(v, "set_locked"):

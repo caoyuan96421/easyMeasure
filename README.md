@@ -48,6 +48,13 @@ module).
   instrument's programming manual; mode switches rename channels and change units
   and the front ends follow. A **Driver Wizard** builds drivers for other
   command-based instruments from a form (templates, init script, try-it).
+* **Plugins**: add-ons to the measurement engine with panels, data tabs, channels and
+  actions of their own, switched on and off from the *Plugins* menu at any time. Each
+  runs on its own thread, uses the backend through the same commands as a front end
+  (never the hardware directly), and nothing it does wrong reaches the backend. Their
+  panels are described as data (seven-segment displays, LEDs, knobs, plots …), so
+  the desktop GUI and the web app draw the same panel. Built in: an **SR830 front
+  panel**.
 * **Remote access over the internet**: a TLS gateway (in its own process) serves a
   browser version of the GUI and a Python `RemoteClient`, with accounts, roles,
   brute-force lock-out, rate limits and an audit log.

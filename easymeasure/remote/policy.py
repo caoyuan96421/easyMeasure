@@ -38,7 +38,7 @@ VIEW = {
     "read_channel", "channel_info", "list_channels", "monitor_list", "monitor_history",
     "validate_sweep", "queue_state", "current_run", "run_snapshot", "list_runs", "load_run",
     "read_run_header", "continue_info", "get_setup", "save_setup", "recent_logs", "list_clients",
-    "list_user_actions", "ramp_state", "list_parameters", "check_code",
+    "list_user_actions", "ramp_state", "list_parameters", "check_code", "list_plugins",
 }
 OPERATE = {
     "write_channel", "set_many", "stop_ramps", "monitor_add", "monitor_remove",
@@ -48,6 +48,8 @@ OPERATE = {
     # user actions: running one (write_channel) runs code an admin wrote; defining one
     # is writing code
     "abort_user_action",
+    # operating a plugin's panel runs the plugin an admin enabled, as a user action does
+    "plugin_event",
 }
 ADMIN = {
     "set_settings", "rescan_drivers", "discover_resources", "add_instrument",
@@ -58,6 +60,8 @@ ADMIN = {
     # the Driver Wizard writes driver code (init scripts are Python)
     "wizard_templates", "wizard_check", "wizard_list", "wizard_load", "wizard_save",
     "wizard_try", "wizard_delete",
+    # plugins are Python code running in the backend
+    "rescan_plugins", "enable_plugin", "disable_plugin", "set_plugin_options",
 }
 #: never over the network, whatever the role
 LOCAL_ONLY = {"start_tray", "remote_status", "remote_start", "remote_stop", "remote_set_user",

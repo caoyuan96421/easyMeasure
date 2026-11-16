@@ -748,3 +748,76 @@ def test_web_continue_an_aborted_run(browser, gw, demo):
     page.wait_for_function("!document.querySelector('dialog.modal')")
     assert not errors, errors
     page.context.close()
+
+
+def test_web_plugin_panel_menu_and_manager(browser, gw, demo, tmp_path):
+    """The SR830 front panel plugin in the browser: its panel and data tab, the
+    seven-segment displays and LEDs following the instrument, the keys and the knob
+    operating it, the Plugins menu and dialog; a viewer may watch but not operate."""
+    be = demo
+    be.add_instrument("li", "sr830", "SIM::webli")
+    be.write_channel("li.sensitivity", "500 µV")
+    be.enable_plugin("sr830_panel")
+    errors = []
+    page = open_page(browser, gw, "ada", errors)
+    page.wait_for_selector(".tab:has(> span:text-is('SR830'))")
+    page.click(".tab:has(> span:text-is('SR830'))")
+    panel = page.locator(".pl-panel[data-plugin='sr830_panel'][data-panel='panel']")
+    panel.wait_for(state="visible")
+    # the LEDs show 500 µV as 5 · x100 · µV
+    page.wait_for_function("""() => {
+        const lit = (id) => [...document.querySelectorAll(`[data-wid='${id}'] .pl-ledrow`)]
+            .map((r, i) => r.dataset.lit === '1' ? i : -1).filter((i) => i >= 0).join();
+        return lit('sens_m') === '2' && lit('sens_d') === '2' && lit('sens_u') === '1';
+    }""", timeout=10000)
+    # the displays are seven-segment digits with the reading
+    page.wait_for_function("""() => { const s = document.querySelector("[data-wid='ch1'] svg");
+        return s && /^-?[0-9.]+$/.test(s.dataset.value || ''); }""", timeout=10000)
+    assert page.locator("[data-wid='ch1'] svg polygon").count() == 6 * 7
+    page.screenshot(path=str(tmp_path / "panel.png"))
+    # ▲ makes it 1 mV: the instrument and the LEDs follow
+    panel.locator("[data-wid='sens_up'] button").click()
+    deadline = time.time() + 10
+    while time.time() < deadline and be.read_channel("li.sensitivity") != "1 mV":
+        time.sleep(0.1)
+    assert be.read_channel("li.sensitivity") == "1 mV"
+    page.wait_for_function("""() => [...document.querySelectorAll("[data-wid='sens_u'] .pl-ledrow")]
+        .findIndex((r) => r.dataset.lit === '1') === 2""", timeout=10000)
+    # the knob turns the phase
+    knob = panel.locator("[data-wid='knob'] .pl-knob")
+    knob.focus()
+    for _ in range(3):
+        page.keyboard.press("ArrowUp")
+    deadline = time.time() + 10
+    while time.time() < deadline and abs(be.read_channel("li.phase") - 3.0) > 1e-6:
+        time.sleep(0.1)
+    assert be.read_channel("li.phase") == pytest.approx(3.0)
+    # the data tab beside Live data draws the trace
+    page.click(".tab:has(> span:text-is('SR830 trace'))")
+    page.wait_for_function("""() => { const c = document.querySelector(
+        ".pl-panel[data-panel='trace'] canvas"); return c && c.width > 100; }""")
+    # the Plugins menu: the panels, and the manager with the plugin enabled
+    page.click(".menu-btn:text-is('Plugins ▾')")
+    items = page.locator(".menu-pop:visible .menu-item").all_inner_texts()
+    assert "Manage plugins…" in items and any("SR830 front panel – SR830" in t for t in items)
+    page.click(".menu-pop:visible .menu-item:text-is('Manage plugins…')")
+    dlg = page.locator("dialog.modal")
+    dlg.wait_for(state="visible")
+    box = dlg.locator("input[data-plugin='sr830_panel']")
+    assert box.is_checked()
+    box.uncheck()                                 # disable: the panel and tab go away
+    page.wait_for_function("""() => !document.querySelector(".pl-panel[data-plugin='sr830_panel']")""",
+                           timeout=10000)
+    assert "sr830_panel" not in be.instruments.names()
+    box.check()
+    page.wait_for_selector(".pl-panel[data-plugin='sr830_panel']", state="attached", timeout=10000)
+    dlg.locator("button:text-is('Close')").click()
+    assert not errors, errors
+    # a viewer sees the panel, but its keys are not for them
+    errors2 = []
+    p2 = open_page(browser, gw, "vic", errors2)
+    p2.click(".tab:has(> span:text-is('SR830'))")
+    b = p2.locator("[data-wid='sens_up'] button")
+    b.wait_for(state="visible")
+    assert b.is_disabled()
+    assert not errors2, errors2

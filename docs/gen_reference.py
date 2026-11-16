@@ -112,6 +112,8 @@ COMMAND_GROUPS = [
     ("Runs and data", ["current_run", "run_snapshot", "list_runs", "load_run",
                        "read_run_header", "make_ppt"]),
     ("Setups", ["save_setup", "load_setup", "get_setup"]),
+    ("Plugins", ["list_plugins", "rescan_plugins", "enable_plugin", "disable_plugin",
+                 "set_plugin_options", "plugin_event"]),
     ("Remote access", ["remote_status", "remote_start", "remote_stop", "remote_set_user",
                        "remote_remove_user", "remote_cert_request", "remote_cert_use"]),
 ]
@@ -515,6 +517,8 @@ API_INTRO = {
     "easymeasure.common": "Shared helpers: codec, safe expressions, N-D slicing, errors.",
     "easymeasure.drivers": "Instrument drivers, simulated instruments and emulators.",
     "easymeasure.frontend": "The PySide6 desktop GUI.",
+    "easymeasure.plugins": "Plugins: the plugin base class, the widgets of their panels, and "
+                           "the plugins that come with easyMeasure.",
     "easymeasure.remote": "The internet gateway, accounts and access policy.",
     "easymeasure.report": "Figures and PowerPoint slides.",
 }

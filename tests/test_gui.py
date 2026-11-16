@@ -1644,3 +1644,60 @@ def test_continue_an_aborted_run(app, gui, monkeypatch):
     qp.history.selectRow(rows.index("cont_gui (continued)"))
     pump(app, 0.1)
     assert not qp.continue_btn.isEnabled()
+
+
+def test_gui_plugin_panel_menu_and_manager(gui, app):
+    """The Plugins menu, the dialog, and the SR830 front panel plugin in the desktop GUI."""
+    from PySide6.QtWidgets import QPushButton
+    from easymeasure.frontend.plugins import Knob, LedList, PluginDialog, Seg7
+    w, be, srv, tmp = gui
+    be.add_instrument("li", "sr830", "SIM::guili")
+    be.write_channel("li.sensitivity", "500 µV")
+    be.enable_plugin("sr830_panel")
+    tabs = w.plugin_tabs
+    assert pump(app, 10, lambda: ("sr830_panel", "panel") in tabs.views and
+                ("sr830_panel", "trace") in tabs.views)
+    panel = tabs.views[("sr830_panel", "panel")]
+    assert w.left_tabs.indexOf(panel) >= 0 and w.data_tabs.indexOf(tabs.views[("sr830_panel", "trace")]) >= 0
+    # the menu lists the panels
+    tabs._fill_menu()
+    texts = [a.text() for a in tabs.menu.actions()]
+    assert "Manage plugins…" in texts and "SR830 front panel – SR830" in texts
+    # LEDs and digits follow the instrument
+    sens_u = panel.findChild(LedList, "pw_sens_u")
+    assert pump(app, 10, lambda: [l.on for l in sens_u.leds] == [False, True, False, False])
+    seg = panel.findChild(type(panel.widget()), "pw_ch1")
+    assert pump(app, 10, lambda: seg.seg.value not in ("", None))
+    assert isinstance(seg.seg, Seg7)
+    # a key operates the instrument
+    up = panel.findChild(QPushButton, "pw_sens_up")
+    up.click()
+    assert pump(app, 10, lambda: be.read_channel("li.sensitivity") == "1 mV")
+    assert pump(app, 10, lambda: [l.on for l in sens_u.leds] == [False, False, True, False])
+    knob = panel.findChild(Knob, "pw_knob")
+    knob._turn(2)
+    assert pump(app, 10, lambda: abs(be.read_channel("li.phase") - 2.0) < 1e-6)
+    # the GUI lock greys the keys out
+    w.set_locked(True)
+    assert not up.isEnabled() and not knob.isEnabled()
+    w.set_locked(False)
+    assert up.isEnabled()
+    # the dialog: disabling removes the panel and the tab at once
+    dlg = PluginDialog(w.conn, tabs.plugins, w)
+    assert pump(app, 5, lambda: dlg.table.rowCount() >= 1)
+    from PySide6.QtWidgets import QCheckBox
+    box = dlg.findChild(QCheckBox, "plugin_enable_sr830_panel")
+    assert box.isChecked()
+    box.setChecked(False)
+    assert pump(app, 10, lambda: not tabs.views)
+    assert w.left_tabs.indexOf(panel) < 0
+    # the dialog shows it off (it refreshes after the change), then on again
+    assert pump(app, 10, lambda: dlg.table.item(0, 2) is not None and
+                dlg.table.item(0, 2).text() == "off")
+    pump(app, 0.5)
+    box = [b for b in dlg.findChildren(QCheckBox, "plugin_enable_sr830_panel")
+           if b.isVisibleTo(dlg)][0]
+    assert not box.isChecked()
+    box.setChecked(True)
+    assert pump(app, 10, lambda: ("sr830_panel", "panel") in tabs.views)
+    dlg.close()

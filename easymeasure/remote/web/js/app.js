@@ -9,6 +9,7 @@ import { SweepEditor, RunningSweepView } from "./panels/sweep.js";
 import { QueuePanel } from "./panels/queue.js";
 import { MonitorPanel, ManualPanel, LogPanel } from "./panels/side.js";
 import { LiveDataView, FileDataView, fmtSize } from "./panels/data.js";
+import { PluginHost } from "./plugins.js";
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("em." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -126,6 +127,9 @@ class App {
       ["Log", () => this._toggle(this.logBox, "show_log"), () => !this.logBox.hidden],
       ["Running sweep view", () => this._toggleRunning(), () => !!this.tRunning],
     ]);
+    // the panels and tabs of the running plugins; the Plugins menu lists them
+    this.plugins = new PluginHost(this);
+    const pluginMenu = this._menu("Plugins", this.plugins.menuItems);
     const backendMenu = this._menu("Backend", [
       ["Browse recent runs…", () => this.browseRuns()],
       ["Settings…", () => this.settings()],
@@ -143,7 +147,7 @@ class App {
       h("span", { class: "sep" }),
       btn("Add slide to PPT", () => this._ppt(), { cmd: "make_ppt", title: "append a slide for the running / last sweep" }),
       btn("Open data…", () => this.browseRuns(), { cmd: "list_runs" }),
-      setupMenu, viewMenu, backendMenu,
+      setupMenu, viewMenu, backendMenu, pluginMenu,
       h("span", { class: "grow" }), this.userLabel,
       btn("Log out", () => this._logout()));
     const footer = h("footer", { class: "statusbar" }, this.statusMsg, h("span", { class: "grow" }), this.rate, this.queueLabel, this.progress);

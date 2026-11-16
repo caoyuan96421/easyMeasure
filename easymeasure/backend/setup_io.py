@@ -28,7 +28,7 @@ def capture(instruments, channels, monitor, user_actions=None) -> dict:
         "instruments": [
             {"name": h.name, "driver": h.driver_name, "address": h.address,
              "options": dict(h.options)}
-            for h in instruments.handles()
+            for h in instruments.handles() if h.owner is None    # not those of plugins
         ],
         "parameters": [p.to_dict() for p in ordered(channels.parameters())],
         "aliases": [a.to_dict() for a in channels.aliases()],
@@ -76,6 +76,8 @@ def apply(setup: dict, instruments, channels, monitor, replace: bool = True,
         if user_actions is not None:
             user_actions.clear()
         for name in instruments.names():
+            if instruments.get(name).owner is not None:
+                continue                          # a plugin's: stays with the plugin
             try:
                 instruments.remove(name)
             except Exception as exc:

@@ -57,6 +57,9 @@ def main(argv=None) -> int:
             print("setup problem:", p, file=sys.stderr)
     elif args.restore:
         backend.restore_autosave()
+    # the plugins enabled last time, once the setup is there (they may use it)
+    threading.Thread(target=backend.plugins.start_enabled, name="plugins-start",
+                     daemon=True).start()
 
     server = Server(backend, host=args.host, port=args.port if args.port is not None else DEFAULT_PORT)
 

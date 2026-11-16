@@ -438,6 +438,8 @@ class InstrumentHandle:
         self.driver_name = driver_name
         self.address = address or "NONE"
         self.options = dict(options or {})
+        #: the plugin that provides this instrument (None: the user's own)
+        self.owner: Optional[str] = None
         self._resources = resources
         self._driver_cls = driver_cls
         self.driver: Optional[Instrument] = None
@@ -1085,6 +1087,7 @@ class InstrumentHandle:
         return {
             "name": self.name,
             "driver": self.driver_name,
+            "plugin": self.owner,              # provided by this plugin
             "address": self.address,
             "options": self.options,
             "state": self.state,
@@ -1182,15 +1185,19 @@ class InstrumentManager:
                 log.error("fault listener failed: %s", exc)
 
     def add(self, name: str, driver: str, address: str = "NONE", options: Optional[dict] = None,
-            connect: bool = True) -> InstrumentHandle:
+            connect: bool = True, cls: Optional[type] = None,
+            owner: Optional[str] = None) -> InstrumentHandle:
+        """Add an instrument.  *cls* and *owner*: the driver class of a plugin's
+        instrument and the plugin (not in the driver list, not saved with a setup)."""
         if not name or not name.replace("_", "").isalnum():
             raise ChannelError("instrument name must be alphanumeric/underscore, got %r" % name)
-        cls = self.drivers.get(driver)
+        cls = cls or self.drivers.get(driver)
         self.check_interface(driver, address, cls)
         with self._lock:
             if name in self._handles:
                 raise ChannelError("instrument %r already exists" % name)
             h = InstrumentHandle(name, driver, cls, address, options or {}, self.resources)
+            h.owner = owner
             h.on_specs_changed = self._specs_changed
             h.on_fault = self._fault
             h.on_state = self._state_changed

@@ -19,6 +19,7 @@ Some typical cases:
 | measure while something drifts by itself (a magnet ramp, a warm-up) | a time trace: a [custom sweep](custom-sweeps.md#time-traces) with no swept channel |
 | check a measurement while it runs, from a Jupyter notebook, or start it from your own program | a [Python client](clients.md) |
 | use an instrument easyMeasure has no driver for | the [Driver Wizard](../guide/driver-wizard.md), or [write a driver](writing-drivers.md) |
+| a panel of your own (an instrument's front panel, a live calculation) beside the GUI's, with its own channels | a [plugin](writing-plugins.md) |
 
 ## How much code?
 
@@ -78,5 +79,7 @@ one saved from the editor and changes a few values. Every key is listed in the
 * [Python clients](clients.md): control a running easyMeasure from a notebook or
   another program.
 * [Writing a driver](writing-drivers.md): support a new instrument in Python.
+* [Writing plugins](writing-plugins.md): panels, processing, channels and actions of
+  your own, beside the GUI's.
 
 The [Script API reference](../reference/script-api.md) lists every function.
