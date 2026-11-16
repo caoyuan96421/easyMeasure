@@ -567,13 +567,17 @@ def pa(backend):
     return backend
 
 
+INIT = ["BC", "US", "DV1", "DV2", "DV3", "DV4", "DS1", "DS2", "BC;ID"]
+
+
 def test_hp4145_user_mode_smus(pa):
     be = pa
     e = emu("SIM::pa")
     h = be.instruments.get("pa")
     assert h.state == "connected", h.last_error
-    assert e.log[:3] == ["ID", "US", "IT1"] and e.user_mode
+    assert e.log[:len(INIT) + 2] == INIT + ["IT1", "BC"] and e.user_mode   # a 4145B: no DP/EI
     assert {"voltage1", "current4", "vs1", "vm2", "integration"} <= set(h.channels)
+    assert "2 V" not in h.spec("range1").allowed                          # the 4155's only
     be.define_alias(name="Vd", target="pa.voltage1")
     be.define_alias(name="Id", target="pa.current1")
     assert math.isnan(be.read_channel("Id"))           # disabled: nothing measured
@@ -583,12 +587,16 @@ def test_hp4145_user_mode_smus(pa):
     be.write_channel("Vd", 0.5, ramp=False)            # remembered while OFF ...
     assert e.smu[1].mode is None and not e.log[-1].startswith("DV")
     be.write_channel("pa.output1", "ON")              # ... programmed when switched ON
-    assert e.log[-1] == "DV1,0,+5.0000E-01,+1.0000E-03"
+    assert e.log[-1] == "DV1,0,5E-1,1E-3"
     assert be.read_channel("Vd") == pytest.approx(0.5)   # both read back by TV / TI
+    assert e.log[-1] == "BC;TV1"
     assert be.read_channel("Id") == pytest.approx(0.5e-3)
     be.write_channel("Vd", 5.0, ramp=False)
-    assert be.read_channel("Id") == pytest.approx(1e-3)  # compliance
-    # the power envelope is checked before anything is sent
+    assert be.read_channel("Id") == pytest.approx(1e-3)  # compliance: the value
+    # rounded to the resolution of the range (1 mV on 20 V)
+    be.write_channel("Vd", 1.23456, ramp=False)
+    assert e.log[-1] == "DV1,0,1.235E+0,1E-3"
+    # the output envelope is checked before anything is sent
     be.write_channel("pa.Icompliance1", 0.1)
     with pytest.raises(ChannelError, match="not available at 30 V"):
         be.write_channel("Vd", 30.0, ramp=False)
@@ -613,72 +621,110 @@ def test_hp4145_user_mode_smus(pa):
     be.write_channel("pa.output2", "ON")
     be.define_alias(name="Is", target="pa.current2")
     be.write_channel("Is", 2e-3, ramp=False)
+    assert e.log[-1] == "DI2,0,2E-3,1E+1"
     assert be.read_channel("pa.voltage2") == pytest.approx(2.0)
     be.write_channel("Is", 0.05, ramp=False)          # 50 mA with 10 V compliance: fine
     assert be.read_channel("pa.voltage2") == pytest.approx(10.0)   # (clamped at 10 V)
     with pytest.raises(ChannelError, match="not available at 0.05 A"):
         be.write_channel("pa.Vcompliance2", 50)       # at 50 mA only up to 40 V
-    # voltage sources and voltmeters
+    # voltage sources (DS) and voltmeters (TV5 / TV6)
     be.channels.set("pa.vs1", 3.3)
+    assert e.log[-1] == "DS1,3.3E+0"
     assert be.read_channel("pa.vm1") == pytest.approx(3.3)
+    assert e.log[-1] == "BC;TV5"
     with pytest.raises(ChannelError, match="±20 V"):
         be.channels.set("pa.vs2", 25)
     be.write_channel("pa.integration", "long")
     assert e.it == 3
-    be.write_channel("pa.output2", "OFF")
-    assert e.smu[2].mode is None and e.log[-1] == "DS2"
+    be.write_channel("pa.output2", "OFF")             # DV<n> alone: disabled
+    assert e.smu[2].mode is None and e.log[-1] == "DV2"
     be.write_channel("pa.disable_all")
-    assert e.smu[1].mode is None
+    assert e.smu[1].mode is None and e.vs[1] is None
     assert e.unknown == [] and e.errors == []
 
 
-def test_hp4145_reconnect_leaves_outputs_alone(pa):
+def test_hp4145_connect_switches_off_and_a_reconnect_restores(pa):
     be = pa
     e = emu("SIM::pa")
     be.write_channel("pa.Icompliance1", 1e-3)
+    be.write_channel("pa.voltage1", 0.2, ramp=False)
     be.write_channel("pa.output1", "ON")
+    be.channels.set("pa.vs2", 1.5)
     n = len(e.log)
     be.reconnect_instrument("pa")
-    assert e.smu[1].mode == "V"                         # bias still applied
-    assert not [c for c in e.log[n:] if c.startswith(("DS", "DV", "DI"))]
-    assert be.read_channel("pa.output1") == "OFF"       # unknown -> reported OFF
-    assert be.read_channel("pa.Icompliance1") == pytest.approx(1e-3)   # remembered
+    assert e.log[n:n + len(INIT)] == INIT                 # everything off first ...
+    assert e.smu[1].mode == "V" and e.smu[1].value == pytest.approx(0.2)   # ... then again
+    assert e.vs[2] == pytest.approx(1.5)
+    assert be.read_channel("pa.output1") == "ON"
+    # a new connection (Disconnect): all off, nothing restored
+    be.disconnect_instrument("pa")
+    be.reconnect_instrument("pa")
+    assert e.smu[1].mode is None and e.vs[2] is None
+    assert e.errors == [] and e.unknown == []
 
 
-def test_hp4145_models_and_reply_status(backend):
+def test_hp4145_4155_command_sets_and_readings(backend):
     be = backend
+    # already in the HP 4145 command set (the default): no SCPI at all, DP1 / EI1
     h = be.add_instrument("a55", "hp4145", "SIM::p55", {"emulate_model": "4155C"})
-    assert h["state"] == "connected" and be.instruments.get("a55").driver.model == "4155C"
-    assert emu("SIM::p55").log[:2] == ["ID", "CMD?"]          # already there: nothing to do
-    # a 4155 left in SCPI or FLEX mode is switched into 4145 syntax by the driver
-    for mode, steps in ((0, [":SYST:LANG COMP"]), (1, [":PAGE", ":SYST:LANG COMP"])):
-        addr = "SIM::p55m%d" % mode
-        h = be.add_instrument("m%d" % mode, "hp4145", addr, {
-            "emulate_model": "4155C", "emulate_cmd_mode": mode, "emulate_switch_delay": 0.3})
+    assert h["state"] == "connected", h["last_error"]
+    e = emu("SIM::p55")
+    assert be.instruments.get("a55").driver.model == "4155C"
+    assert not [c for c in e.log if c.startswith((":", "*")) or "CMD?" in c]
+    assert e.dp and e.ei and e.errors == []
+    assert "2 V" in be.instruments.get("a55").spec("range1").allowed
+    # in SCPI or FLEX: switched once, then only the 4145 command set
+    for cs, steps in (("SCPI", ["*IDN?", ":SYST:LANG COMP"]),
+                      ("FLEX", ["*IDN?", "CMD?", ":PAGE", ":SYST:LANG COMP"])):
+        addr = "SIM::p55" + cs
+        h = be.add_instrument(cs, "hp4145", addr, {"emulate_model": "4155B",
+                                                   "emulate_command_set": cs,
+                                                   "command_set": "HP4155"})
         assert h["state"] == "connected", h["last_error"]
         e = emu(addr)
-        assert e.cmd_mode == 2 and e.user_mode
-        assert [c for c in e.log if c.startswith(":")] == steps
-        assert e.unknown == []
-        be.write_channel("m%d.Icompliance1" % mode, 1e-3)
-        be.write_channel("m%d.output1" % mode, "ON")
+        scpi = [c for c in e.log if c.startswith((":", "*")) or c == "CMD?"]
+        assert scpi == (steps if cs == "FLEX" else ["*IDN?", "CMD?", ":SYST:LANG COMP"])
+        assert e.command_set == "HP4145" and e.user_mode and e.errors == []
+        be.write_channel(cs + ".Icompliance1", 1e-3)
+        be.write_channel(cs + ".output1", "ON")
         assert e.smu[1].mode == "V"
-    # only if the analyzer refuses to switch is there an error (and it says so)
-    h = be.add_instrument("b55", "hp4145", "SIM::p55s", {
-        "emulate_model": "4155C", "emulate_cmd_mode": 0, "emulate_no_lang": True,
-        "mode_switch_timeout": 0.5})
-    assert h["state"] == "error" and "could not switch" in h["last_error"]
+        # a later connection does not switch again (it would be SCPI in the 4145 set)
+        be.disconnect_instrument(cs)
+        be.reconnect_instrument(cs)
+        assert [c for c in e.log if c.startswith((":", "*")) or c == "CMD?"] == scpi
+        assert e.errors == []
+    # the earliest 4155A firmware: no DP / EI
+    be.add_instrument("old", "hp4145", "SIM::pold", {"emulate_model": "4155A",
+                                                     "emulate_host": "01.01"})
+    assert not emu("SIM::pold").dp and "DP1" not in emu("SIM::pold").log
+    # the wrong command set: an error that says so
+    h = be.add_instrument("bad", "hp4145", "SIM::pbad", {
+        "emulate_model": "4155C", "emulate_command_set": "SCPI", "timeout": 0.3})
+    assert h["state"] == "error" and "command_set" in h["last_error"]
+    # ... and the other way round: switched before, not again (a restart of the backend)
+    h = be.add_instrument("again", "hp4145", "SIM::pagain", {
+        "emulate_model": "4155C", "command_set": "HP4155", "timeout": 0.3})
+    assert h["state"] == "error" and "set option command_set to HP4145" in h["last_error"]
     be.add_instrument("two", "hp4145", "SIM::p2", {"smus": [1, 3], "vs_vm": False})
     ch = be.instruments.get("two").channels
     assert "voltage3" in ch and "voltage2" not in ch and "vs1" not in ch
-    # status characters of a reading
+    # the status of a reading
     drv = be.instruments.get("a55").driver
     for reply, want in (("NAI+1.0000E-03", 1e-3), ("CAI-2.0000E-03", -2e-3),
-                        ("VAV+1.0000E+02", math.inf), ("XAI+0.0000E+00", math.nan),
-                        ("N I +3.5E-06", 3.5e-6)):
+                        ("TAI+5E-6", 5e-6), ("VAI+1.0000E+02", math.inf),
+                        ("XAI+0.0000E+00", math.nan), ("NAI 3.5E-06", 3.5e-6)):
         drv.q = lambda c, r=reply: r
         got = drv._measure("I", 1)
         assert (math.isnan(got) and math.isnan(want)) or got == pytest.approx(want), reply
+    drv.q = lambda c: "NBI+1E-3"
+    with pytest.raises(IOError, match="answered"):
+        drv._measure("I", 1)                           # another channel's reading
+    drv.q = lambda c: 'ERROR 12: "Invalid character"'
+    with pytest.raises(ChannelError, match="error 12"):
+        drv._measure("I", 1)
+    drv.q = lambda c: "garbage"
+    with pytest.raises(IOError, match="malformed"):
+        drv._measure("I", 1)
 
 
 def test_hp4145_iv_sweep(pa):

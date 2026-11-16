@@ -511,7 +511,7 @@ callback, files load and slides render in worker threads.
 | `cygnus16430` | Cygnus 16430 8-channel supply, 0–150 V / 0–40 mA per output (USB serial) | per output k = 1…8: `voltage<k>` (setpoint), `Vmeas<k>`, `Imeas<k>`, *`Ilimit<k>`*, *`output<k>`* (relay ON/OFF); vectors `voltAll`, *`IlimitAll`* (all 8 written at once), `VmeasAll`, `ImeasAll`; *`Vrate`*, *`Irate`* (ADC SF 13–255), *`Vfilter`*, *`Ifilter`* (IIR α); actions `all_off`, `reset`, `auto_calibrate` |
 | `ni63xx` | NI USB-63xx X Series DAQ: USB-6341/6343/6346/6349/6351/6353/6356/6361/6363/6366 (NI-DAQmx) | channels follow *`model`* (auto = as reported): `ai0…` (8–32), vector `ai`, `ao0…` (2–4), digital lines `dio0…` (port 0: 8 or 32) and `pfi0…15`, `ctr0…3`; *`rate`*, *`samples`*, *`terminal`*, *`ai_range`*, *`ao_range`*; actions `reset_counters`, `release_digital` |
 | `yokogawa7651` | Yokogawa 7651 DC source | one source channel named after *`mode`*: `voltage` (10 mV … 30 V ranges) or `current` (1 … 100 mA); *`range`* (AUTO or fixed), *`Icompliance`* / *`Vcompliance`*, *`output`* |
-| `hp4145` | HP 4145A/B, HP 4155/4156 in 4145 syntax (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
+| `hp4145` | HP 4145A/B, HP 4155/4156 in its HP 4145 command set (user mode) | per SMU 1…4: `voltage<n>`, `current<n>`, *`mode<n>`*, *`Icompliance<n>`* / *`Vcompliance<n>`*, *`output<n>`*, *`range<n>`*; `vs1`, `vs2`, `vm1`, `vm2`; *`integration`* |
 | `e8358a` | Agilent / Keysight E8358A PNA network analyzer (E8356A / E8357A too) | traces `S11`, `S21`, `S12`, `S22` (dB) with `…_phase`, `…_re`, `…_im`, axis `frequencies`; `power`, `sweep_time`; *`f_start`*, *`f_stop`*, *`f_center`*, *`f_span`*, *`points`*, *`if_bandwidth`*, *`sweep_type`*, *`averaging`*, *`average_count`*, *`output`*, *`correction`*; actions `single_sweep`, `continuous`, `delete_traces` (a first pre-sweep constant: only what is recorded is measured), `preset` |
 
 **Source-measure units.** In `Voltage` mode `voltage` is the source (read/write) and
@@ -548,19 +548,25 @@ range refuses values beyond 120 % of it. Every setting is executed (`E`) and rea
 back (`OD`): an error flag or a value that did not arrive raises an error (and a
 command lost on the bus is retried).
 
-**HP 4145 / 4155 / 4156 (user mode).** The analyzer is put into HP-IB user mode
-(`US`) and every SMU is forced (`DV` / `DI`) and measured (`TV` / `TI`) point by
-point, so it works like four source-measure units — same `mode<n>` logic and
-adaptive compliance as the 2400. Settings are remembered by the driver (user mode
-has no setting queries): a value written while `output<n>` is OFF is applied when
-it is switched ON, which needs a compliance first. The SMU output envelope
-(100 mA ≤ 20 V, 50 mA ≤ 40 V, 20 mA ≤ 100 V) is checked before anything is sent.
-A reconnect does not touch the outputs (outputs then read OFF until set again).
-A 4155/4156 is switched into its 4145 syntax command mode automatically when it is
-in SCPI (`:SYST:LANG COMP`) or FLEX mode (`:PAGE` first), checked with `CMD?`.
-Not yet confirmed from the manual text: the mode switch commands, the VS/VM channel numbers (5, 6), `DS <ch>`
-and the exact TV/TI reply layout (the parser accepts the usual variants: status
-character first, number last; overflow → ±inf, oscillation → NaN).
+**HP 4145 / 4155 / 4156 (user mode).** The protocol follows a 4155 driver verified
+on the hardware. The analyzer is put into HP-IB user mode (`US`). Every SMU is forced
+with `DV` / `DI` and measured with `BC;TV` / `BC;TI` point by point, so it works like
+four source-measure units, with the same `mode<n>` logic and adaptive compliance as
+the 2400.
+
+* **Sources.** `DV<n>` alone disables an SMU. The voltage sources are `DS<k>,<V>`,
+  and the voltmeters are `TV5` / `TV6`.
+* **Settings** are remembered by the driver, since user mode has no setting queries.
+  A value written while `output<n>` is OFF is applied when it is switched ON, which
+  needs a compliance first.
+* **Output envelope.** The compliance limits are checked before anything is sent:
+  100 mA on the 2 / 20 V ranges, 50 mA on 40 V, 20 mA on 100 V.
+* **Outputs.** Connecting and disconnecting switch every source off. A reconnect
+  after an error programs again what was on.
+* **Command set.** A 4155/4156 must be in its HP 4145 command set. Option
+  `command_set` = `HP4145` (the default) means it is already there.
+  `command_set` = `HP4155` switches it once (`*IDN?`, `CMD?`, `:PAGE`,
+  `:SYST:LANG COMP`). After that no SCPI is sent.
 
 **34401A.** The reading channel is renamed by the mode, so an alias on `dmm.Vdc`
 cannot record a current by mistake after somebody switched the meter to `idc` (it

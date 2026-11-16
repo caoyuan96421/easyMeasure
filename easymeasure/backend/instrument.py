@@ -302,6 +302,9 @@ class Instrument:
         opts.update(options or {})
         self.options = opts
         self.resource: Optional[Resource] = None  # set by the handle
+        #: True while the handle reconnects (after a failure, or Reconnect): the
+        #: disconnect / connect it calls are one step, not the end of the session
+        self.reconnecting = False
 
     @classmethod
     def suggested_addresses(cls, driver_name: str) -> List[dict]:
@@ -726,16 +729,22 @@ class InstrumentHandle:
         self.stats["reconnects"] += 1
         log.warning("instrument %s: reconnecting", self.name)
         drv = self.driver
-        if drv is not None and self.state != "hung":
-            try:
-                self._run(drv.disconnect, min(self.call_timeout, 3.0))
-            except Exception:
-                pass
-        if self.resource is not None:
-            self.resource.invalidate("reconnect")
-        self._needs_reconnect = True
-        self.state = "disconnected"
-        self._connect_locked()
+        if drv is not None:
+            drv.reconnecting = True
+        try:
+            if drv is not None and self.state != "hung":
+                try:
+                    self._run(drv.disconnect, min(self.call_timeout, 3.0))
+                except Exception:
+                    pass
+            if self.resource is not None:
+                self.resource.invalidate("reconnect")
+            self._needs_reconnect = True
+            self.state = "disconnected"
+            self._connect_locked()
+        finally:
+            if drv is not None:
+                drv.reconnecting = False
 
     # -- channel info -------------------------------------------------------
     @property

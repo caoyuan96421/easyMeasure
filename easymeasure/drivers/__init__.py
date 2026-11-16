@@ -10,7 +10,7 @@ Hardware drivers
     ``keithley2400``, ``keysight_b2901``, ``keysight_b2902`` (source-measure units),
     ``sr830`` (SR830 / SR850 lock-in amplifiers), ``hp34401a`` (6.5 digit DMM),
     ``yokogawa7651`` (DC voltage / current source), ``hp4145`` (HP 4145A/B and
-    4155/4156 in 4145 syntax, user mode), ``e8358a`` (Agilent PNA network analyzer),
+    4155/4156 in its HP 4145 command set, user mode), ``e8358a`` (Agilent PNA network analyzer),
     ``ami430`` (AMI 430 magnet supply; the persistent switch is read from it),
     ``ami420_noPersistent`` / ``ami420_Persistent`` (AMI 420 magnet supply, without /
     with a persistent switch), ``cygnus16430`` (Cygnus 16430 8-channel 150 V / 40 mA

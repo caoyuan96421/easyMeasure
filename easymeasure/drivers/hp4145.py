@@ -1,12 +1,34 @@
-"""HP 4145A/B semiconductor parameter analyzer, and HP/Agilent 4155/4156 in
-4145 syntax mode, driven in HP-IB *user mode* (direct control of the SMUs).
+"""HP 4145A/B semiconductor parameter analyzer, and HP/Agilent 4155/4156 in its HP 4145
+command set, driven in HP-IB *user mode* (direct control of the SMUs).
 
-User mode (``US``) sets each SMU directly - ``DV`` (force voltage), ``DI``
-(force current), ``DS`` (disable) - and measures with ``TV`` / ``TI``, point by
-point, which is what a sweep framework needs.  Everything the analyzer's own
-sweep engine does (``SS``, ``MD`` ...) is not used.
+The protocol follows a 4155 driver verified on the hardware (HP 4155A/4156A HP-IB
+Command Reference 04155-90120: language selection p. 1-329, user mode
+pp. 2-45 … 53, precision / EOI pp. 2-59 … 64):
 
-Per SMU *n* (1 … 4, option ``smus``; same mode logic as the ``keithley2400``):
+* **Command set.** A 4155/4156 must be in its HP 4145 command set.  Option
+  ``command_set``: ``HP4145`` (the default; it is selected already - always so for a
+  4145A/B) or ``HP4155`` (it is in its own SCPI or FLEX command set: the driver
+  switches it once, with ``*IDN?``, ``CMD?``, ``:PAGE`` from FLEX and
+  ``:SYST:LANG COMP``, then waits 2 s).  After that no SCPI command is ever sent -
+  not ``*IDN?``, ``CMD?``, ``*CLS`` or ``:SYST:ERR?`` - the 4145 command set does not
+  have them.  The analyzer stays in the HP 4145 command set (also after a
+  disconnect); a later connection in the same backend session does not switch it
+  again.  Nothing is probed: a wrong ``command_set`` is an error.
+* **Initialisation.** ``BC``, ``US`` (user mode), every source off (``DV1`` …
+  ``DV4``, ``DS1``, ``DS2``), ``ID``, ``DP1`` and ``EI1`` (not on a 4145, nor on a
+  4155A with HOSTC firmware 01.00 / 01.01), ``IT<n>``, ``BC``.
+* **Sources.** ``DV<n>,<range>,<V>,<I comp>`` / ``DI<n>,<range>,<I>,<V comp>`` set
+  and enable SMU *n*, ``DV<n>`` alone disables it; ``DS<k>,<V>`` sets voltage source
+  VS*k*, ``DS<k>`` alone disables it.  Values are rounded to the resolution of the
+  source range.
+* **Readings.** ``BC;TV<n>`` / ``BC;TI<n>`` (SMU 1 … 4, voltmeters VM1 / VM2 are
+  ``TV5`` / ``TV6``): a fresh reading, e.g. ``NAV+1.2345E+00`` - status, channel
+  letter (A … D the SMUs, E / F the voltmeters), V or I, value.  Status ``N``
+  normal, ``C`` / ``T`` compliance (this / another channel: the reading is the
+  value), ``V`` A/D overflow (±inf), ``X`` oscillation (NaN), ``P`` PGU current
+  limit.  An ``ERROR`` reply is an error.  No error queue is polled.
+
+Per SMU *n* (1 … 4, option ``smus``; the same mode logic as the ``keithley2400``):
 
 ==================  ======  =============================================================
 ``mode<n>``         config  ``Voltage`` (force V, measure I) / ``Current`` (force I, measure V)
@@ -14,38 +36,27 @@ Per SMU *n* (1 … 4, option ``smus``; same mode logic as the ``keithley2400``):
 ``current<n>``      A       measured (Voltage mode) or forced; ±100 mA
 ``Icompliance<n>``  config  current limit in Voltage mode (A) …
 ``Vcompliance<n>``  config  … voltage limit in Current mode (V)
-``output<n>``       config  ``ON`` (programmed with DV/DI) / ``OFF`` (``DS``)
+``output<n>``       config  ``ON`` (programmed with DV/DI) / ``OFF`` (``DV<n>``)
 ``range<n>``        config  source range: ``AUTO`` or a fixed one
 ==================  ======  =============================================================
 
-Plus ``vs1``, ``vs2`` (voltage sources, ±20 V) and ``vm1``, ``vm2`` (voltmeters)
-unless option ``vs_vm`` is false, and ``integration`` (short / medium / long, ``IT``).
+Plus ``vs1``, ``vs2`` (voltage sources, ±20 V, 1 mV) and ``vm1``, ``vm2``
+(voltmeters) unless option ``vs_vm`` is false, and ``integration`` (short / medium /
+long, ``IT``).
 
-The SMUs' power envelope is checked before anything is sent (the analyzer would
-just flag an error): 100 mA up to 20 V, 50 mA up to 40 V, 20 mA up to 100 V,
-for the forced value against the compliance.  Both quantities of an SMU are
-measured with TV / TI, so the forced value reads back as measured.  While an
-SMU's output is OFF its readings are NaN; changing its mode needs the output OFF.
-A reading flagged "overflow" is ±inf, "oscillation" NaN.
+The SMUs' output envelope is checked before anything is sent: a voltage source's
+current compliance at most 100 mA on the 2 / 20 V ranges, 50 mA on 40 V, 20 mA on
+100 V; a current source's voltage compliance at most 100 V up to 20 mA, 40 V up to
+50 mA, 20 V above.  Both quantities of an SMU are measured with TV / TI, so the
+forced value reads back as measured.  While an SMU's output is OFF its readings
+are NaN; changing its mode needs the output OFF.
 
-The analyzer has no setting queries in user mode: the driver remembers what it
-programmed.  On (re)connect it assumes every SMU is OFF and does *not* touch
-the outputs (a reconnect in the middle of a measurement leaves the bias alone);
-set ``output<n>`` to ON to (re)program an SMU.
-
-4155/4156: the driver switches the analyzer into the 4145 syntax command mode
-by itself if it is not there yet (``CMD?``: 0 = SCPI, 1 = FLEX, 2 = 4145 syntax):
-from FLEX it returns to SCPI with ``:PAGE``, from SCPI it selects 4145 syntax with
-``:SYST:LANG COMP``, and checks ``CMD?`` after each step (each step waits up to
-option ``mode_switch_timeout`` s).  Address e.g.
-``GPIB0::17::INSTR``.  ``SIM::<name>`` uses the built-in emulator (option
-``emulate_model`` = ``4145B`` or ``4155C``).
-
-Not verified against the manual text (the scanned manuals were not readable):
-the mode switch commands above, the VS / VM channel numbers 5 and 6, the
-``DS <ch>`` form and the exact reply
-layout of TV / TI (the driver takes the status from the first character and the
-number from the end, which covers the documented variants).
+User mode has no setting queries: the driver remembers what it programmed.
+Connecting switches every source off, and so does disconnecting; a reconnect
+(after a failed call, or Reconnect) programs the SMUs and sources that were on
+again.  Address e.g. ``GPIB0::17::INSTR``.
+``SIM::<name>`` uses the built-in emulator (option ``emulate_model`` = ``4145B``,
+``4155A``/``B``/``C``, ``4156C``).
 """
 
 from __future__ import annotations
@@ -53,46 +64,61 @@ from __future__ import annotations
 import math
 import re
 import time
-from typing import List
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import List, Optional, Tuple
 
 from ..backend.instrument import ActionSpec, ChannelSpec
+from ..backend.logsys import get_logger
 from ..backend.resources import GPIB_LIKE
 from ..common.errors import ChannelError
-from ..backend.logsys import get_logger
 from ._scpi import SCPIInstrument
 
 log = get_logger("drivers.hp4145")
 
-V_RANGES = [(0, "AUTO", None), (1, "20 V", 20.0), (2, "40 V", 40.0), (3, "100 V", 100.0)]
-I_RANGES = [(0, "AUTO", None)] + [(k, lab, val) for k, lab, val in (
-    (1, "1 nA", 1e-9), (2, "10 nA", 1e-8), (3, "100 nA", 1e-7), (4, "1 µA", 1e-6),
-    (5, "10 µA", 1e-5), (6, "100 µA", 1e-4), (7, "1 mA", 1e-3), (8, "10 mA", 1e-2),
-    (9, "100 mA", 1e-1))]
-#: (|V| up to, |I| up to): the SMU's output envelope
-ENVELOPE = [(20.0, 0.1), (40.0, 0.05), (100.0, 0.02)]
+#: voltage source ranges: (code, label, full scale V, resolution V, max current compliance A)
+V_RANGES = [(-1, "2 V", 2.0, 1e-4, 0.1), (1, "20 V", 20.0, 1e-3, 0.1),
+            (2, "40 V", 40.0, 2e-3, 0.05), (3, "100 V", 100.0, 5e-3, 0.02)]
+#: current source ranges: (code, label, full scale A, resolution A = range / 10000)
+I_RANGES = [(k, lab, 10.0 ** (k - 10), 10.0 ** (k - 14)) for k, lab in (
+    (1, "1 nA"), (2, "10 nA"), (3, "100 nA"), (4, "1 µA"), (5, "10 µA"), (6, "100 µA"),
+    (7, "1 mA"), (8, "10 mA"), (9, "100 mA"))]
 INTEGRATION = ["short", "medium", "long"]
-_NUM = re.compile(r"([+-]?\d+(?:\.\d*)?(?:[Ee][+-]?\d+)?)\s*$")
+COMMAND_SETS = ("HP4145", "HP4155")
+
+_READING = re.compile(
+    r"([NTCPXV])([A-H])([VI])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d{1,3})?)")
+_ERROR = re.compile(r'(?:ERROR\s*:?\s*)?([+-]?\d+)\s*[:,]\s*"?([A-Za-z][^\r\n]*?)"?', re.I)
 _CH = re.compile(r"^(mode|voltage|current|Icompliance|Vcompliance|output|range)(\d)$")
 
-
-def _max_current(v: float) -> float:
-    for vmax, imax in ENVELOPE:
-        if abs(v) <= vmax + 1e-12:
-            return imax
-    return 0.0
+#: addresses switched to the HP 4145 command set in this backend session (it stays
+#: there: a later connection must not send SCPI again)
+_SWITCHED = set()
 
 
-def _max_voltage(i: float) -> float:
-    ok = [vmax for vmax, imax in ENVELOPE if abs(i) <= imax + 1e-15]
-    return max(ok) if ok else 0.0
+def number(x: float) -> str:
+    """A value for a command, as the verified driver writes it (``5E-1``)."""
+    d = Decimal(repr(float(x)))
+    return "0" if d == 0 else format(d.normalize(), "E")
+
+
+def _round(x: float, res: float) -> float:
+    d, r = Decimal(repr(float(x))), Decimal(repr(res))
+    return float((d / r).to_integral_value(rounding=ROUND_HALF_EVEN) * r)
+
+
+def _vcomp_max(i: float) -> float:
+    """The largest voltage compliance a current source of *i* A may have."""
+    a = abs(i)
+    return 100.0 if a <= 0.02 + 1e-15 else 40.0 if a <= 0.05 + 1e-15 else 20.0
 
 
 class HP4145(SCPIInstrument):
-    DESCRIPTION = "HP 4145A/B (or 4155/4156 in 4145 syntax) parameter analyzer, user mode"
+    DESCRIPTION = "HP 4145A/B (or 4155/4156 in its 4145 command set) parameter analyzer, user mode"
     INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
-    ACTIONS = [ActionSpec("disable_all", "DS: disable every SMU and source (outputs OFF)")]
-    DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, timeout=10.0, write_termination="\r\n",
-                           smus=[1, 2, 3, 4], vs_vm=True, mode_switch_timeout=5.0)
+    ACTIONS = [ActionSpec("disable_all", "every SMU and voltage source off (DV1 … DV4, DS1, DS2)")]
+    DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
+                       "gpib_addr": None, "command_set": "HP4145", "smus": [1, 2, 3, 4],
+                       "vs_vm": True}
 
     @staticmethod
     def EMULATOR(options):                     # noqa: N802
@@ -102,12 +128,17 @@ class HP4145(SCPIInstrument):
     model = "4145B"
     integration = "short"
     st: dict = {}                     # SMU n -> what was programmed (no queries in user mode)
+    vs: dict = {}
 
     def _smus(self) -> List[int]:
         smus = [int(n) for n in self.options["smus"]]
         if not smus or any(not 1 <= n <= 4 for n in smus):
             raise ChannelError("option smus: SMU numbers 1 … 4")
         return smus
+
+    def _v_ranges(self):
+        """The 2 V range is the 4155/4156's (the 4145's SMUs start at 20 V)."""
+        return [r for r in V_RANGES if r[0] != -1 or not self.model.startswith("4145")]
 
     # -- channel list -----------------------------------------------------------------
     def get_channels(self):
@@ -116,6 +147,7 @@ class HP4145(SCPIInstrument):
             mode = self.st[n]["mode"] if n in self.st else "Voltage"
             v = mode == "Voltage"
             what = " (SMU%d)" % n
+            ranges = ["AUTO"] + [r[1] for r in (self._v_ranges() if v else I_RANGES)]
             ch += [
                 ChannelSpec("mode%d" % n, "rw", "str", (), "", "force voltage or force current" + what,
                             config=True, allowed=["Voltage", "Current"]),
@@ -129,7 +161,7 @@ class HP4145(SCPIInstrument):
                 ChannelSpec("output%d" % n, "rw", "str", (), "", "ON = programmed, OFF = disabled"
                             + what, config=True, allowed=["ON", "OFF"]),
                 ChannelSpec("range%d" % n, "rw", "str", (), "", "source range" + what, config=True,
-                            allowed=[r[1] for r in (V_RANGES if v else I_RANGES)]),
+                            allowed=ranges),
             ]
         if self.options["vs_vm"]:
             ch += [ChannelSpec("vs%d" % k, "rw", "float", (), "V", "voltage source VS%d (±20 V)" % k)
@@ -144,53 +176,86 @@ class HP4145(SCPIInstrument):
     def connect(self):
         self.attach_emulator()
         self.select(self.resource)
-        idn = self.q("ID")
-        if "4145" in idn:
-            self.model = "4145B" if "4145B" in idn.upper() else "4145A"
-        elif re.search(r"415[56]", idn):
-            self.model = re.search(r"415[56][A-Z]?", idn).group(0)
-            self._ensure_4145_syntax()
-        else:
-            raise IOError("unexpected instrument %r (expected an HP 4145 / 4155 / 4156)" % idn[:60])
-        self.idn = idn
+        cs = str(self.options["command_set"]).upper()
+        if cs not in COMMAND_SETS:
+            raise ChannelError("option command_set: %s or %s" % COMMAND_SETS)
+        if cs == "HP4155" and self.address not in _SWITCHED:
+            self._select_4145_command_set()
+        self.w("BC")
         self.w("US")                              # user mode: direct SMU control
+        time.sleep(0.5)
+        self._all_off()
+        try:
+            idn = self.q("BC;ID").strip()
+        except Exception as exc:
+            raise IOError("no reply to ID (%s): is option command_set right? A 4155/4156 in "
+                          "its own SCPI or FLEX command set needs HP4155" % exc) from None
+        m = re.search(r"41(45|5[56])[ABC]?", idn.upper())
+        if not m:
+            raise IOError("unexpected ID reply %r (expected an HP 4145 / 4155 / 4156; is "
+                          "option command_set right?)" % idn[:60])
+        self.model, self.idn = m.group(0), idn
+        if not self.model.startswith("4145"):
+            host = idn.split(",")[-1].split(":")[0].strip()
+            if not (self.model == "4155A" and host in ("01.00", "01.01")):
+                self.w("DP1")                     # (the earliest 4155A firmware has neither)
+                self.w("EI1")
         self.w("IT%d" % (INTEGRATION.index(self.integration) + 1))
-        # nothing is known about the outputs: assume OFF, leave the hardware alone (a
-        # reconnect keeps the mode and compliance this driver programmed)
-        old = self.st
+        self.w("BC")
+        # a reconnect: what was on goes on again; a new connection: all off
+        old, old_vs = (self.st, self.vs) if self.reconnecting else ({}, {})
         self.st = {n: {"mode": old[n]["mode"] if n in old else "Voltage", "on": False,
-                       "value": 0.0, "comp": old[n]["comp"] if n in old else None,
-                       "range": "AUTO"} for n in self._smus()}
+                       "value": old[n]["value"] if n in old else 0.0,
+                       "comp": old[n]["comp"] if n in old else None,
+                       "range": old[n]["range"] if n in old else "AUTO"} for n in self._smus()}
         self.vs = {1: None, 2: None}
+        for n in self._smus():
+            if n in old and old[n]["on"]:
+                self._program(n)
+                self.st[n]["on"] = True
+                log.info("%s: SMU%d programmed again after the reconnect", self.name, n)
+        for k in (1, 2):
+            if old_vs.get(k) is not None:
+                self._set_vs(k, old_vs[k])
 
-    def _cmd_mode(self) -> str:
-        return self.q("CMD?").strip()
+    def _select_4145_command_set(self) -> None:
+        """A 4155/4156 in its own command set: switch it once to the HP 4145 one -
+        the only SCPI this driver sends."""
+        try:
+            idn = self.q("*IDN?").strip()
+        except Exception as exc:
+            raise IOError("no reply to *IDN? (%s): the analyzer is probably in the HP 4145 "
+                          "command set already (switched before): set option command_set to "
+                          "HP4145" % exc) from None
+        f = idn.split(",")
+        model = f[1].strip().upper() if len(f) >= 2 else ""
+        if not re.fullmatch(r"415[56][ABC]", model):
+            raise IOError("*IDN? %r: not an HP 4155/4156 (option command_set HP4155 is for "
+                          "those)" % idn[:60])
+        if model != "4155A":
+            mode = self.q("CMD?").strip()
+            if mode == "1":
+                self.w(":PAGE")                   # FLEX -> SCPI
+            elif mode != "0":
+                raise IOError("unexpected command mode CMD? = %r" % mode)
+        self.w(":SYST:LANG COMP")
+        time.sleep(2.0)                           # the analyzer resets into the 4145 set
+        _SWITCHED.add(self.address)
+        log.info("%s: %s switched to the HP 4145 command set", self.name, model)
 
-    def _wait_mode(self, want: str, limit: float) -> str:
-        t_end = time.monotonic() + limit
-        mode = self._cmd_mode()
-        while mode != want and time.monotonic() < t_end:
-            time.sleep(0.2)                     # the analyzer needs a moment to switch
-            mode = self._cmd_mode()
-        return mode
+    def disconnect(self):
+        if not self.reconnecting:              # the end of the session: everything off
+            self._all_off()
+            self.w("BC")
+            for s in self.st.values():
+                s["on"] = False
+            self.vs = {1: None, 2: None}
 
-    def _ensure_4145_syntax(self) -> None:
-        """Put a 4155/4156 into its 4145 syntax command mode (CMD? = 2)."""
-        mode = self._cmd_mode()
-        if mode == "2":
-            return
-        limit = float(self.options["mode_switch_timeout"])
-        log.info("%s: %s is in %s command mode; switching to 4145 syntax", self.name, self.model,
-                 {"0": "SCPI", "1": "FLEX"}.get(mode, "unknown (%s)" % mode))
-        if mode == "1":
-            self.w(":PAGE")                     # FLEX -> SCPI
-            mode = self._wait_mode("0", limit)
-        self.w(":SYST:LANG COMP")               # SCPI -> 4145 syntax ("compatibility")
-        mode = self._wait_mode("2", limit)
-        if mode != "2":
-            raise IOError("could not switch the %s into 4145 syntax mode (CMD? = %s after "
-                          ":SYST:LANG COMP); select it on the front panel" % (self.model, mode))
-        log.info("%s: %s now in 4145 syntax mode", self.name, self.model)
+    def _all_off(self) -> None:
+        for n in (1, 2, 3, 4):
+            self.w("DV%d" % n)
+        self.w("DS1")
+        self.w("DS2")
 
     # -- helpers ------------------------------------------------------------------------
     def _split(self, channel: str):
@@ -200,17 +265,41 @@ class HP4145(SCPIInstrument):
         return m.group(1), int(m.group(2))
 
     def _measure(self, kind: str, ch: int) -> float:
-        r = self.q("T%s%d" % (kind, ch)).strip()
-        m = _NUM.search(r)
-        if not m:
-            raise IOError("unexpected measurement reply %r" % r[:40])
-        x = float(m.group(1))
-        status = r[0].upper() if r[:1].isalpha() else "N"
+        """``BC;T<kind><ch>``: one fresh reading."""
+        raw = self.q("BC;T%s%d" % (kind, ch)).strip()
+        if _ERROR.fullmatch(raw):
+            e = _ERROR.fullmatch(raw)
+            raise ChannelError("%s: T%s%d: error %s: %s" % (self.name, kind, ch, e.group(1),
+                                                             e.group(2)))
+        m = _READING.fullmatch(raw)
+        if m is None:
+            raise IOError("malformed reading %r for T%s%d" % (raw[:40], kind, ch))
+        status, letter, quantity, text = m.groups()
+        if (letter, quantity) != (chr(64 + ch), kind):
+            raise IOError("T%s%d answered %r" % (kind, ch, raw[:40]))
+        x = float(text)
         if status == "V":                         # A/D overflow
             return math.copysign(math.inf, x) if x else math.inf
         if status == "X":                         # SMU oscillating
             return math.nan
-        return x
+        return x                                  # N, C / T (compliance), P
+
+    def _source_range(self, n: int) -> Tuple[int, float]:
+        """(range code, resolution) for SMU *n*'s value (AUTO: the smallest that fits)."""
+        s = self.st[n]
+        v = s["mode"] == "Voltage"
+        ranges = self._v_ranges() if v else I_RANGES
+        fit = [r for r in ranges if abs(s["value"]) <= r[2] * (1 + 1e-9)]
+        if s["range"] != "AUTO":
+            fixed = next(r for r in ranges if r[1] == s["range"])
+            if fixed not in fit:
+                raise ChannelError("SMU%d: %g does not fit the %s range" % (n, s["value"],
+                                                                           s["range"]))
+            return fixed[0], fixed[3]
+        if not fit:
+            raise ChannelError("SMU%d: %g %s is beyond the largest range" % (
+                n, s["value"], "V" if v else "A"))
+        return 0, fit[0][3]
 
     def _program(self, n: int) -> None:
         """Send DV / DI with the remembered value, range and compliance."""
@@ -220,30 +309,45 @@ class HP4145(SCPIInstrument):
                                % (self.name, n))
         v = s["mode"] == "Voltage"
         self._check_envelope(n, s["value"], s["comp"], v)
-        rng = next(k for k, lab, _ in (V_RANGES if v else I_RANGES) if lab == s["range"])
-        self.w("D%s%d,%d,%+.4E,%+.4E" % ("V" if v else "I", n, rng, s["value"], s["comp"]))
+        code, res = self._source_range(n)
+        value = _round(s["value"], res)
+        self.w("D%s%d,%d,%s,%s" % ("V" if v else "I", n, code, number(value),
+                                   number(abs(s["comp"]))))
 
     def _check_envelope(self, n: int, value: float, comp: float, voltage_mode: bool) -> None:
         if voltage_mode:
             if abs(value) > 100.0:
                 raise ChannelError("SMU%d: %g V is beyond ±100 V" % (n, value))
-            imax = _max_current(value)
-            if abs(comp) > imax + 1e-15:
+            rng = self._v_ranges()
+            fit = next((r for r in rng if abs(value) <= r[2] * (1 + 1e-9)), rng[-1])
+            if self.st[n]["range"] != "AUTO":
+                fit = next(r for r in rng if r[1] == self.st[n]["range"])
+            if abs(comp) > fit[4] + 1e-15:
                 raise ChannelError("SMU%d: a current compliance of %g A is not available at %g V "
-                                   "(max %g A up to %g V)" % (n, comp, value, imax,
-                                                              next(vm for vm, im in ENVELOPE if im == imax)))
+                                   "(max %g A on the %s range)" % (n, comp, value, fit[4], fit[1]))
         else:
             if abs(value) > 0.1:
                 raise ChannelError("SMU%d: %g A is beyond ±100 mA" % (n, value))
-            vmax = _max_voltage(value)
+            vmax = _vcomp_max(value)
             if abs(comp) > vmax + 1e-12:
                 raise ChannelError("SMU%d: a voltage compliance of %g V is not available at %g A "
                                    "(max %g V)" % (n, comp, value, vmax))
-        rng = self.st[n]["range"]
-        if rng != "AUTO":
-            full = next(val for k, lab, val in (V_RANGES if voltage_mode else I_RANGES) if lab == rng)
-            if abs(value) > full * (1 + 1e-9):
-                raise ChannelError("SMU%d: %g does not fit the %s range" % (n, value, rng))
+        self.st[n]["value"], old = value, self.st[n]["value"]
+        try:
+            self._source_range(n)
+        finally:
+            self.st[n]["value"] = old
+
+    def _set_vs(self, k: int, value: Optional[float]) -> None:
+        if value is None:
+            self.w("DS%d" % k)
+            self.vs[k] = None
+            return
+        if abs(value) > 20.0:
+            raise ChannelError("VS%d is limited to ±20 V" % k)
+        v = _round(value, 1e-3)
+        self.w("DS%d,%s" % (k, number(v)))
+        self.vs[k] = v
 
     # -- I/O --------------------------------------------------------------------------
     def read(self, channel):
@@ -279,11 +383,7 @@ class HP4145(SCPIInstrument):
             return
         m = re.fullmatch(r"vs([12])", channel)
         if m and self.options["vs_vm"]:
-            k = int(m.group(1))
-            if abs(value) > 20.0:
-                raise ChannelError("VS%d is limited to ±20 V" % k)
-            self.w("DV%d,0,%+.4E,%+.4E" % (4 + k, value, 0.0))
-            self.vs[k] = float(value)
+            self._set_vs(int(m.group(1)), float(value))
             return
         base, n = self._split(channel)
         s = self.st[n]
@@ -314,7 +414,7 @@ class HP4145(SCPIInstrument):
                 self._program(n)
                 s["on"] = True
             else:
-                self.w("DS%d" % n)
+                self.w("DV%d" % n)
                 s["on"] = False
         elif base == "range":
             old = s["range"]
@@ -336,7 +436,8 @@ class HP4145(SCPIInstrument):
                                % (n, self.st[n]["mode"], want, n))
 
     def _action_disable_all(self):
-        self.w("DS")
+        self._all_off()
+        self.w("BC")
         for s in self.st.values():
             s["on"] = False
         self.vs = {1: None, 2: None}
