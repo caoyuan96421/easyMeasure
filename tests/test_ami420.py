@@ -27,7 +27,7 @@ def add_magnet(be, name="mag", driver="ami420_Persistent", **opts):
     be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
     assert h.state == "connected", h.last_error
-    emu = ensure_emulator("SIM::ami_" + name, 0, lambda: None)
+    emu = ensure_emulator("SIM::ami_" + name, lambda: None)
     return h, emu
 
 
@@ -262,13 +262,13 @@ def test_each_driver_refuses_the_other_model(backend):
     """A 430 driver on a 420 would send queries the 420 does not answer (a beep and
     a timeout each): it stops at the identification instead."""
     from easymeasure.drivers.emulators.ami420 import AMI420Emulator
-    emu = ensure_emulator("SIM::ami_x", 0, lambda: AMI420Emulator(FAST))
+    emu = ensure_emulator("SIM::ami_x", lambda: AMI420Emulator(FAST))
     backend.add_instrument("x", "ami430", "SIM::ami_x", dict(FAST))
     h = backend.instruments.get("x")
     assert h.state != "connected" and "use the ami420_noPersistent or ami420_Persistent" in h.last_error
     assert emu.beeps == 0 and not emu.unknown
     from easymeasure.drivers.emulators.ami430 import AMI430Emulator
-    ensure_emulator("SIM::ami_y", 0, lambda: AMI430Emulator(FAST))
+    ensure_emulator("SIM::ami_y", lambda: AMI430Emulator(FAST))
     backend.add_instrument("y", "ami420_noPersistent", "SIM::ami_y", dict(FAST))
     assert "use the ami430 driver" in backend.instruments.get("y").last_error
 

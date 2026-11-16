@@ -722,7 +722,7 @@ class SetupMerge:
                 chans_known = (self.drivers.get(drv) or {}).get("channels") or None
             inst.add(it.target, chans_known)
             addr = str(it.merged.get("address") or "NONE")
-            if addr.upper() not in ("NONE", "") and not addr.upper().startswith("SIM::"):
+            if addr.upper() not in ("NONE", ""):
                 users = [i["name"] for i in self.current["instruments"]
                          if str(i.get("address") or "").upper() == addr.upper()]
                 if users:

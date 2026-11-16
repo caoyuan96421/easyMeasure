@@ -30,8 +30,8 @@ magnet's field, and so on.
 ??? example "From Python"
 
     ```python
-    c.call("add_instrument", name="src", driver="sim_source", address="SIM::GPIB0")
-    c.call("add_instrument", name="dmm", driver="sim_dmm",    address="SIM::GPIB0")  # same bus
+    c.call("add_instrument", name="src", driver="sim_source", address="SIM::GPIB0::1")
+    c.call("add_instrument", name="dmm", driver="sim_dmm",    address="SIM::GPIB0::2")  # same bus
     c.call("add_instrument", name="magnet", driver="sim_magnet", address="NONE")
     ```
 
@@ -53,7 +53,7 @@ Every simulated driver takes options that make it misbehave like real hardware:
 ??? example "From Python"
 
     ```python
-    c.call("add_instrument", name="flaky", driver="sim_dmm", address="SIM::GPIB0",
+    c.call("add_instrument", name="flaky", driver="sim_dmm", address="SIM::GPIB0::5",
            options={"error_rate": 0.05, "hang_rate": 0.01, "hang_time": 30, "seed": 1})
     ```
 

@@ -73,7 +73,7 @@ RESERVES = {"SR830": ["High Reserve", "Normal", "Low Noise"], "SR850": ["Max", "
 
 class SR830(SCPIInstrument):
     DESCRIPTION = "Stanford Research SR830 / SR850 lock-in amplifier"
-    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
+    INTERFACES = GPIB_LIKE    # GPIB (a card or a Prologix adapter), or its RS-232 port
     IDN_MATCH = ("SR830", "SR850", "SR810")
     ACTIONS = [ActionSpec("auto_gain", "choose the sensitivity for the present signal", 60.0),
                ActionSpec("auto_phase", "set the phase so that Y = 0", 30.0),
@@ -98,7 +98,6 @@ class SR830(SCPIInstrument):
 
     def connect(self):
         self.attach_emulator()
-        self.select(self.resource)
         iface = str(self.options["interface"]).upper()
         if iface == "AUTO":
             a = self.address.upper()

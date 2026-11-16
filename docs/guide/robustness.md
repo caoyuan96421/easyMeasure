@@ -48,8 +48,9 @@ Every driver call goes through an `InstrumentHandle`:
 
 ### GPIB buses
 
-All instruments on one GPIB card (`GPIB0::…`) share one lock, because the card does
-one transfer at a time. Every write, read and query (write and read together) holds
+All instruments on one GPIB bus share one lock, because the bus does one transfer at
+a time: a GPIB card (`GPIB0::…`), a Prologix adapter (`PROLOGIX::COM4::…`) or a
+simulated bus (`SIM::lab::…`). Every write, read and query (write and read together) holds
 the bus only for that transfer.
 
 * An instrument waiting for the bus is not timing out: the wait is not part of its
@@ -59,7 +60,6 @@ the bus only for that transfer.
   ("no listener"), not after a time-out.
 * The first reply on connect waits only `identify_timeout` (2 s), so an instrument
   that is not there does not hold the bus for long.
-* Simulated buses: give the instruments the same `bus` option to put them on one bus.
 
 ### Guard options
 
@@ -78,9 +78,9 @@ Per instrument, in its options:
 Every physical port is one `Resource`:
 
 * a second instrument asking for an exclusively owned port is refused;
-* ports declared `shared` are arbitrated by a fair, re-entrant lock per I/O sequence.
-  When ownership changes, the new owner's `select()` runs (e.g. `++addr 5` on a
-  Prologix adapter);
+* ports declared `shared` are arbitrated by a fair, re-entrant lock per I/O sequence;
+* GPIB instruments each have their own port object and take turns per transfer on
+  their bus (see [GPIB buses](#gpib-buses));
 * the measurement thread gets priority over monitor and GUI traffic, so monitoring
   never slows a sweep down.
 

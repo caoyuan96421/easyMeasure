@@ -127,7 +127,7 @@ def test_actions_under_hardware_faults(backend):
     """Faulty bus instruments: actions either succeed or fail cleanly; the
     instrument stays usable and nothing ever runs twice because of a retry."""
     be = backend
-    be.add_instrument("dmm", "sim_dmm", "SIM::FA", {"gpib_addr": 2, "error_rate": 0.2,
+    be.add_instrument("dmm", "sim_dmm", "SIM::FA::2", {"error_rate": 0.2,
                                                     "garble_rate": 0.2, "disconnect_rate": 0.05,
                                                     "exception_rate": 0.1, "call_timeout": 0.5,
                                                     "seed": 3})

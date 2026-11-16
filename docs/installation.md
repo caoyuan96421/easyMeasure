@@ -54,7 +54,8 @@ instruments need:
 | GPIB, USB-TMC, VISA LAN (`GPIB0::…`, `USB0::…`, `TCPIP0::…`) | a VISA library: **NI-VISA** or **Keysight IO Libraries Suite**, plus the GPIB card's driver (NI-488.2 for NI cards). Without a vendor VISA, `pip install pyvisa-py` covers LAN, USB-TMC and serial. |
 | NI DAQ (`DAQ::Dev1`) | **NI-DAQmx** (the Python package `nidaqmx` already comes with easyMeasure) |
 | Serial / USB-serial (`COM3`, `/dev/ttyUSB0`) | nothing beyond the adapter's driver (FTDI, CH340 …) |
-| Raw TCP sockets, Prologix GPIB-Ethernet (`TCP::host::port`) | nothing |
+| Raw TCP sockets (`TCP::host::port`) | nothing |
+| Prologix GPIB-USB / GPIB-Ethernet adapter (`PROLOGIX::COM4::12`, `PROLOGIX::192.168.1.50::12`) | nothing beyond the adapter's USB-serial driver |
 
 You can check what the backend computer sees from the GUI: *Instruments → Add…*
 lists the ports and devices found per interface, and **Refresh** scans again. The

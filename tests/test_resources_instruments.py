@@ -7,7 +7,7 @@ import pytest
 from easymeasure.backend.registry import DriverRegistry
 from easymeasure.backend.instrument import (ActionSpec, ChannelSpec, Instrument,
                                             InstrumentManager, coerce_value)
-from easymeasure.backend.resources import FairLock, ResourceManager
+from easymeasure.backend.resources import FairLock, NoListener, ResourceManager
 from easymeasure.common.errors import (ChannelError, InstrumentError, InstrumentNotConnected,
                                        InstrumentTimeout, ResourceBusyError, ResourceError)
 
@@ -35,7 +35,8 @@ def test_io_outside_transaction_refused():
     with pytest.raises(ResourceError):
         r.write("x")
     with r.transaction("a"):
-        r.write("*IDN?")   # nobody listening; just must not raise
+        with pytest.raises(NoListener):
+            r.write("*IDN?")   # inside a transaction it reaches the bus: nobody there
 
 
 def test_fairlock_fifo_timeout_reentrant():
@@ -67,17 +68,23 @@ def test_fairlock_fifo_timeout_reentrant():
     assert order == [0, 1, 2, 3, 4]
 
 
-def test_selector_called_on_owner_switch():
+def test_gpib_addresses():
+    from easymeasure.backend.resources import bus_of, interface_of, split_gpib
+    assert split_gpib("SIM::lab::7") == ("SIM::lab", 7) and split_gpib("SIM::x") == ("SIM::x", 0)
+    assert split_gpib("PROLOGIX::COM4::22") == ("PROLOGIX::COM4", 22)
+    assert split_gpib("PROLOGIX::10.0.0.5:1234::3") == ("PROLOGIX::10.0.0.5:1234", 3)
+    for bad in ("PROLOGIX::COM4", "PROLOGIX::COM4::31", "SIM::a::b", "SIM::a::1::2"):
+        with pytest.raises(ResourceError):
+            split_gpib(bad)
+    assert bus_of("PROLOGIX::COM4::22") == "PROLOGIX::COM4" and bus_of("SIM::lab::7") == "SIM::lab"
+    assert interface_of("PROLOGIX::COM4::22") == "gpib"
+    # one resource per instrument: the same bus, different addresses, no sharing needed
     rm = ResourceManager()
-    r = rm.acquire("SIM::sel", "a", shared=True)
-    rm.acquire("SIM::sel", "b", shared=True)
-    calls = []
-    r.set_selector("a", lambda res: calls.append("a"))
-    r.set_selector("b", lambda res: calls.append("b"))
-    for who in "aabba":
-        with r.transaction(who):
-            pass
-    assert calls == ["a", "b", "a"]
+    a = rm.acquire("SIM::two::1", "a")
+    b = rm.acquire("SIM::two::2", "b")
+    assert a is not b and a.bus_lock is b.bus_lock
+    with pytest.raises(ResourceBusyError):
+        rm.acquire("SIM::two::1", "c")
 
 
 # --------------------------------------------------------------- coercion --
@@ -322,7 +329,7 @@ def test_review_hanging_open_does_not_deadlock():
     simbus.SimPortBackend.open = hanging_open
     try:
         m = InstrumentManager(ResourceManager(), DriverRegistry())
-        h = m.add("src", "sim_source", "SIM::HO", {"gpib_addr": 1, "call_timeout": 0.5,
+        h = m.add("src", "sim_source", "SIM::HO::1", {"call_timeout": 0.5,
                                                    "connect_timeout": 0.5, "retries": 1})
         h.resource.invalidate("glitch")
         hang["on"] = True
@@ -379,15 +386,15 @@ def test_review_shared_bus_not_invalidated_by_other_instrument():
     reg = DriverRegistry()
     reg.register("src2", Src2)
     m = InstrumentManager(ResourceManager(), reg)
-    src = m.add("src", "src2", "SIM::SB", {"gpib_addr": 1})
-    dmm = m.add("dmm", "sim_dmm", "SIM::SB", {"gpib_addr": 2})
+    src = m.add("src", "src2", "SIM::SB::1")
+    dmm = m.add("dmm", "sim_dmm", "SIM::SB::2")
     t = threading.Thread(target=lambda: src.write("pair", 0.7))
     t.start()
     time.sleep(0.15)
     dmm._abandon_worker("dmm timed out elsewhere")   # dmm does not hold the bus
     t.join()
     assert _DEVICES[("SB", 1)].volts[:2] == [0.7, 0.7]
-    # and if the bus *is* reopened mid-transaction the owner is re-selected
+    # and if the port *is* reopened mid-transaction, the traffic still goes to src
     t = threading.Thread(target=lambda: src.write("pair", 0.3))
     t.start()
     time.sleep(0.15)
@@ -562,10 +569,10 @@ def test_a_busy_gpib_bus_is_waited_for_not_a_hang(mgr):
     """Instruments on one GPIB card take turns; a call waiting for the bus (another
     instrument's transfer) is not timed: it neither times out nor makes it hung."""
     from easymeasure.backend.resources import bus_lock
-    o = {"bus": "GPIB7", "call_timeout": 0.4, "gpib_addr": 3}
-    h = mgr.add("d1", "sim_dmm", "SIM::bus_a", dict(o))
-    assert h.state == "connected" and h.resource.bus == "GPIB7"
-    lk = bus_lock("GPIB7")
+    o = {"call_timeout": 0.4}
+    h = mgr.add("d1", "sim_dmm", "SIM::GPIB7::3", dict(o))
+    assert h.state == "connected" and h.resource.bus == "SIM::GPIB7"
+    lk = bus_lock("SIM::GPIB7")
     got = {}
 
     def other_instrument():                       # e.g. a 10 s read timeout elsewhere
@@ -583,7 +590,7 @@ def test_a_busy_gpib_bus_is_waited_for_not_a_hang(mgr):
     assert h.state == "connected" and h.stats["timeouts"] == 0
     th.join()
     # held for longer than bus_wait: a "busy" error - the instrument stays connected
-    h2 = mgr.add("d2", "sim_dmm", "SIM::bus_b", dict(o, bus_wait=0.3))
+    h2 = mgr.add("d2", "sim_dmm", "SIM::GPIB7::4", dict(o, bus_wait=0.3))
     lk.acquire()
     try:
         with pytest.raises(ResourceBusyError, match="GPIB7 bus is busy"):
@@ -592,14 +599,14 @@ def test_a_busy_gpib_bus_is_waited_for_not_a_hang(mgr):
         lk.release()
     assert h2.state == "connected" and h2.read("reading") is not None
     # an address on another card is not affected
-    assert bus_lock("GPIB8") is not lk
+    assert bus_lock("SIM::GPIB8") is not lk
 
 
 def test_no_listener_fails_at_once_and_stays_in_error(mgr):
     from easymeasure.backend.resources import NoListener, Resource, bus_of
-    assert bus_of("GPIB0::17::INSTR", {}) == "GPIB0" and bus_of("GPIB::5", {}) == "GPIB0"
-    assert bus_of("GPIB2::5::INSTR", {}) == "GPIB2" and bus_of("COM3", {}) is None
-    r = Resource("SIM::nobody_here", False, {"bus": "GPIB9"})
+    assert bus_of("GPIB0::17::INSTR") == "GPIB0" and bus_of("GPIB::5") == "GPIB0"
+    assert bus_of("GPIB2::5::INSTR") == "GPIB2" and bus_of("COM3") is None
+    r = Resource("SIM::nobody_here::9", False, {})
     with r.transaction("t"):
         t0 = time.monotonic()
         with pytest.raises(NoListener, match="switched off, or the address is wrong"):

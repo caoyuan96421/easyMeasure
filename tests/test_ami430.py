@@ -22,7 +22,7 @@ def add_magnet(be, name="mag", driver="ami430", **opts):
     be.add_instrument(name, driver, "SIM::ami_" + name, o)
     h = be.instruments.get(name)
     assert h.state == "connected", h.last_error
-    emu = ensure_emulator("SIM::ami_" + name, 0, lambda: None)
+    emu = ensure_emulator("SIM::ami_" + name, lambda: None)
     return h, emu
 
 

@@ -94,18 +94,19 @@ traffic, which helps when a cable is loose.
 | interface | address examples | needs |
 |---|---|---|
 | `gpib` | `GPIB0::12::INSTR` | VISA library + GPIB card driver |
+| `gpib` (Prologix) | `PROLOGIX::COM4::12`, `PROLOGIX::/dev/ttyUSB0::12`, `PROLOGIX::192.168.1.50::12` | the adapter's USB-serial driver |
 | `usb` (USB-TMC) | `USB0::0x0957::0x8B18::MY51141134::0::INSTR` | VISA library |
 | `tcpip` (VISA LAN) | `TCPIP0::192.168.1.20::inst0::INSTR`, `TCPIP0::192.168.1.20::5025::SOCKET` | VISA library |
-| `tcp` (raw socket) | `TCP::192.168.1.30::1234` (e.g. a Prologix GPIB-Ethernet adapter) | – |
+| `tcp` (raw socket) | `TCP::192.168.1.30::5025` | – |
 | `serial` | `COM3`, `/dev/ttyUSB0`, `ASRL3::INSTR` | adapter driver |
 | `daq` | `DAQ::Dev1` (the NI MAX device name), `DAQ::SIM` | NI-DAQmx |
-| `sim` | `SIM::<bus name>` | – |
+| `sim` | `SIM::<bus name>::<GPIB address>` (`SIM::<name>`: address 0) | – |
 | `none` | `NONE` (instruments without a port, e.g. the simulated ones) | – |
 
 Each driver lists the interfaces it accepts. An address of another interface is
-refused when the instrument is added. For example, the GPIB instruments also accept
-`serial` and `tcp` (RS-232, or a Prologix adapter), and the Keysight B2900 also
-takes USB and LAN.
+refused when the instrument is added. For example, the GPIB instruments with an
+RS-232 port also accept `serial` and `tcp`, and the Keysight B2900 also takes USB and
+LAN.
 
 ### Finding what is connected
 
@@ -127,23 +128,32 @@ with their alias, and NI devices with their product type. `identify` asks each G
 / USB / LAN instrument `*IDN?`, except instruments already configured here, which are
 left alone.
 
-### Several instruments behind one GPIB adapter
+### Several instruments on one GPIB bus
 
-A Prologix GPIB-USB or GPIB-Ethernet adapter is one port shared by several
-instruments. Add each of them with the adapter's port as address (e.g. `COM5`), and
-in the options set `"shared": true` and its GPIB address, `"gpib_addr": 22`.
+The GPIB address is part of the address, whether the bus is a GPIB card or a
+Prologix GPIB-USB / GPIB-Ethernet adapter. Add each instrument with its own address:
+
+| bus | addresses |
+|---|---|
+| GPIB card | `GPIB0::22::INSTR`, `GPIB0::3::INSTR` |
+| Prologix GPIB-USB on COM5 | `PROLOGIX::COM5::22`, `PROLOGIX::COM5::3` |
+| Prologix GPIB-Ethernet | `PROLOGIX::192.168.1.50::22` (port 1234; `host:port` for another) |
 
 ??? example "From Python"
 
     ```python
     for name, drv, addr in (("dmm", "hp34401a", 22), ("src", "yokogawa7651", 3)):
-        c.call("add_instrument", name=name, driver=drv, address="COM5",
-               options={"shared": True, "gpib_addr": addr})
+        c.call("add_instrument", name=name, driver=drv, address="PROLOGIX::COM5::%d" % addr)
     ```
 
-Before an instrument talks, the port is switched to it (`++addr N`). The
-measurement thread has priority over monitor and GUI traffic, so monitoring
-never slows a sweep down.
+The instruments on one bus take turns per transfer, and the time an instrument waits
+for the bus does not count against its deadline. Behind a Prologix adapter the
+backend runs it as controller without read-after-write (`++auto 0`), points it at
+each instrument before its transfers (`++addr`, and `++eos` for the instrument's
+line ending) and reads with `++read eoi`, so the instruments can interleave freely.
+Connecting checks that a Prologix adapter answers (`++ver`). The adapter waits at
+most 3 s for the first byte of a reply (`++read_tmo_ms 3000`), so an instrument
+that takes longer to answer a query needs a GPIB card.
 
 ## Channels
 
@@ -270,7 +280,6 @@ Common driver options of the hardware drivers:
 | `reset` | `*RST` on connect |
 | `check_errors` | read the error queue after every setting, so a refused value raises the instrument's own message (default on) |
 | `verify_writes` | SMUs: read every source value back (worth it on RS-232) |
-| `gpib_addr` | GPIB address behind a Prologix adapter |
 | `identify_timeout` | time-out of the first reply on connect (2 s), so an absent instrument fails fast |
 | `timeout`, `read_termination`, `baudrate` | port settings |
 

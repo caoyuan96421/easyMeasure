@@ -158,7 +158,6 @@ class AMI430(SCPIInstrument):
         """``*IDN?``; over TCP the 430 first greets every new connection with a
         couple of lines, which are skipped."""
         self.attach_emulator()
-        self.select(self.resource)
         self.resource.write("*IDN?")
         for _ in range(6):
             line = self.resource.read().strip()

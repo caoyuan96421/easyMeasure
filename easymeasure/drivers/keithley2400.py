@@ -34,7 +34,7 @@ from ._smu import Q as _Q, SMUBase
 
 class Keithley2400(SMUBase):
     DESCRIPTION = "Keithley 2400 SourceMeter (voltage or current source, measure the other)"
-    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
+    INTERFACES = GPIB_LIKE    # GPIB (a card or a Prologix adapter), or its RS-232 port
     IDN_MATCH = ("KEITHLEY",)
     ACTIONS = [CLEAR_STATUS, ActionSpec("beep", "short beep (find the instrument in the rack)")]
     DEFAULT_OPTIONS = dict(SMUBase.DEFAULT_OPTIONS, autorange=True)

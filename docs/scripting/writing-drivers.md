@@ -165,15 +165,15 @@ def get_channels(self):
                         allowed=["Voltage", "Current"])]
 ```
 
-### Shared ports
+### Shared ports and GPIB
 
-Set `SHARED_RESOURCE = True` (or the instrument option `shared`), and implement
-`select` to make this instrument the active one on the bus whenever it takes over:
+A GPIB instrument needs nothing for its bus: the GPIB address is in its address
+(`GPIB0::12::INSTR`, `PROLOGIX::COM4::12`, `SIM::lab::12`), and the transport takes
+turns on the bus and points a Prologix adapter at the instrument.
 
-```python
-def select(self, resource):
-    resource.write("++addr %d" % self.options["gpib_addr"])
-```
+For a port that several instruments really share (an RS-485 chain, one controller
+behind several drivers), set `SHARED_RESOURCE = True` (or the instrument option
+`shared`). Each call then holds the port for its whole I/O sequence.
 
 ### Address suggestions and recognition
 

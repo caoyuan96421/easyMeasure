@@ -6,12 +6,14 @@ Responsibilities
   two instruments can never open the same port independently and fight over it.
 * By default a resource is *exclusive*: a second instrument asking for it gets a
   :class:`ResourceBusyError`.
-* Shared ports (a GPIB bus behind a Prologix adapter, an RS-485 chain, a
-  multi-channel controller ...) can be requested with ``shared=True``.  Access is
-  then arbitrated: every I/O sequence must run inside
-  ``with resource.transaction(owner):`` which grants a fair, FIFO, re-entrant
-  lock.  When ownership switches from one instrument to another an optional
-  *selector* callback of the new owner is run (e.g. send ``++addr 12``).
+* Shared ports (an RS-485 chain, a multi-channel controller ...) can be requested
+  with ``shared=True``.  Access is then arbitrated: every I/O sequence must run
+  inside ``with resource.transaction(owner):`` which grants a fair, FIFO,
+  re-entrant lock.
+* GPIB instruments each have their own resource, with the GPIB address in the
+  address string.  The instruments on one bus (a GPIB card, a Prologix adapter,
+  a simulated bus) take turns per transfer on the bus lock; a Prologix adapter is
+  pointed at the instrument (``++addr``) by the transport, before each transfer.
 * Resources can be *invalidated* (e.g. after a hung call).  The next transaction
   transparently reopens the port; stale handles held by abandoned threads are
   closed and ignored.
@@ -22,10 +24,15 @@ Address formats
 ``COM3`` / ``ASRL3::INSTR``         serial port (pyserial, or pyvisa for ASRL)
 ``/dev/ttyUSB0``                    serial port (pyserial)
 ``GPIB0::12::INSTR``                pyvisa
+``PROLOGIX::COM4::12``              GPIB address 12 behind a Prologix GPIB-USB adapter
+                                    (``PROLOGIX::/dev/ttyUSB0::12`` on Linux)
+``PROLOGIX::192.168.1.50::12``      ... behind a Prologix GPIB-Ethernet adapter (port
+                                    1234; ``host:port`` for another)
 ``USB0::0x1234::...::INSTR``        pyvisa
 ``TCPIP0::1.2.3.4::inst0::INSTR``   pyvisa
 ``TCP::192.168.1.5::5025``          raw TCP socket (built-in, no pyvisa needed)
-``SIM::<name>``                     simulated byte port (see drivers/simbus.py)
+``SIM::<bus>::<addr>``              simulated GPIB bus, device at *addr* (see
+                                    drivers/simbus.py); ``SIM::<bus>`` = address 0
 ``DAQ::<device>``                   NI-DAQmx device (``DAQ::Dev1``); no byte port, but
                                     one owner, so two drivers cannot share a DAQ card
 ``NONE`` or empty                   instrument without a port (DLL/software)
@@ -46,7 +53,7 @@ import socket
 import threading
 import time
 from collections import deque
-from typing import Callable, Dict, Optional, Set, Union
+from typing import Dict, Optional, Set, Union
 
 from ..common.errors import ResourceBusyError, ResourceError
 from .logsys import get_logger
@@ -62,9 +69,11 @@ Data = Union[str, bytes]
 INTERFACES = ("gpib", "usb", "tcpip", "tcp", "serial", "daq", "sim", "none", "other")
 #: everything that carries bytes (SCPI and other command-based instruments)
 BYTE_PORTS = ("gpib", "usb", "tcpip", "tcp", "serial", "other", "sim")
-#: GPIB instruments: GPIB, or a Prologix-style GPIB-USB (serial) / GPIB-Ethernet
-#: (TCP) adapter, or RS-232 where the instrument has it
+#: GPIB instruments that also have RS-232: GPIB (a card or a Prologix adapter), or
+#: their serial port (directly, or through a serial-to-Ethernet converter)
 GPIB_LIKE = ("gpib", "serial", "tcp", "sim")
+#: GPIB only (a card or a Prologix adapter)
+GPIB_ONLY = ("gpib", "sim")
 INTERFACE_NAMES = {"gpib": "GPIB", "usb": "USB (USBTMC)", "tcpip": "LAN (VISA)",
                    "tcp": "TCP socket", "serial": "serial / COM", "daq": "NI-DAQmx",
                    "sim": "simulated", "none": "no port", "other": "other VISA"}
@@ -78,6 +87,8 @@ def interface_of(address: Optional[str]) -> str:
         return "none"
     if up.startswith("SIM::"):
         return "sim"
+    if up.startswith("PROLOGIX::"):
+        return "gpib"
     if up.startswith("DAQ::"):
         return "daq"
     if up.startswith("TCP::"):
@@ -218,14 +229,34 @@ _BUSES_LOCK = threading.Lock()
 _TLS = threading.local()
 
 
-def bus_of(address: str, options: dict) -> Optional[str]:
-    """The bus an address is on: ``GPIB0::17::INSTR`` -> ``GPIB0``; others none
-    (a ``SIM::`` port joins a simulated one with option ``bus``)."""
-    m = re.match(r"GPIB(\d*)::", address.strip().upper())
+def bus_of(address: str) -> Optional[str]:
+    """The bus an address is on: ``GPIB0::17::INSTR`` -> ``GPIB0``,
+    ``PROLOGIX::COM4::17`` -> ``PROLOGIX::COM4``, ``SIM::lab::3`` -> ``SIM::lab``;
+    other ports are on none."""
+    a = address.strip()
+    m = re.match(r"GPIB(\d*)::", a.upper())
     if m:
         return "GPIB%d" % int(m.group(1) or 0)
-    b = options.get("bus")
-    return str(b) if b else None
+    if a.upper().startswith(("PROLOGIX::", "SIM::")):
+        return split_gpib(a)[0]
+    return None
+
+
+def split_gpib(address: str):
+    """``PROLOGIX::<port>::<addr>`` / ``SIM::<bus>[::<addr>]`` -> (bus, GPIB address)."""
+    parts = address.strip().split("::")
+    head = parts[0].upper()
+    if head == "SIM" and len(parts) in (2, 3):
+        addr = parts[2] if len(parts) == 3 else "0"
+    elif head == "PROLOGIX" and len(parts) == 3:
+        addr = parts[2]
+    else:
+        raise ResourceError("address %r: expected %s" % (
+            address, "SIM::<bus>[::<GPIB address>]" if head == "SIM"
+            else "PROLOGIX::<COM port or host>::<GPIB address>"))
+    if not addr.isdigit() or not 0 <= int(addr) <= 30:
+        raise ResourceError("address %r: the GPIB address must be 0 … 30" % address)
+    return "%s::%s" % (head, parts[1]), int(addr)
 
 
 def bus_lock(name: str) -> FairLock:
@@ -268,6 +299,10 @@ class PortBackend:
 
     def clear(self) -> None:
         """Flush input buffers (best effort)."""
+
+    def pending(self) -> bool:
+        """Whether received bytes wait to be read (the rest of a multi-line reply)."""
+        return False
 
     def set_timeout(self, seconds: float) -> None:
         """The read timeout from now on."""
@@ -381,6 +416,9 @@ class SocketBackend(PortBackend):
     def clear(self):
         self._rx.clear()
 
+    def pending(self):
+        return bool(self._rx)
+
 
 class SerialBackend(PortBackend):
     """Serial port through pyserial."""
@@ -468,6 +506,12 @@ class SerialBackend(PortBackend):
         except Exception:
             pass
 
+    def pending(self):
+        try:
+            return self._ser is not None and self._ser.in_waiting > 0
+        except Exception:
+            return False
+
 
 #: VISA: nothing answered the addressing on the GPIB bus
 VI_ERROR_NLISTENERS = -1073807265
@@ -553,6 +597,151 @@ class VisaBackend(PortBackend):
             pass
 
 
+class _PrologixLink:
+    """The adapter's own port (serial or TCP), shared by every instrument behind it.
+    Only used under the bus lock, so one transfer at a time."""
+
+    def __init__(self, name: str, options: dict):
+        self.name = name
+        self.options = dict(options)
+        self.users = 0
+        self.port: Optional[PortBackend] = None
+        self.target = None                      # (GPIB address, ++eos) last sent
+
+    def _open(self) -> PortBackend:
+        where = self.name.split("::", 1)[1]
+        o = dict(self.options, read_termination="\n", write_termination="")
+        if where.upper().startswith("COM") or where.startswith("/dev/"):
+            port: PortBackend = SerialBackend(where, dict(o, baudrate=o.get("baudrate", 115200)))
+        else:
+            host, _, num = where.partition(":")
+            port = SocketBackend("TCP::%s::%s" % (host, num or 1234), o)
+        port.open()
+        try:
+            # controller, no read-after-write, EOI with the last byte, no saving
+            for c in ("++savecfg 0", "++mode 1", "++auto 0", "++eoi 1", "++read_tmo_ms 3000"):
+                port.write_raw(c.encode() + b"\n")
+            port.write_raw(b"++ver\n")
+            port.set_timeout(min(port.timeout, 2.0))
+            try:
+                ver = port.read_raw(None).decode("ascii", "replace").strip()
+            except ResourceError as exc:
+                raise ResourceError("no Prologix adapter answers on %s (++ver): %s"
+                                    % (where, exc)) from exc
+            log.info("%s: %s", self.name, ver)
+        except BaseException:
+            port.close()
+            raise
+        self.target = None
+        return port
+
+    def get(self) -> PortBackend:
+        if self.port is None:
+            self.port = self._open()
+        return self.port
+
+    def broken(self) -> None:
+        """A port error: closed, the next transfer opens it again."""
+        p, self.port = self.port, None
+        self.target = None
+        if p is not None:
+            _close_in_background(p, self.name)
+
+
+_LINKS: Dict[str, _PrologixLink] = {}
+_LINKS_LOCK = threading.Lock()
+#: Prologix ++eos: what the adapter appends to the data it sends
+_EOS = {"\r\n": 0, "\r": 1, "\n": 2, "": 3}
+_ESCAPED = {0x0A, 0x0D, 0x1B, 0x2B}
+
+
+class PrologixBackend(PortBackend):
+    """One instrument behind a Prologix GPIB-USB / GPIB-Ethernet adapter:
+    ``PROLOGIX::<COM port or host[:port]>::<GPIB address>``.
+
+    The adapter runs as controller without read-after-write (``++auto 0``).  Before
+    each transfer it is pointed at this instrument (``++addr``, and ``++eos`` for its
+    write termination) if it was not already; data is escaped, and a read is an
+    explicit ``++read eoi``.  So the instruments behind one adapter can interleave
+    their transfers (each under the bus lock) without misdirected traffic."""
+
+    def __init__(self, address, options):
+        super().__init__(address, options)
+        bus, self.gpib = split_gpib(address)
+        with _LINKS_LOCK:
+            self.link = _LINKS.get(bus) or _LINKS.setdefault(bus, _PrologixLink(bus, options))
+        term = self.write_termination or ""
+        self.eos = _EOS.get(term, 3)
+        self.suffix = b"" if term in _EOS else term.encode(self.encoding)
+        self._open = False
+
+    def open(self):
+        with _LINKS_LOCK:
+            self.link.users += 1
+        self._open = True
+
+    def close(self):
+        if not self._open:
+            return
+        self._open = False
+        with _LINKS_LOCK:
+            self.link.users -= 1
+            last = self.link.users <= 0
+        if last:
+            self.link.broken()
+
+    def _port(self) -> PortBackend:
+        if not self._open:
+            raise ResourceError("%s is not open" % self.address)
+        link = self.link
+        try:
+            port = link.get()
+            if link.target != (self.gpib, self.eos):
+                port.clear()                      # what another instrument left unread
+                port.write_raw(b"++addr %d\n++eos %d\n" % (self.gpib, self.eos))
+                link.target = (self.gpib, self.eos)
+        except ResourceError:
+            link.broken()
+            raise
+        port.set_timeout(self.timeout)
+        port.read_termination = self.read_termination
+        port.encoding = self.encoding
+        return port
+
+    def _io(self, fn):
+        port = self._port()
+        try:
+            return fn(port)
+        except ResourceError:
+            self.link.broken()
+            raise
+
+    def write_raw(self, data):
+        term = (self.write_termination or "").encode(self.encoding)
+        if self.eos != 3 and term and data.endswith(term):
+            data = data[:-len(term)]              # the adapter appends it (++eos)
+        out = bytearray()
+        for b in data:
+            if b in _ESCAPED:
+                out.append(0x1B)
+            out.append(b)
+        self._io(lambda p: p.write_raw(bytes(out) + b"\n"))
+
+    def read_raw(self, size=None):
+        def rd(p):
+            if not p.pending():                   # else: the next line of a reply
+                p.write_raw(b"++read eoi\n")
+            return p.read_raw(size)
+        return self._io(rd)
+
+    def clear(self):
+        """A selected device clear (``++clr``), and the adapter's input dropped."""
+        def clr(p):
+            p.write_raw(b"++clr\n")
+            p.clear()
+        self._io(clr)
+
+
 def _backend_for(address: str, options: dict) -> PortBackend:
     a = address.strip()
     up = a.upper()
@@ -561,6 +750,8 @@ def _backend_for(address: str, options: dict) -> PortBackend:
     if up.startswith("SIM::"):
         from ..drivers.simbus import SimPortBackend  # local import avoids a cycle
         return SimPortBackend(a, options)
+    if up.startswith("PROLOGIX::"):
+        return PrologixBackend(a, options)
     if up.startswith("DAQ::"):
         return NullBackend(a, options)           # the driver talks to NI-DAQmx itself
     if up.startswith("TCP::"):
@@ -583,7 +774,7 @@ def normalize_address(address: Optional[str]) -> str:
         return up
     if up.startswith("DAQ::"):
         return "DAQ::" + a[5:]                   # device names are case sensitive
-    if up.startswith(("GPIB", "USB", "TCPIP", "ASRL", "TCP::", "SIM::")):
+    if up.startswith(("GPIB", "USB", "TCPIP", "ASRL", "TCP::", "SIM::", "PROLOGIX::")):
         # VISA addresses are case-insensitive in the prefix; keep the remainder
         head, sep, rest = a.partition("::")
         return head.upper() + sep + rest
@@ -605,13 +796,11 @@ class Resource:
         self._backend: Optional[PortBackend] = None
         self._generation = 0
         self._state_lock = threading.Lock()
-        self._selectors: Dict[str, Callable[["Resource"], None]] = {}
-        self._last_owner: Optional[str] = None
         self.lock_timeout = float(options.get("lock_timeout", 30.0))
         self.stats = {"opens": 0, "errors": 0, "invalidations": 0}
         #: a GPIB card: every transfer takes its turn (the time waited for it is not
         #: the instrument's: it does not count against a call's deadline)
-        self.bus = bus_of(address, options)
+        self.bus = bus_of(address)
         self.bus_lock = bus_lock(self.bus) if self.bus else None
         self.bus_wait = float(options.get("bus_wait", 60.0))
 
@@ -633,19 +822,10 @@ class Resource:
                 self._backend = be
                 self._generation += 1
                 self.stats["opens"] += 1
-                self._last_owner = None  # force re-select after reopen
         if stale:
             _close_in_background(be, self.address)
             raise ResourceError("port %s was invalidated while it was being opened" % self.address)
         log.debug("opened resource %s (generation %d)", self.address, self._generation)
-        # if the port was reopened in the middle of a transaction on a shared bus,
-        # re-select the current owner so traffic is not misdirected
-        owner = self.lock.owner_tag
-        if self.shared and owner is not None and self.lock.held_by_me():
-            sel = self._selectors.get(owner)
-            if sel is not None:
-                self._last_owner = owner
-                sel(self)
         return be
 
     def close(self) -> None:
@@ -666,13 +846,6 @@ class Resource:
         return self._backend is not None
 
     # -- arbitration ----------------------------------------------------------
-    def set_selector(self, owner: str, selector: Optional[Callable[["Resource"], None]]) -> None:
-        """Register a callback run whenever *owner* takes over the shared port."""
-        if selector is None:
-            self._selectors.pop(owner, None)
-        else:
-            self._selectors[owner] = selector
-
     def transaction(self, owner: str, timeout: Optional[float] = None) -> "_Transaction":
         return _Transaction(self, owner, self.lock_timeout if timeout is None else timeout)
 
@@ -801,17 +974,6 @@ class _Transaction:
         if not self.res.lock.acquire(self.timeout, tag=self.owner):
             raise ResourceBusyError("timeout waiting for resource %s (held by %s)"
                                     % (self.res.address, self.res.lock.owner_tag))
-        try:
-            if self.res.shared and self.res._last_owner != self.owner:
-                sel = self.res._selectors.get(self.owner)
-                if sel is not None:
-                    self.res._ensure_open()        # may already re-select on reopen
-                    if self.res._last_owner != self.owner:
-                        sel(self.res)
-                self.res._last_owner = self.owner
-        except BaseException:
-            self.res.lock.release()
-            raise
         return self.res
 
     def __exit__(self, exc_type, exc, tb):
@@ -883,7 +1045,6 @@ class ResourceManager:
     def release(self, res: Resource, owner: str) -> None:
         with self._lock:
             res.owners.discard(owner)
-            res.set_selector(owner, None)
             if res.owners:
                 return
             for k, v in list(self._resources.items()):

@@ -8,14 +8,16 @@ import pytest
 
 from easymeasure.common.errors import ChannelError, LimitError
 from easymeasure.drivers.emulators import SCPIEmulator, compile_pattern, split_args
+from easymeasure.backend.resources import split_gpib
 from easymeasure.drivers.simbus import get_bus
 
 HW = ["keithley2400", "keysight_b2901", "keysight_b2902", "sr830", "hp34401a", "ni6211", "ni63xx", "cygnus16430",
       "yokogawa7651", "hp4145", "e8358a"]
 
 
-def emu(address: str, addr: int = 0):
-    return get_bus(address.split("::", 1)[1]).devices[addr]
+def emu(address: str):
+    bus, addr = split_gpib(address)
+    return get_bus(bus.split("::", 1)[1]).devices[addr]
 
 
 def clean(e):
@@ -442,15 +444,16 @@ def test_ni6211_without_ni_software(backend):
 
 
 def test_drivers_on_one_gpib_bus(backend):
-    """Several instruments behind one shared Prologix-style GPIB adapter."""
+    """Several instruments on one (simulated) GPIB bus, each at its address."""
     be = backend
-    be.add_instrument("smu", "keithley2400", "SIM::gpib", {"gpib_addr": 24, "shared": True,
-                                                         "load_ohm": 100.0})
-    be.add_instrument("dmm", "hp34401a", "SIM::gpib", {"gpib_addr": 22, "shared": True})
-    be.add_instrument("li", "sr830", "SIM::gpib", {"gpib_addr": 8, "shared": True})
+    be.add_instrument("smu", "keithley2400", "SIM::gpib::24", {"load_ohm": 100.0})
+    be.add_instrument("dmm", "hp34401a", "SIM::gpib::22")
+    be.add_instrument("li", "sr830", "SIM::gpib::8")
     for n in ("smu", "dmm", "li"):
         assert be.instruments.get(n).state == "connected", be.instruments.get(n).last_error
-    assert len(be.list_resources()) == 1
+    res = be.list_resources()
+    assert len(res) == 3 and len({be.instruments.get(n).resource.bus_lock
+                                  for n in ("smu", "dmm", "li")}) == 1
     be.define_alias(name="V", target="smu.voltage")
     be.write_channel("smu.Icompliance", 0.01)
     be.write_channel("smu.output", "ON")
@@ -460,7 +463,7 @@ def test_drivers_on_one_gpib_bus(backend):
         assert be.read_channel("dmm.Vdc") == pytest.approx(1.234567, rel=1e-4)
         assert be.read_channel("li.theta") == pytest.approx(30.0)
     for a in (24, 22, 8):
-        assert clean(emu("SIM::gpib", a))
+        assert clean(emu("SIM::gpib::%d" % a))
 
 
 def test_example_hardware_setup_and_iv_sweep(backend):
@@ -802,3 +805,39 @@ def test_hp4145_iv_sweep(pa):
     ds = DataSet.load(item["path"])
     np.testing.assert_allclose(ds.data["Id"], np.linspace(-1, 1, 11) / 1000, rtol=1e-4, atol=1e-9)
     assert emu("SIM::pa").smu[1].mode is None
+
+
+def test_instruments_behind_a_prologix_adapter(backend):
+    """PROLOGIX::<host:port>::<addr>: the transport points the adapter at each
+    instrument (++addr, ++eos) before its transfers, escapes the data and reads with
+    ++read eoi; the drivers know nothing about the adapter."""
+    from easymeasure.drivers.hp34401a import DRIVER as DMM
+    from easymeasure.drivers.simbus import PrologixServer, attach_device
+    from easymeasure.drivers.yokogawa7651 import DRIVER as YK
+    yk, dmm = YK.EMULATOR({}), DMM.EMULATOR({})
+    attach_device("PX", 3, yk)
+    attach_device("PX", 22, dmm)
+    px = PrologixServer("PX")
+    try:
+        be = backend
+        where = "PROLOGIX::127.0.0.1:%d" % px.port
+        be.add_instrument("yk", "yokogawa7651", where + "::3")
+        be.add_instrument("dmm", "hp34401a", where + "::22")
+        for n in ("yk", "dmm"):
+            assert be.instruments.get(n).state == "connected", be.instruments.get(n).last_error
+        a, b = be.instruments.get("yk").resource, be.instruments.get("dmm").resource
+        assert a is not b and a.bus_lock is b.bus_lock and a.bus == where
+        assert "++mode 1" in px.log and "++auto 0" in px.log and "++ver" in px.log
+        for i in range(5):                        # interleaved: each goes to its own address
+            be.write_channel("yk.voltage", 0.1 * i, ramp=False)
+            assert be.read_channel("dmm.Vdc") == pytest.approx(1.234567, rel=1e-4)
+            assert yk.value == pytest.approx(0.1 * i)
+        assert "++addr 3" in px.log and "++addr 22" in px.log and "++read eoi" in px.log
+        assert "R3S+1E-1E" in yk.log or "S+1E-1E" in yk.log   # "+" arrived unescaped
+        assert yk.errors == [] and clean(dmm)
+        assert be.read_channel("yk.Icompliance") == pytest.approx(0.12)   # 5-line OS reply
+        be.reconnect_instrument("yk")             # the adapter link stays for the dmm
+        assert be.read_channel("dmm.Vdc") == pytest.approx(1.234567, rel=1e-4)
+        assert be.instruments.get("yk").state == "connected"
+    finally:
+        px.close()

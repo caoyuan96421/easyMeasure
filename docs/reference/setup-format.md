@@ -17,7 +17,7 @@ It is saved as JSON (`save_setup`), loaded with `load_setup` or
 {
   "format": "easyMeasure-setup-1",
   "instruments": [
-    {"name": "src", "driver": "sim_source", "address": "SIM::GPIB0", "options": {"gpib_addr": 1}},
+    {"name": "src", "driver": "sim_source", "address": "SIM::GPIB0::1", "options": {}},
     {"name": "smu", "driver": "keithley2400", "address": "GPIB0::24::INSTR",
      "options": {"call_timeout": 20, "verify_writes": true}}
   ],

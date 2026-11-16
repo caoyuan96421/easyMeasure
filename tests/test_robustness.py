@@ -134,8 +134,8 @@ def test_monitor_survives_chaos(faulty):
 
 def test_hung_instrument_during_sweep(backend):
     be = backend
-    be.add_instrument("src", "sim_source", "SIM::H1", {"gpib_addr": 1, "call_timeout": 0.5})
-    be.add_instrument("dmm", "sim_dmm", "SIM::H1", {"gpib_addr": 2, "call_timeout": 0.5,
+    be.add_instrument("src", "sim_source", "SIM::H1::1", {"call_timeout": 0.5})
+    be.add_instrument("dmm", "sim_dmm", "SIM::H1::2", {"call_timeout": 0.5,
                                                     "gate": "src.V1", "bias": "src.V2"})
     be.define_alias(name="Vg", target="src.V1", min=-1, max=1)
     be.define_alias(name="I", target="dmm.reading")

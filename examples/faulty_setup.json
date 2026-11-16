@@ -4,9 +4,8 @@
     {
       "name": "src",
       "driver": "sim_source",
-      "address": "SIM::GPIB0",
+      "address": "SIM::GPIB0::1",
       "options": {
-        "gpib_addr": 1,
         "garble_rate": 0.02,
         "error_rate": 0.02,
         "hang_rate": 0.002,
@@ -19,9 +18,8 @@
     {
       "name": "dmm",
       "driver": "sim_dmm",
-      "address": "SIM::GPIB0",
+      "address": "SIM::GPIB0::2",
       "options": {
-        "gpib_addr": 2,
         "garble_rate": 0.05,
         "error_rate": 0.05,
         "nan_rate": 0.02,

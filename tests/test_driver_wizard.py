@@ -74,7 +74,7 @@ def test_check_reports_problems(backend):
 def test_smu_template_on_an_emulated_2400(backend):
     be = backend
     d = template("SCPI source-measure unit", name="wiz_smu")
-    ensure_emulator("SIM::wsmu", 0, lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
+    ensure_emulator("SIM::wsmu", lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
     r = be.wizard_save(d)
     assert r["driver"] == "wiz_smu" and r["path"].endswith("drivers/wiz_smu.py")
     h = be.add_instrument("smu", "wiz_smu", "SIM::wsmu")
@@ -106,7 +106,7 @@ def test_smu_template_on_an_emulated_2400(backend):
 def test_dmm_template_on_an_emulated_34401a(backend):
     be = backend
     d = template("SCPI multimeter", name="wiz_dmm")
-    ensure_emulator("SIM::wdmm", 0, lambda: HP34401Emulator({}))
+    ensure_emulator("SIM::wdmm", lambda: HP34401Emulator({}))
     be.wizard_save(d)
     be.add_instrument("dmm", "wiz_dmm", "SIM::wdmm")
     e = emu("SIM::wdmm")
@@ -207,7 +207,7 @@ def test_line_protocol_scale_vector_map_init_and_shutdown(backend):
 def test_save_reopen_edit_reload_delete(backend):
     be = backend
     d = template("SCPI multimeter", name="wiz_edit")
-    ensure_emulator("SIM::wedit", 0, lambda: HP34401Emulator({}))
+    ensure_emulator("SIM::wedit", lambda: HP34401Emulator({}))
     be.wizard_save(d)
     with pytest.raises(DriverError, match="exists already"):
         be.wizard_save(d)
@@ -238,7 +238,7 @@ def test_save_reopen_edit_reload_delete(backend):
 
 def test_try_reports_per_channel_and_leaves_nothing_behind(backend):
     be = backend
-    ensure_emulator("SIM::wtry", 0, lambda: Keithley2400Emulator({}))
+    ensure_emulator("SIM::wtry", lambda: Keithley2400Emulator({}))
     d = template("SCPI source-measure unit", name="wiz_try")
     d["channels"].append({"name": "bogus", "access": "r", "dtype": "float", "get": ":NOPE?"})
     r = be.wizard_try(d, "SIM::wtry", {"retries": 0, "timeout": 0.3})
@@ -264,7 +264,7 @@ def test_generated_driver_in_a_sweep_after_a_restart_and_extended_by_hand(backen
     from easymeasure.backend.service import Backend
     from easymeasure.backend.storage import DataSet
     be = backend
-    ensure_emulator("SIM::wpers", 0, lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
+    ensure_emulator("SIM::wpers", lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
     d = template("SCPI source-measure unit", name="wiz_persist", idn_match="MODEL 2400")
     be.wizard_save(d)
     assert be.add_instrument("smu", "wiz_persist", "SIM::wpers")["state"] == "connected"
@@ -331,7 +331,7 @@ def test_generic_scpi_template_actions_and_error_queue(backend):
     """The bare template on a real SCPI instrument: actions run, a refused setting
     raises the instrument's own error message, and an unknown query is reported."""
     be = backend
-    ensure_emulator("SIM::wgen", 0, lambda: Keithley2400Emulator({}))
+    ensure_emulator("SIM::wgen", lambda: Keithley2400Emulator({}))
     d = template("Generic SCPI", name="wiz_generic")
     d["channels"] = [
         {"name": "nplc", "access": "rw", "dtype": "float", "config": True, "unit": "PLC",

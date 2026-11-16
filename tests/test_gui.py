@@ -1103,7 +1103,7 @@ def test_driver_wizard_end_to_end(app, gui):
     from easymeasure.drivers.emulators import ensure_emulator
     from easymeasure.drivers.emulators.smu import Keithley2400Emulator
     w, be, _, _ = gui
-    ensure_emulator("SIM::guiwiz", 0, lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
+    ensure_emulator("SIM::guiwiz", lambda: Keithley2400Emulator({"load_ohm": 1000.0}))
     wiz = DriverWizard(w.conn, w)
     wiz.show()
     tp = wiz.pages[0]

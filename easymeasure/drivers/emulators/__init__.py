@@ -7,8 +7,9 @@ command the manual does not define is answered like a real instrument would:
 an entry in the error queue and no reply.  So the tests check the exact command
 strings a driver sends, not just that it "works with itself".
 
-A driver given a ``SIM::<name>`` address attaches its emulator to that simulated
-bus (see :func:`ensure_emulator`), so a setup can be tried out without hardware.
+A driver given a ``SIM::<bus>::<addr>`` address (``SIM::<name>``: address 0)
+attaches its emulator there (see :func:`ensure_emulator`), so a setup can be tried
+out without hardware.
 """
 
 from __future__ import annotations
@@ -17,18 +18,21 @@ import re
 from collections import deque
 from typing import Callable, List, Optional, Tuple
 
+from ...backend.resources import split_gpib
 from ..simbus import FaultInjector, SimDevice, get_bus
 
 
-def ensure_emulator(address: str, addr: int, factory: Callable[[], SimDevice]) -> SimDevice:
-    """Attach an emulator at ``addr`` of the ``SIM::`` bus unless one is there already
-    (an emulated instrument keeps its state across reconnects, like real hardware)."""
-    bus = get_bus(address.split("::", 1)[1])
+def ensure_emulator(address: str, factory: Callable[[], SimDevice]) -> SimDevice:
+    """Attach an emulator at the address of ``SIM::<bus>::<addr>`` unless one is there
+    already (an emulated instrument keeps its state across reconnects, like real
+    hardware)."""
+    name, addr = split_gpib(address)
+    bus = get_bus(name.split("::", 1)[1])
     with bus.lock:
-        dev = bus.devices.get(int(addr))
+        dev = bus.devices.get(addr)
         if dev is None:
             dev = factory()
-            bus.devices[int(addr)] = dev
+            bus.devices[addr] = dev
         return dev
 
 

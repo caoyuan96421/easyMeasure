@@ -56,7 +56,8 @@ class SimDMM(SimBusInstrument):
     ]
     ACTIONS = [ActionSpec("reset", "*RST: default settings (NPLC 1, current mode)"),
                ActionSpec("trigger", "*TRG: start a measurement")]
-    DEFAULT_OPTIONS = dict(gpib_addr=2, gate="src.V1", bias="src.V2", field="magnet.field",
+    SUGGESTED_GPIB = 2
+    DEFAULT_OPTIONS = dict(gate="src.V1", bias="src.V2", field="magnet.field",
                            **FAULT_OPTION_DOC)
 
     def connect(self):

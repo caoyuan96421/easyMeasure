@@ -90,7 +90,8 @@ class InstrumentDialog(QDialog):
         self.address.setMinimumContentsLength(28)
         self.address.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.address.lineEdit().setPlaceholderText(
-            "GPIB0::12::INSTR, COM3, TCP::host::port, DAQ::Dev1, SIM::bus, NONE")
+            "GPIB0::12::INSTR, PROLOGIX::COM4::12, COM3, TCP::host::port, DAQ::Dev1, "
+            "SIM::bus::12, NONE")
         self.address.activated.connect(self._picked)
         self.refresh = QPushButton("Refresh")
         self.refresh.setToolTip("scan the backend computer for ports and devices again")

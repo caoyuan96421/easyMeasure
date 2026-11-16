@@ -4,18 +4,14 @@
     {
       "name": "src",
       "driver": "sim_source",
-      "address": "SIM::GPIB0",
-      "options": {
-        "gpib_addr": 1
-      }
+      "address": "SIM::GPIB0::1",
+      "options": {}
     },
     {
       "name": "dmm",
       "driver": "sim_dmm",
-      "address": "SIM::GPIB0",
-      "options": {
-        "gpib_addr": 2
-      }
+      "address": "SIM::GPIB0::2",
+      "options": {}
     },
     {
       "name": "lockin",

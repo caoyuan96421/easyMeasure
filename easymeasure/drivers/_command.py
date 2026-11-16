@@ -336,7 +336,6 @@ class CommandInstrument(SCPIInstrument):
     # -- connection -------------------------------------------------------------
     def connect(self):
         d = self.DEF
-        self.select(self.resource)
         if d["idn_query"]:
             idn = self.q(d["idn_query"])
             if self.IDN_MATCH and not any(m.upper() in idn.upper() for m in self.IDN_MATCH):

@@ -54,7 +54,7 @@ import re
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..backend.instrument import ActionSpec, ChannelSpec
-from ..backend.resources import GPIB_LIKE
+from ..backend.resources import GPIB_ONLY
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument
 
@@ -92,7 +92,7 @@ def number(value: Decimal) -> str:
 
 class Yokogawa7651(SCPIInstrument):
     DESCRIPTION = "Yokogawa 7651 programmable DC voltage / current source"
-    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: a Prologix GPIB adapter
+    INTERFACES = GPIB_ONLY    # a GPIB card or a Prologix adapter
     ACTIONS = [ActionSpec("zero", "set the output value to 0 (range and output unchanged)")]
     DEFAULT_OPTIONS = dict(SCPIInstrument.DEFAULT_OPTIONS, write_termination="\n",
                            read_termination="\n")
@@ -131,7 +131,6 @@ class Yokogawa7651(SCPIInstrument):
     # -- connection -------------------------------------------------------------------
     def connect(self):
         self.attach_emulator()
-        self.select(self.resource)
         self.w("H1")                              # header in OD: NDCV+1.0000E+0
         self.w("DL0")                             # replies end in CR LF + EOI
         # the first reply: short, so an absent instrument does not hold the bus

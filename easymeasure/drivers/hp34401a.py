@@ -66,7 +66,7 @@ def _is_ac(mode: str) -> bool:
 
 class HP34401A(SCPIInstrument):
     DESCRIPTION = "HP/Agilent 34401A 6.5 digit multimeter (V, I, R; DC and AC)"
-    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
+    INTERFACES = GPIB_LIKE    # GPIB (a card or a Prologix adapter), or its RS-232 port
     IDN_MATCH = ("34401",)
     ACTIONS = [CLEAR_STATUS, ActionSpec("beep", "beep once")]
 

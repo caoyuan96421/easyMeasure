@@ -369,9 +369,6 @@ class Instrument:
         if self.resource is not None:
             self.resource.clear()
 
-    def select(self, resource: Resource) -> None:
-        """For shared ports: make this instrument the active device on the bus."""
-
     def raw_query(self, command: str) -> str:
         """Pass-through query, used by scripts for things not exposed as channels."""
         if self.resource is None:
@@ -616,8 +613,6 @@ class InstrumentHandle:
                 self.driver = self._run(lambda: cls(name, addr, opts), timeout, transaction=False)
             drv = self.driver
             drv.resource = self.resource
-            if self.resource.shared:
-                self.resource.set_selector(self.name, self._make_selector(drv))
             self._run(drv.connect, timeout)
             chans = self._run(drv.get_channels, timeout, transaction=False)
             acts = self._run(drv.get_actions, timeout, transaction=False)
@@ -698,11 +693,6 @@ class InstrumentHandle:
                 cb(self)
             except Exception as exc:
                 log.warning("%s: specs-changed listener failed: %s", self.name, exc)
-
-    def _make_selector(self, drv: Instrument):
-        def _sel(res: Resource):
-            drv.select(res)
-        return _sel
 
     def disconnect(self, release: bool = True, hold: bool = False) -> None:
         """Disconnect; *release* closes the port (if no other instrument shares it),

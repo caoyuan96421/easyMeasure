@@ -73,7 +73,7 @@ from typing import List, Optional, Tuple
 
 from ..backend.instrument import ActionSpec, ChannelSpec
 from ..backend.logsys import get_logger
-from ..backend.resources import GPIB_LIKE
+from ..backend.resources import GPIB_ONLY
 from ..common.errors import ChannelError
 from ._scpi import SCPIInstrument
 
@@ -124,10 +124,10 @@ def _vcomp_max(i: float) -> float:
 
 class HP4145(SCPIInstrument):
     DESCRIPTION = "HP 4145A/B (or 4155/4156 in its 4145 command set) parameter analyzer, user mode"
-    INTERFACES = GPIB_LIKE    # GPIB; COM / TCP: RS-232 where it has one, or a Prologix GPIB adapter
+    INTERFACES = GPIB_ONLY    # a GPIB card or a Prologix adapter (no RS-232)
     ACTIONS = [ActionSpec("disable_all", "every SMU and voltage source off (DV1 … DV4, DS1, DS2)")]
     DEFAULT_OPTIONS = {"timeout": 10.0, "read_termination": "\n", "write_termination": "\r\n",
-                       "gpib_addr": None, "identify_timeout": 2.0, "command_set": "HP4145",
+                       "identify_timeout": 2.0, "command_set": "HP4145",
                        "smus": [1, 2, 3, 4], "vs_vm": True}
 
     @staticmethod
@@ -185,7 +185,6 @@ class HP4145(SCPIInstrument):
     # -- connection ---------------------------------------------------------------------
     def connect(self):
         self.attach_emulator()
-        self.select(self.resource)
         cs = str(self.options["command_set"]).upper()
         if cs not in COMMAND_SETS:
             raise ChannelError("option command_set: %s or %s" % COMMAND_SETS)

@@ -496,7 +496,7 @@ class FinishPage(_Page):
         self.problems.setWordWrap(True)
         self.address = QLineEdit()
         self.address.setPlaceholderText("GPIB0::12::INSTR, TCPIP0::192.168.1.5::inst0::INSTR, "
-                                        "COM3, TCP::host::5025, SIM::bus …")
+                                        "PROLOGIX::COM4::12, COM3, TCP::host::5025, SIM::bus::12 …")
         self.try_btn = QPushButton("Try it")
         self.try_btn.clicked.connect(self._try)
         self.results = QTableWidget(0, 3)

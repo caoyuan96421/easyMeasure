@@ -385,7 +385,7 @@ export class SetupPanel {
       { key: "driver", label: "Driver", type: "select", options: names, value: first,
         onChange: (el, inp) => { inp.info.textContent = desc(el.value); if (!inst) inp.options.value = optsFor(el.value); } },
       { key: "info", label: "", type: "info", value: desc(first) },
-      { key: "address", label: "Address", value: inst ? inst.address : "NONE", placeholder: "GPIB0::12::INSTR, COM3, TCP::host::port, SIM::bus, NONE" },
+      { key: "address", label: "Address", value: inst ? inst.address : "NONE", placeholder: "GPIB0::12::INSTR, PROLOGIX::COM4::12, COM3, TCP::host::port, SIM::bus::12, NONE" },
       { key: "options", label: "Options (JSON)", type: "textarea", rows: 8,
         value: inst ? JSON.stringify(toJSONable(inst.options || {}), null, 2) : optsFor(first) },
     ], { wide: true, validate: (v) => {

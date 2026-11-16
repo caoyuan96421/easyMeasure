@@ -39,28 +39,18 @@ class SCPIInstrument(Instrument):
 
     Subclasses set ``IDN_MATCH`` (any of these substrings must occur in ``*IDN?``,
     case-insensitively) and ``EMULATOR`` (a factory for the ``SIM::`` emulator).
-
-    Option ``gpib_addr`` (with ``shared`` = true): the instrument sits behind a
-    Prologix-style GPIB adapter together with others; ``++addr N`` selects it.
     """
 
     IDN_MATCH: Sequence[str] = ()
     EMULATOR: Optional[Callable] = None
     INTERFACES = BYTE_PORTS
     DEFAULT_OPTIONS = {"timeout": 5.0, "reset": False, "check_errors": True,
-                       "read_termination": "\n", "write_termination": "\n", "gpib_addr": None,
+                       "read_termination": "\n", "write_termination": "\n",
                        "identify_timeout": 2.0}
 
     idn = ""
 
     # -- connection -----------------------------------------------------------
-    def select(self, resource) -> None:
-        """Shared port behind a Prologix GPIB-USB/Ethernet adapter: with option
-        ``gpib_addr`` the adapter is pointed at this instrument before each use."""
-        a = self.options["gpib_addr"]
-        if a is not None:
-            resource.write("++addr %d" % int(a))
-
     @classmethod
     def suggested_addresses(cls, driver_name: str):
         out = super().suggested_addresses(driver_name)
@@ -71,12 +61,10 @@ class SCPIInstrument(Instrument):
     def attach_emulator(self) -> None:
         if self.address.upper().startswith("SIM::") and self.EMULATOR is not None:
             from .emulators import ensure_emulator
-            ensure_emulator(self.address, int(self.options["gpib_addr"] or 0),
-                            lambda: self.EMULATOR(self.options))
+            ensure_emulator(self.address, lambda: self.EMULATOR(self.options))
 
     def identify(self) -> str:
         self.attach_emulator()
-        self.select(self.resource)
         # short: an instrument that is not there must not hold a shared bus for long
         with self.resource.timeout_for(float(self.options["identify_timeout"])):
             idn = self.resource.query("*IDN?").strip()

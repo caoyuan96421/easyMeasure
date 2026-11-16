@@ -126,22 +126,31 @@ hang, disconnect and raise random exceptions, plus a deliberately pathological
 ## Concepts
 
 ### Resources (`backend/resources.py`)
-Every physical port (`COM3`, `GPIB0::12::INSTR`, `USB0::…`, `TCPIP0::…`,
-`TCP::host::port`, `DAQ::Dev1`, simulated `SIM::bus`, or `NONE`) is represented by exactly
-one `Resource`. A second instrument asking for an exclusively owned port is
+Every port (`COM3`, `GPIB0::12::INSTR`, `PROLOGIX::COM4::12`, `USB0::…`, `TCPIP0::…`,
+`TCP::host::port`, `DAQ::Dev1`, simulated `SIM::bus::12`, or `NONE`) is represented by
+exactly one `Resource`. A second instrument asking for an exclusively owned port is
 refused. Ports declared `shared` (an instrument option, or a driver default) are
 arbitrated: each I/O sequence runs inside a transaction holding a fair,
-re-entrant lock; when ownership changes the new owner's `select()` runs (e.g.
-`++addr 5` on a Prologix GPIB adapter). The measurement thread gets priority
-over monitor/GUI traffic, so monitoring never slows a sweep down.
+re-entrant lock. The measurement thread gets priority over monitor/GUI traffic, so
+monitoring never slows a sweep down.
+
+**GPIB addressing is the transport's job.** The GPIB address is part of the address
+string, so every GPIB instrument has its own resource and drivers know nothing
+about how the bus is reached. The instruments on one bus (a GPIB card `GPIB0`, a
+Prologix adapter `PROLOGIX::COM4`, a simulated bus `SIM::lab`) take turns per
+transfer. Behind a Prologix GPIB-USB (`PROLOGIX::COM4::12`) or GPIB-Ethernet
+(`PROLOGIX::192.168.1.50::12`) adapter, the transport points the adapter at the
+instrument (`++addr`, `++eos`) before its transfers, escapes the data and reads with
+`++read eoi`.
 
 Every address belongs to one **interface**: `gpib`, `usb` (USB-TMC), `tcpip` (VISA
 LAN), `tcp` (raw socket), `serial`, `daq` (NI-DAQmx), `sim`, `none` or `other`
 (other VISA types). Each driver lists the interfaces it accepts
 (`Instrument.INTERFACES`, shown by `list_drivers`); an address of another interface
 is refused when the instrument is added or changed. The GPIB instruments accept
-`gpib`, `serial` and `tcp` (RS-232 where they have one, or a Prologix GPIB-USB /
-GPIB-Ethernet adapter), the Keysight B2900 also USB and LAN, the NI DAQs `daq`, the
+`gpib` (a card or a Prologix adapter), and `serial` and `tcp` where they have RS-232
+(the HP 4145 and the Yokogawa 7651 do not), the Keysight B2900 also USB and LAN, the
+NI DAQs `daq`, the
 simulated instruments `sim` or `none`; Driver Wizard drivers take what the wizard's
 *Interfaces* boxes say.
 
@@ -635,10 +644,11 @@ sees `aoK`, each digital line is wired to the one half a port away.
 **Common options.** `reset` (`*RST` on connect), `check_errors` (read the error queue
 after every setting so a refused value raises an error with the instrument's own
 message, default on), `verify_writes` (SMUs: read every source value back — worth it
-on RS-232), `gpib_addr` + `shared` (several instruments behind one Prologix GPIB
-adapter: `++addr N` selects each), `timeout`, `read_termination`.
+on RS-232), `identify_timeout` (the first reply on connect, 2 s), `timeout`,
+`read_termination`.
 
-**Without hardware.** Give a SCPI driver a `SIM::<name>` address and it talks to a
+**Without hardware.** Give a SCPI driver a `SIM::<name>` address (or
+`SIM::<bus>::<GPIB address>` to put several on one simulated bus) and it talks to a
 built-in emulator of the instrument (`ni6211`, `ni63xx`: `DAQ::SIM`). The emulators implement
 the instruments' command tables from their programming manuals (short/long SCPI
 forms, optional nodes, error queue, `*ESR?`), physics good enough to see something

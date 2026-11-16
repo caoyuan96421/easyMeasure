@@ -1,6 +1,6 @@
 """Simulated 4-channel DC voltage source speaking SCPI over a ``SIM::`` bus.
 
-Address: ``SIM::<bus>`` (several instruments can share a bus; set ``gpib_addr``).
+Address: ``SIM::<bus>::<GPIB address>`` (several instruments share a bus).
 Outputs are published into the simulated world as ``<instrument>.V1`` etc. so
 simulated detectors respond to them.
 """
@@ -49,7 +49,8 @@ class SimVoltageSource(SimBusInstrument):
         ChannelSpec("idn", "r", "str", (), "", "identification string", config=True),
     ]
     ACTIONS = [ActionSpec("clear_status", "*CLS: clear the error queue")]
-    DEFAULT_OPTIONS = dict(gpib_addr=1, **FAULT_OPTION_DOC)
+    SUGGESTED_GPIB = 1
+    DEFAULT_OPTIONS = dict(**FAULT_OPTION_DOC)
 
     def connect(self):
         self.device = get_or_create_device(

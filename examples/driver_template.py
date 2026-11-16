@@ -49,10 +49,6 @@ class MyPowerSupply(Instrument):
     def disconnect(self):
         pass
 
-    # for shared ports: called whenever this instrument takes over the bus
-    # def select(self, resource):
-    #     resource.write("++addr %d" % self.options["gpib_addr"])
-
     def _action_reset(self):
         self.resource.write("*RST")
 

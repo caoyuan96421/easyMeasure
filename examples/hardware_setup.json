@@ -1,6 +1,6 @@
 {
   "format": "easyMeasure-setup-1",
-  "comment": "The hardware drivers on their built-in emulators. For real instruments replace the SIM:: / DAQ::SIM addresses, e.g. GPIB0::24::INSTR, USB0::0x2A8D::0x9201::MY12345678::INSTR, DAQ::Dev1.",
+  "comment": "The hardware drivers on their built-in emulators. For real instruments replace the SIM:: / DAQ::SIM addresses, e.g. GPIB0::24::INSTR, PROLOGIX::COM4::24, USB0::0x2A8D::0x9201::MY12345678::INSTR, DAQ::Dev1.",
   "instruments": [
     {
       "name": "smu",

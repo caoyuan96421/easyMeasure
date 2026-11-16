@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 import numpy as np
 
 from ..backend.instrument import Instrument
+from ..backend.resources import split_gpib
 from .simbus import FaultInjector, SimDevice, attach_device
 
 #: devices persist across driver re-creation (like real hardware keeps its state)
@@ -41,30 +42,27 @@ class SimBusInstrument(Instrument):
     """Base for simulated instruments that talk SCPI over a ``SIM::`` port."""
 
     INTERFACES = ("sim",)
+    #: the GPIB address suggested on the simulated bus
+    SUGGESTED_GPIB = 1
 
     @classmethod
     def suggested_addresses(cls, driver_name: str):
-        return [{"address": "SIM::GPIB0", "description": "simulated GPIB bus (shared)"}]
-
-    SHARED_RESOURCE = True
+        return [{"address": "SIM::GPIB0::%d" % cls.SUGGESTED_GPIB,
+                 "description": "simulated GPIB bus"}]
 
     def bus_name(self) -> str:
         if not self.address.upper().startswith("SIM::"):
-            raise ValueError("%s needs a SIM::<bus> address" % type(self).__name__)
-        return self.address.split("::", 1)[1]
+            raise ValueError("%s needs a SIM::<bus>::<addr> address" % type(self).__name__)
+        return split_gpib(self.address)[0].split("::", 1)[1]
 
     @property
     def gpib_addr(self) -> int:
-        return int(self.options.get("gpib_addr", 0))
+        return split_gpib(self.address)[1]
 
     def faults(self) -> FaultInjector:
         return FaultInjector(self.options)
 
-    def select(self, resource):
-        resource.write("++addr %d" % self.gpib_addr)
-
     def connect(self):
-        self.resource.write("++addr %d" % self.gpib_addr)
         idn = self.resource.query("*IDN?")
         if not idn or "," not in idn:
             raise IOError("unexpected *IDN? reply %r" % idn)

@@ -411,10 +411,11 @@ class Backend:
     def add_instrument(self, name: str, driver: str, address: str = "NONE",
                        options: Optional[dict] = None, connect: bool = True) -> dict:
         """Add an instrument: a *name* of your choice, a *driver* from
-        :meth:`list_drivers`, an *address* (``GPIB0::12::INSTR``, ``COM3``, ``TCPIP0::…``,
-        ``DAQ::Dev1``, ``SIM::…``, ``NONE``) and driver *options*.  With *connect* it is
-        connected at once; a failed connection is reported in the returned description
-        (``state``, ``last_error``) and retried on demand."""
+        :meth:`list_drivers`, an *address* (``GPIB0::12::INSTR``, ``PROLOGIX::COM4::12``,
+        ``COM3``, ``TCPIP0::…``, ``DAQ::Dev1``, ``SIM::<bus>::<addr>``, ``NONE``) and driver
+        *options*.  With *connect* it is connected at once; a failed connection is
+        reported in the returned description (``state``, ``last_error``) and stays so
+        until :meth:`reconnect_instrument`."""
         self.channels.claim(name, "instrument")
         h = self.instruments.add(name, driver, address, options or {}, connect=connect)
         self._changed("instruments")
