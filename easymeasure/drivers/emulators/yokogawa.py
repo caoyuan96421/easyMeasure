@@ -177,7 +177,7 @@ class Yokogawa7651Emulator(SimDevice):
         return abs(self.value) * self.load > self.lv + 1e-12
 
     def _number(self) -> str:
-        mant, exp = ("%+.4E" % self.value).split("E")
+        mant, exp = ("%+.5E" % self.value).split("E")   # 5½ digits: ±120000 counts
         return "%sE%+d" % (mant, int(exp))
 
     def _od(self) -> str:

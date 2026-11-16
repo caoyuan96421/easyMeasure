@@ -15,6 +15,7 @@ python -m pytest -q tests/test_composites.py -k loops     # one file / test
 | `test_channels.py`, `test_composites.py` | limits, ramp rates, scaling; composite writes, reads, mappings, nesting, loops |
 | `test_sweep.py` | N-D sweeps with vector and image data, mappings, hooks, flow control, abort / pause |
 | `test_storage.py` | crash recovery of truncated or corrupted files, disk failure during a sweep, HDF5 |
+| `test_gpib_faults.py` | four instruments on one GPIB bus while one is switched off, stops answering or blocks the bus: the others keep working; Disconnect / Remove at once; sweeps that use the failed instrument or not |
 | `test_robustness.py` | scripts (including an un-cooperative infinite loop), a frozen client, a SIGKILLed frontend, a backend restart under a live GUI |
 | `test_server.py` | the protocol, events, many clients |
 | `test_drivers.py`, `test_cygnus.py`, `test_ni63xx.py` | every hardware driver against its emulator |

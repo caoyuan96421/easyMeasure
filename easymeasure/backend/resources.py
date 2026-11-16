@@ -857,6 +857,11 @@ class Resource:
     def _io(self) -> PortBackend:
         if not self.lock.held_by_me():
             raise ResourceError("I/O on %s outside of a transaction" % self.address)
+        sink = getattr(_TLS, "sink", None)
+        if sink is not None and getattr(sink, "abandoned", False):
+            # a call that was cut off (Disconnect, or past its deadline) may go on
+            # running in its driver: it never reaches the port again, nor reopens it
+            raise ResourceError("%s: the call was cut off" % self.address)
         return self._ensure_open()
 
     @contextlib.contextmanager
@@ -882,7 +887,17 @@ class Resource:
         try:
             yield
         finally:
-            lk.release()
+            try:
+                lk.release()
+            except RuntimeError:
+                pass                    # freed already: its call was cut off
+
+    def free_bus(self) -> None:
+        """Free the bus if this port holds it (its call was cut off: the transfer is
+        aborted by closing the port, and the cut-off thread does no more I/O)."""
+        lk = self.bus_lock
+        if lk is not None and lk.locked and lk.owner_tag == self.address:
+            lk.force_release()
 
     @contextlib.contextmanager
     def _timed(self):

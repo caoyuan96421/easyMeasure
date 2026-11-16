@@ -45,6 +45,12 @@ The new instrument appears in the list with its state:
 | `error` | could not be reached. The *Last error* column says why |
 | `hung` | a call did not return within its deadline |
 
+**Disconnect** and **Remove** act at once, whatever the instrument is doing. A call
+in progress (a query waiting for its reply, a wait, a wait for the bus) is cut off,
+and its caller gets "*name* was disconnected" straight away. Calls queued behind it
+are refused. The driver is ended, and the port is closed and released; a transfer
+blocked on it is aborted. A driver that was cut off can no longer reach the port.
+
 **Disconnect** closes the instrument's port, so another program can use it. If
 another instrument shares the port, for example on one GPIB bus, the port stays open
 for that instrument. The instrument then **stays disconnected** until you click

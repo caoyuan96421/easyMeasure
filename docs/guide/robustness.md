@@ -66,6 +66,12 @@ the bus only for that transfer.
   ("no listener"), not after a time-out.
 * The first reply on connect waits only `identify_timeout` (2 s), so an instrument
   that is not there does not hold the bus for long.
+* An instrument that stops in the middle of a transfer holds the bus until its call
+  is cut off at its deadline, or by *Disconnect* (at once). The others wait for the
+  bus meanwhile; they do not fail.
+* A sweep that does not use the failed instrument is not affected. One that does
+  records NaN for it (`on_read_error` = `nan`) or stops (`abort`); a failed set is
+  skipped (`on_set_error` = `skip`) or stops the sweep (`abort`).
 
 ### Guard options
 

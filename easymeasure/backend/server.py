@@ -73,6 +73,8 @@ CONTROL_COMMANDS = {
     "list_clients", "remote_status", "remote_start", "remote_stop", "remote_set_user",
     "remote_remove_user", "list_user_actions", "abort_user_action", "define_user_action",
     "remove_user_action", "move_user_action",
+    # these end an instrument at once, also while every command thread waits on it
+    "disconnect_instrument", "remove_instrument",
 }
 
 

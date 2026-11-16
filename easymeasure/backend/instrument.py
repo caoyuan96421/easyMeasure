@@ -443,6 +443,8 @@ class InstrumentHandle:
         self.driver: Optional[Instrument] = None
         self.resource: Optional[Resource] = None
         self.last_error = ""
+        #: incremented by disconnect(): a call in progress is cut off
+        self._session = 0
         #: called with the handle whenever :attr:`state` changes (keep it quick)
         self.on_state: Optional[Callable[["InstrumentHandle"], None]] = None
         self._state = "disconnected"   # disconnected | connected | error | hung
@@ -541,12 +543,14 @@ class InstrumentHandle:
         res = self.resource
         if res is not None:
             # The hung thread may still hold the port lock: break it and drop the
-            # handle so the stuck thread can't corrupt future traffic.  If it does
-            # NOT hold the lock (hung outside any I/O), another instrument may be in
-            # the middle of a transaction on a shared bus: leave the port alone.
+            # handle so the stuck thread can't corrupt future traffic (it can do no
+            # more I/O: Resource._io).  If it does NOT hold the lock (hung outside any
+            # I/O), another instrument may be in the middle of a transaction on a
+            # shared port: leave the port alone.
             holds = res.lock.locked and res.lock.owner_tag == self.name
             if holds:
                 res.lock.force_release()
+            res.free_bus()
             if holds or not res.shared:
                 res.invalidate(reason)
         # The abandoned thread still references the old driver object; start
@@ -566,9 +570,15 @@ class InstrumentHandle:
 
         job = _Job(job_fn)
         worker = self._get_worker()
+        session = self._session
         worker.jobs.put(job)
         t0 = time.monotonic()
         while not job.done.is_set():
+            if self._session != session:
+                # Disconnect / Remove: the call is cut off at once (its worker is
+                # abandoned by disconnect())
+                job.abandoned = True
+                raise InstrumentNotConnected("%s was disconnected" % self.name)
             # the deadline is for the driver's own time: not while its call waits for
             # the bus (another instrument's transfer on the same GPIB card), nor the
             # transfers themselves up to their time-outs, nor their retries
@@ -718,25 +728,45 @@ class InstrumentHandle:
                 log.warning("%s: specs-changed listener failed: %s", self.name, exc)
 
     def disconnect(self, release: bool = True, hold: bool = False) -> None:
-        """Disconnect; *release* closes the port (if no other instrument shares it),
-        *hold* keeps it disconnected until :meth:`connect` (the user's Disconnect)."""
-        with self._locked():
-            self.held = hold
-            self._needs_reconnect = False
+        """Disconnect at once; *release* closes the port (if no other instrument shares
+        it), *hold* keeps it disconnected until :meth:`connect` (the user's Disconnect).
+
+        Nothing is waited for: a call in progress (a query, a wait, a wait for the
+        bus) is cut off - its caller gets :class:`InstrumentNotConnected` straight
+        away, calls queued behind it are refused - and its worker is abandoned.  The
+        driver's own ``disconnect`` runs only if nothing was cut off, for at most 2 s."""
+        self.held = True                        # what is queued is refused
+        lk = self._call_lock
+        busy = lk.locked and not lk.held_by_me()
+        self._session += 1                      # the call in progress is cut off
+        if busy:
+            self._abandon_worker("disconnected")
+        got = lk.acquire(2.0, tag=self.name)    # the cut-off caller leaves at once
+        try:
             drv = self.driver
-            if drv is not None and self.state in ("connected", "error"):
+            if drv is not None and not busy and self.state in ("connected", "error"):
                 try:
-                    self._run(drv.disconnect, min(self.call_timeout, 5.0))
+                    self._run(drv.disconnect, min(self.call_timeout, 2.0))
                 except Exception as exc:
                     log.warning("instrument %s: error during disconnect: %s", self.name, exc)
             self.state = "disconnected"
-            if release and self.resource is not None:
-                self._resources.release(self.resource, self.name)
-                self.resource = None
+            self._needs_reconnect = False
+            res = self.resource
+            if res is not None:
+                res.free_bus()
+                if release:
+                    self._resources.release(res, self.name)
+                    self.resource = None
             w, self._worker = self._worker, None
             if w is not None:
+                w.abandoned = True
                 w.jobs.put(None)
-            log.info("instrument %s disconnected", self.name)
+            log.info("instrument %s disconnected%s", self.name,
+                     " (a call in progress was cut off)" if busy else "")
+        finally:
+            if got:
+                lk.release()
+            self.held = hold
 
     def reconnect(self) -> None:
         """Disconnect and connect again (the user's Reconnect: ends a Disconnect)."""
@@ -1198,7 +1228,7 @@ class InstrumentManager:
         if h is None:
             raise ChannelError("no instrument %r" % name)
         try:
-            h.disconnect()
+            h.disconnect(hold=True)             # at once: a call in progress is cut off
         except Exception as exc:
             log.warning("error removing %s: %s", name, exc)
 
