@@ -114,6 +114,7 @@ class SR830Panel(Plugin):
                    "LEDs for sensitivity, time constant and the other settings, the keys, "
                    "the reference knob, and a trace of X and Y.")
     VERSION = "1.0"
+    API = "1.0"
     OPTIONS = {"instrument": "", "poll": 0.25, "history": 120.0}
     EVENTS = ("changed", "instrument_state")
 

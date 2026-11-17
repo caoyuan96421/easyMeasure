@@ -54,12 +54,18 @@ starts again, it enables them again, once the setup has been restored.
 ## Where plugins come from
 
 * The plugins that come with easyMeasure.
+* Plugins installed as Python packages (`pip install …` into the backend's
+  environment).
 * The folder `plugins` in the easyMeasure home folder (`~/.easymeasure/plugins` by
   default): one `.py` file, or one folder with an `__init__.py`, per plugin.
 * The folders of the backend setting `plugin_paths`.
 
-The dialog shows these folders at the bottom, and the files that did not load and
-why. [Writing plugins](../scripting/writing-plugins.md) explains how to make one.
+Each plugin says which version of the plugin API it was written for. A plugin made
+for a different major version, or for a newer one than this easyMeasure has, is not
+loaded. The dialog shows the API version of this easyMeasure and these folders at the
+bottom, and the plugins that did not load and why. [Writing
+plugins](../scripting/writing-plugins.md) explains how to make one, and how to
+package it.
 
 ## Safe to switch on and off
 

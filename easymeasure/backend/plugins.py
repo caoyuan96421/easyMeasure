@@ -1,9 +1,12 @@
 """The plugin manager: finds plugins, runs each on its own thread, and ends them.
 
 * **Where plugins come from.** The plugins that come with easyMeasure
-  (:mod:`easymeasure.plugins.builtin`), ``<home>/plugins`` and the folders of the
-  ``plugin_paths`` setting: a ``.py`` file or a folder with ``__init__.py`` each,
-  defining one :class:`~easymeasure.plugins.Plugin` subclass.
+  (:mod:`easymeasure.plugins.builtin`); installed packages that name them under the
+  entry point group ``easymeasure.plugins`` (``pip install …``); ``<home>/plugins``
+  and the folders of the ``plugin_paths`` setting: a ``.py`` file or a folder with
+  ``__init__.py`` each, defining one :class:`~easymeasure.plugins.Plugin` subclass.
+* **Versions.** A plugin declares the plugin API it was written for (``API``); one
+  this easyMeasure cannot run is not loaded, and the Plugins dialog says why.
 * **Its own thread.** Everything of a plugin - ``start``, ``stop``, timers, widget
   callbacks, backend events, the reads and writes of its channels - runs on the
   plugin's thread.  An exception there is logged and shown in the Plugins dialog;
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import heapq
 import importlib
+import importlib.metadata
 import importlib.util
 import inspect
 import itertools
@@ -35,7 +39,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common.errors import ChannelError, EasyMeasureError, InstrumentError
-from ..plugins.api import Action, BackendAPI, Channel, Plugin, PluginStopped, Timer
+from ..plugins.api import (API_VERSION, Action, BackendAPI, Channel, Plugin, PluginStopped,
+                          Timer, api_problem)
 from ..plugins.ui import PluginUI, UIError
 from .instrument import Instrument
 from .logsys import get_logger
@@ -51,13 +56,20 @@ CALL_TIMEOUT = 10.0
 UI_FLUSH = 0.05
 #: backend events waiting for a slow plugin beyond this many are dropped
 MAX_PENDING_EVENTS = 500
+#: the entry point group of installed plugins
+ENTRY_POINTS = "easymeasure.plugins"
 
 
 class PluginInfo:
-    """A plugin that can be enabled: its class and where it came from."""
+    """A plugin that can be enabled: its class and where it came from (*kind*:
+    ``builtin``, ``package`` (an installed one) or ``file``)."""
 
-    def __init__(self, name: str, cls: type, source: str, builtin: bool):
-        self.name, self.cls, self.source, self.builtin = name, cls, source, builtin
+    def __init__(self, name: str, cls: type, source: str, kind: str):
+        self.name, self.cls, self.source, self.kind = name, cls, source, kind
+
+    @property
+    def builtin(self) -> bool:
+        return self.kind == "builtin"
 
     @property
     def title(self) -> str:
@@ -461,9 +473,10 @@ class PluginManager:
             modname = builtin.__name__ + "." + m.name
             try:
                 module = importlib.import_module(modname)
-                self._collect(module, m.name, modname, True, found, errors)
+                self._collect(module, m.name, modname, "builtin", found, errors)
             except Exception:
                 errors[modname] = traceback.format_exc(limit=5)
+        self._scan_packages(found, errors)
         for folder in self.folders():
             try:
                 folder.mkdir(parents=True, exist_ok=True)
@@ -482,7 +495,7 @@ class PluginManager:
                     continue
                 try:
                     module = self._load_file(p.stem if p.is_file() else p.name, src)
-                    self._collect(module, p.stem if p.is_file() else p.name, str(p), False,
+                    self._collect(module, p.stem if p.is_file() else p.name, str(p), "file",
                                   found, errors)
                 except Exception:
                     errors[str(p)] = traceback.format_exc(limit=5)
@@ -491,6 +504,34 @@ class PluginManager:
         for f, e in errors.items():
             log.error("plugin %s failed to load:\n%s", f, e)
         log.info("plugins: %d found, %d failed", len(found), len(errors))
+
+    def _scan_packages(self, found: dict, errors: dict) -> None:
+        """Installed packages naming plugins in their entry points::
+
+            [project.entry-points."easymeasure.plugins"]
+            leakage = "easymeasure_leakage:Leakage"     # a Plugin class, or a module
+
+        An upgraded package is loaded anew when the backend starts again."""
+        try:
+            eps = importlib.metadata.entry_points(group=ENTRY_POINTS)
+        except Exception:
+            errors[ENTRY_POINTS] = traceback.format_exc(limit=3)
+            return
+        for ep in sorted(eps, key=lambda e: e.name):
+            dist = getattr(ep, "dist", None)
+            where = "package %s %s (%s)" % (dist.name, dist.version, ep.value) if dist \
+                else "package (%s)" % ep.value
+            try:
+                obj = ep.load()
+                if inspect.ismodule(obj):
+                    self._collect(obj, ep.name, where, "package", found, errors)
+                elif inspect.isclass(obj) and issubclass(obj, Plugin):
+                    self._add(obj, ep.name, where, "package", found, errors)
+                else:
+                    errors[where] = "the entry point %s is neither a Plugin class nor a module" \
+                        % ep.name
+            except Exception:
+                errors[where] = traceback.format_exc(limit=5)
 
     def _load_file(self, stem: str, src: Path):
         # a fresh module every scan, so an edited plugin is loaded anew
@@ -503,8 +544,8 @@ class PluginManager:
         spec.loader.exec_module(module)       # type: ignore[union-attr]
         return module
 
-    @staticmethod
-    def _collect(module, stem: str, source: str, builtin: bool, found: dict, errors: dict):
+    @classmethod
+    def _collect(cls_, module, stem: str, source: str, kind: str, found: dict, errors: dict):
         cls = getattr(module, "PLUGIN", None)
         if cls is None:
             cands = [c for _, c in inspect.getmembers(module, inspect.isclass)
@@ -519,14 +560,22 @@ class PluginManager:
         if not (inspect.isclass(cls) and issubclass(cls, Plugin)):
             errors[source] = "PLUGIN is not a Plugin subclass"
             return
+        cls_._add(cls, stem, source, kind, found, errors)
+
+    @staticmethod
+    def _add(cls, stem: str, source: str, kind: str, found: dict, errors: dict) -> None:
         name = cls.NAME or stem
         if not name.replace("_", "").isalnum():
             errors[source] = "plugin name %r: letters, digits and _ only" % name
             return
+        problem = api_problem(getattr(cls, "API", ""))
+        if problem:
+            errors[source] = "plugin %s is not loaded: %s" % (name, problem)
+            return
         if name in found:
             errors[source] = "a plugin named %s exists already (%s)" % (name, found[name].source)
             return
-        found[name] = PluginInfo(name, cls, source, builtin)
+        found[name] = PluginInfo(name, cls, source, kind)
 
     # -- enable / disable ------------------------------------------------------------------
     def enable(self, name: str, remember: bool = True) -> dict:
@@ -640,7 +689,9 @@ class PluginManager:
         d = {"name": name, "title": info.title if info else name,
              "description": info.description if info else "",
              "version": getattr(info.cls, "VERSION", "") if info else "",
+             "api": getattr(info.cls, "API", "") if info else "",
              "source": info.source if info else "", "builtin": bool(info and info.builtin),
+             "kind": info.kind if info else "",
              "available": info is not None, "enabled": name in self.enabled_names(),
              "options": self.options_of(name),
              "defaults": dict(getattr(info.cls, "OPTIONS", {}) or {}) if info else {},
@@ -655,7 +706,7 @@ class PluginManager:
     def describe(self) -> dict:
         names = sorted(set(self.available) | set(self.hosts))
         return {"plugins": [self.describe_one(n) for n in names], "errors": dict(self.errors),
-                "folders": [str(p) for p in self.folders()]}
+                "folders": [str(p) for p in self.folders()], "api": API_VERSION}
 
     def _emit_plugins(self) -> None:
         try:

@@ -33,6 +33,40 @@ from ..common.errors import EasyMeasureError
 from .ui import PluginUI
 
 
+#: the version of the plugin API (``easymeasure.plugins``: :class:`Plugin`, its
+#: backend client, :class:`Channel`, :class:`Action` and the widgets of
+#: :mod:`~easymeasure.plugins.ui`), "major.minor".  The minor number grows with
+#: additions, the major number with changes that break plugins.
+API_VERSION = "1.0"
+
+
+def _version(text: str):
+    parts = str(text).strip().split(".")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError("%r is not a version \"major.minor\" (e.g. \"1.0\")" % text)
+    return int(parts[0]), int(parts[1])
+
+
+def api_problem(required) -> str:
+    """Why a plugin written for API *required* cannot run here ("" if it can): the
+    major versions must be equal, and its minor version no newer than this one."""
+    if not required:
+        return ("it does not say which plugin API it was written for: set API = \"%s\" in "
+                "its class" % API_VERSION)
+    try:
+        want = _version(required)
+    except ValueError as exc:
+        return "API: %s" % exc
+    have = _version(API_VERSION)
+    if want[0] != have[0]:
+        return ("it was written for plugin API %s; this easyMeasure has API %s (a different "
+                "major version: it must be updated)" % (required, API_VERSION))
+    if want[1] > have[1]:
+        return ("it needs plugin API %s; this easyMeasure has API %s: update easyMeasure"
+                % (required, API_VERSION))
+    return ""
+
+
 class PluginStopped(EasyMeasureError):
     """The plugin was disabled: it can no longer use the backend."""
 
@@ -165,6 +199,9 @@ class Plugin:
     TITLE = ""
     DESCRIPTION = ""
     VERSION = "1.0"
+    #: the plugin API it was written for, "major.minor" (required): it is loaded only
+    #: if this easyMeasure has the same major version and at least that minor one
+    API = ""
     #: options (name -> default), changed in the Plugins dialog; the plugin is
     #: restarted when they change
     OPTIONS: Dict[str, Any] = {}

@@ -7,16 +7,21 @@ and building its panels from :mod:`easymeasure.plugins.ui`::
 
     class Clock(Plugin):
         TITLE = "Clock"
+        API = "1.0"
 
         def start(self):
             self.ui.add_panel("clock", "Clock", ui.group("Time", ui.seg7("t", digits=8)))
             self.every(1.0, lambda: self.ui.set("t", value=time.strftime("%H-%M-%S")))
 
-The plugins that come with easyMeasure are in :mod:`easymeasure.plugins.builtin`;
-your own go into ``<home>/plugins`` (one ``.py`` file or a folder each).
+A plugin declares the plugin API it was written for (``API = "1.0"``, see
+:data:`API_VERSION`).  The plugins that come with easyMeasure are in
+:mod:`easymeasure.plugins.builtin`; your own go into ``<home>/plugins`` (one ``.py``
+file or a folder each), or into a package installed with pip that names them under
+the entry point group ``easymeasure.plugins``.
 """
 
 from . import ui
-from .api import Action, BackendAPI, Channel, Plugin, PluginStopped, Timer
+from .api import API_VERSION, Action, BackendAPI, Channel, Plugin, PluginStopped, Timer
 
-__all__ = ["Plugin", "Channel", "Action", "BackendAPI", "PluginStopped", "Timer", "ui"]
+__all__ = ["Plugin", "Channel", "Action", "BackendAPI", "PluginStopped", "Timer", "ui",
+           "API_VERSION"]

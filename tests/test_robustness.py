@@ -109,10 +109,21 @@ def test_chaos_channels_never_crash(faulty):
         with pytest.raises(Exception, match="Reconnect it"):
             be.read_channel("chaos_value")
         assert time.monotonic() - t < 0.5
-        be.reconnect_instrument("chaos")
-    # backend alive and responsive
-    assert be.read_channel("chaos_value") is not None
-    be.write_channel("chaos_value", 1.0)
+    # backend alive and responsive.  The chaos driver raises at random on 10 % of its
+    # calls (connect too), so like a user: Reconnect again until it works
+    from easymeasure.common.errors import EasyMeasureError
+    ok = False
+    for _ in range(20):
+        try:
+            if h.state != "connected":
+                be.reconnect_instrument("chaos")
+            assert be.read_channel("chaos_value") is not None
+            be.write_channel("chaos_value", 1.0)
+            ok = True
+            break
+        except EasyMeasureError:
+            pass
+    assert ok
 
 
 def test_monitor_survives_chaos(faulty):

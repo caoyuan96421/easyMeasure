@@ -943,8 +943,9 @@ class PluginDialog(QDialog):
             self.table.selectRow(r)
         self._details()
         errs = self.data.get("errors") or {}
-        self.folders.setText("Plugins are looked for in: %s%s" % (
-            ", ".join(self.data.get("folders") or []),
+        self.folders.setText("Plugin API %s. Plugins are looked for in installed packages and "
+                             "in: %s%s" % (
+            self.data.get("api") or "?", ", ".join(self.data.get("folders") or []),
             ("<br><span style='color:#c0392b'>Not loaded: %s</span>" % ", ".join(errs))
             if errs else ""))
         self.folders.setTextFormat(Qt.RichText)
@@ -958,8 +959,9 @@ class PluginDialog(QDialog):
                                                 (self.data.get("errors") or {}).items()))
             return
         inst = (" · channels: instrument <b>%s</b>" % p["instrument"]) if p.get("instrument") else ""
-        self.about.setText("<b>%s</b> (%s) %s<br>%s%s" % (
-            p["title"], p["name"], p.get("version") or "", p.get("description") or "", inst))
+        self.about.setText("<b>%s</b> (%s) %s · plugin API %s<br>%s%s" % (
+            p["title"], p["name"], p.get("version") or "", p.get("api") or "?",
+            p.get("description") or "", inst))
         self.options.setPlainText(json.dumps(p.get("options") or {}, indent=1, ensure_ascii=False))
         self.options.setEnabled(bool(p.get("defaults")))
         self.apply_opts.setEnabled(bool(p.get("defaults")))

@@ -23,7 +23,7 @@ def write_plugin(home, name, code):
 def register(be, cls, name=None):
     """A plugin class from the test, as if it had been found."""
     name = name or cls.NAME or cls.__name__.lower()
-    be.plugins.available[name] = pm.PluginInfo(name, cls, "test", False)
+    be.plugins.available[name] = pm.PluginInfo(name, cls, "test", "file")
     return name
 
 
@@ -101,12 +101,13 @@ def test_plugins_are_found_and_broken_ones_reported(tmp_path, backend):
         class Hello(Plugin):
             TITLE = "Hello"
             DESCRIPTION = "says hello"
+            API = "1.0"
     """)
     write_plugin(be.home, "broken", "import nothing_here_at_all\n")
     write_plugin(be.home, "twice", """
         from easymeasure.plugins import Plugin
-        class A(Plugin): pass
-        class B(Plugin): pass
+        class A(Plugin): API = "1.0"
+        class B(Plugin): API = "1.0"
     """)
     write_plugin(be.home, "notaplugin", "X = 1\n")
     out = be.rescan_plugins()
@@ -196,6 +197,7 @@ def test_enabled_plugins_and_options_come_back(tmp_path):
     write_plugin(home, "remembered", """
         from easymeasure.plugins import Plugin, Channel
         class R(Plugin):
+            API = "1.0"
             OPTIONS = {"value": 1.0}
             def start(self):
                 self.provide([Channel("v", "r", read=lambda: self.options["value"])])
@@ -451,3 +453,87 @@ def test_sr830_panel_plugin(backend):
     time.sleep(0.2)
     assert be.plugins.describe_one("sr830_panel")["errors"] == 0
     be.disable_plugin("sr830_panel")
+
+
+# ------------------------------------------------------------------ versions --
+def test_plugin_api_versions(backend):
+    from easymeasure.plugins.api import API_VERSION, api_problem
+    major, minor = map(int, API_VERSION.split("."))
+    assert api_problem(API_VERSION) == ""
+    assert api_problem("%d.0" % major) == ""                     # an older minor: fine
+    assert "update easyMeasure" in api_problem("%d.%d" % (major, minor + 1))
+    assert "must be updated" in api_problem("%d.0" % (major + 1))
+    assert "must be updated" in api_problem("%d.0" % (major - 1))
+    assert "does not say" in api_problem("")
+    assert "not a version" in api_problem("1")
+    be = backend
+    for name, api in (("noapi", None), ("future", "%d.%d" % (major, minor + 1)),
+                      ("oldmajor", "%d.0" % (major - 1)), ("current", API_VERSION)):
+        write_plugin(be.home, name, """
+            from easymeasure.plugins import Plugin
+            class P(Plugin):
+                %s
+        """ % ("API = %r" % api if api else "pass"))
+    out = be.rescan_plugins()
+    names = [p["name"] for p in out["plugins"]]
+    assert "current" in names and not {"noapi", "future", "oldmajor"} & set(names)
+    err = {k.rsplit("/", 1)[-1]: v for k, v in out["errors"].items()}
+    assert "set API" in err["noapi.py"]
+    assert "update easyMeasure" in err["future.py"]
+    assert "must be updated" in err["oldmajor.py"]
+    assert out["api"] == API_VERSION
+    cur = [p for p in out["plugins"] if p["name"] == "current"][0]
+    assert cur["api"] == API_VERSION and cur["kind"] == "file"
+    sr = [p for p in out["plugins"] if p["name"] == "sr830_panel"][0]
+    assert sr["kind"] == "builtin" and sr["api"] == API_VERSION
+    with pytest.raises(ChannelError, match="no plugin"):
+        be.enable_plugin("future")
+
+
+def test_installed_plugin_packages(backend, tmp_path, monkeypatch):
+    """A pip-installed package names its plugins under the entry point group
+    easymeasure.plugins: a Plugin class, or a module defining one."""
+    from easymeasure.plugins.api import API_VERSION
+    site = tmp_path / "site"
+    pkg = site / "emplug_demo"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(textwrap.dedent("""
+        from easymeasure.plugins import Plugin, Channel
+        class Greeter(Plugin):
+            TITLE = "Greeter"
+            API = %r
+            def start(self):
+                self.provide([Channel("hello", "r", read=lambda: 42.0)])
+        class Old(Plugin):
+            API = "0.1"
+    """ % API_VERSION))
+    (pkg / "more.py").write_text(textwrap.dedent("""
+        from easymeasure.plugins import Plugin
+        class Second(Plugin):
+            NAME = "second"
+            API = %r
+    """ % API_VERSION))
+    dist = site / "emplug_demo-2.3.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: emplug-demo\nVersion: 2.3\n")
+    (dist / "entry_points.txt").write_text(textwrap.dedent("""
+        [easymeasure.plugins]
+        greeter = emplug_demo:Greeter
+        second = emplug_demo.more
+        old = emplug_demo:Old
+        broken = emplug_demo.nothing_here:X
+        notaplugin = emplug_demo:Channel
+    """))
+    monkeypatch.syspath_prepend(str(site))
+    be = backend
+    out = be.rescan_plugins()
+    ps = {p["name"]: p for p in out["plugins"]}
+    assert ps["greeter"]["kind"] == "package" and "emplug-demo 2.3" in ps["greeter"]["source"]
+    assert ps["greeter"]["title"] == "Greeter" and "second" in ps
+    errs = "\n".join("%s: %s" % kv for kv in out["errors"].items())
+    assert "plugin old is not loaded" in errs and "0.1" in errs
+    assert "nothing_here" in errs
+    assert "neither a Plugin class nor a module" in errs
+    be.enable_plugin("greeter")
+    assert be.read_channel("greeter.hello") == 42.0
+    be.disable_plugin("greeter")

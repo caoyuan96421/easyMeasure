@@ -11,6 +11,7 @@ from easymeasure.plugins import Plugin, Channel, Action, ui
 
 
 class Leakage(Plugin):
+    API = "1.0"                         # the plugin API it was written for
     TITLE = "Leakage watch"
     DESCRIPTION = "The gate leakage, its maximum, and a reset."
     OPTIONS = {"channel": "Ig", "interval": 1.0}
@@ -47,8 +48,9 @@ says otherwise; it is also the name of its instrument.
 
 | attribute | |
 |---|---|
-| `NAME` | identifier (default: the file's name): letters, digits, `_` |
-| `TITLE`, `DESCRIPTION`, `VERSION` | shown in the Plugins dialog |
+| `API` | the plugin API it was written for, e.g. `"1.0"` (required, see [Versions](#versions)) |
+| `NAME` | identifier (default: the file's name, or the entry point's name): letters, digits, `_` |
+| `TITLE`, `DESCRIPTION`, `VERSION` | shown in the Plugins dialog; `VERSION` is the plugin's own version |
 | `OPTIONS` | options and their defaults; the user changes them in the dialog, the plugin reads `self.options`, and is restarted when they change |
 | `EVENTS` | backend events it wants in `on_backend_event`, e.g. `("sweep_point", "instrument_state")`, or `"*"` for everything but log records (name `"log"` to get those); the list is in [Python clients](clients.md#events) |
 
@@ -147,6 +149,60 @@ action, or a point action of a sweep, can run it too.
 They appear as the instrument `<plugin name>`, which the user cannot remove or change,
 and which is not saved with the setup. Its channels are read and written on the
 plugin's thread. An error there fails that call only.
+
+## Versions
+
+The plugin API is everything a plugin uses from `easymeasure.plugins`: the `Plugin`
+class with its backend client and timers, `Channel`, `Action`, and the widgets of
+`ui`. Its version, `easymeasure.plugins.API_VERSION`, is "major.minor":
+
+* the **minor** number grows when something is added (a widget, a property, a
+  method);
+* the **major** number grows when something changes so that plugins must be
+  updated.
+
+A plugin says which API it was written for, with `API = "1.0"`. It is loaded only if
+this easyMeasure has the **same major** version and **at least that minor** one.
+For example, a plugin with `API = "1.0"` runs with API 1.0 and 1.3, but not 2.0. A
+plugin without `API` is not loaded at all. A plugin that is not loaded shows in the
+Plugins dialog with the reason, under *Not loaded*. The dialog also shows the API
+version of the running easyMeasure.
+
+The backend commands a plugin sends through `self.backend.call` are those of the
+[command reference](../reference/index.md); they change with easyMeasure's own
+version.
+
+## Plugins as packages
+
+A plugin can also be an installed Python package, which brings its dependencies with
+it and is updated with `pip`. The package names its plugins in the entry point group
+`easymeasure.plugins` of its `pyproject.toml`:
+
+```toml
+[project]
+name = "easymeasure-leakage"
+version = "1.2.0"
+dependencies = ["easymeasure"]
+
+[project.entry-points."easymeasure.plugins"]
+leakage = "easymeasure_leakage:Leakage"      # a Plugin class
+# or: leakage = "easymeasure_leakage"        # a module that defines one
+```
+
+Install it into the backend's Python environment, then click **Look for plugins
+again** in the Plugins dialog:
+
+```
+pip install easymeasure-leakage
+pip install git+https://github.com/you/easymeasure-leakage
+pip install -e path/to/easymeasure-leakage      # while working on it
+```
+
+The entry point's name is the plugin's name unless the class sets `NAME`. The
+Plugins dialog shows the package and its version under *From*. After upgrading a
+package, restart the backend, because Python keeps the code it has already loaded.
+A plugin file in `~/.easymeasure/plugins`, by contrast, is loaded anew by **Look for
+plugins again**.
 
 ## Testing a plugin
 

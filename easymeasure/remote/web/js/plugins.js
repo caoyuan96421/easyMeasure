@@ -431,7 +431,7 @@ export class PluginHost {
     const details = () => {
       const p = current;
       if (!p) { about.textContent = "No plugins found."; opts.value = ""; err.textContent = Object.entries(data.errors || {}).map(([f, e]) => `${f}:\n${e}`).join("\n\n"); return; }
-      about.replaceChildren(h("b", { text: p.title }), ` (${p.name}) ${p.version || ""}`, h("br"), p.description || "",
+      about.replaceChildren(h("b", { text: p.title }), ` (${p.name}) ${p.version || ""} · plugin API ${p.api || "?"}`, h("br"), p.description || "",
         p.instrument ? h("span", { class: "muted", text: ` · channels: instrument ${p.instrument}` }) : "");
       opts.value = JSON.stringify(p.options || {}, null, 1);
       opts.disabled = !Object.keys(p.defaults || {}).length || !this.conn.can("set_plugin_options");
@@ -445,7 +445,7 @@ export class PluginHost {
       if (current) table.select(current.name);
       details();
       const errs = Object.keys(data.errors || {});
-      folders.textContent = `Plugins are looked for in: ${(data.folders || []).join(", ")}` + (errs.length ? ` · not loaded: ${errs.join(", ")}` : "");
+      folders.textContent = `Plugin API ${data.api || "?"}. Plugins are looked for in installed packages and in: ${(data.folders || []).join(", ")}` + (errs.length ? ` · not loaded: ${errs.join(", ")}` : "");
       this.app.applyPermissions(body);
     };
     const toggle = async (name, on) => {
