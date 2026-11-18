@@ -28,6 +28,8 @@ dependencies = [
 # pure-Python VISA for computers without NI-VISA (LAN, USB-TMC, serial; GPIB needs linux-gpib)
 hardware = ["pyvisa-py>=0.7"]
 test = ["pytest>=7", "pytest-timeout>=2"]
+# Native SHG acquisition, tracking, and pixel/stage calibration.
+shg = ["scipy>=1.10", "Pillow>=9"]
 # browser end-to-end test of the web frontend (then: python -m playwright install chromium)
 webtest = ["playwright>=1.40"]
 # documentation site (mkdocs serve / mkdocs build; published by .github/workflows/docs.yml)
@@ -44,12 +46,14 @@ easymeasure-remote = "easymeasure.remote.__main__:main"
 
 [project.gui-scripts]
 easymeasure = "easymeasure.frontend.__main__:main"
+easymeasure-shg = "shg_addon.launcher:main"
 
 [tool.setuptools.packages.find]
-include = ["easymeasure*"]
+include = ["easymeasure*", "shg_addon*"]
 
 [tool.setuptools.package-data]
 "easymeasure.remote" = ["web/*.html", "web/*.svg", "web/css/*.css", "web/js/*.js", "web/js/panels/*.js"]
+"shg_addon" = ["presets/*.json", "cwt_bank.npz", "diagnostic_bank.npz", "vendor/README.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

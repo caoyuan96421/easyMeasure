@@ -1,0 +1,83 @@
+{
+  "name": "SHG_halfwave_MEMS_z_1s",
+  "dimensions": [
+    {
+      "points": 61,
+      "sweep": [
+        {
+          "channel": "halfwave",
+          "start": 28,
+          "stop": 208
+        }
+      ],
+      "pre_delay": 0.1,
+      "record": [
+        "ZWOSpectrum",
+        "ZWOPhase",
+        "ZWOAmplitude",
+        "ZWORefPhase",
+        "ZWORefAmplitude",
+        "SHGframe",
+        "@elapsed"
+      ],
+      "hooks": {
+        "pre_record": {
+          "enabled": true,
+          "code": "from shg_addon.z_control import guard\nguard(globals())\n\nfrom shg_addon.actions import execute\nexecute(globals(), 'acquire_point', **{})"
+        }
+      }
+    },
+    {
+      "points": 21,
+      "sweep": [
+        {
+          "channel": "MEMS.theta",
+          "start": -10.0,
+          "stop": 10.0
+        }
+      ],
+      "record": [],
+      "pre_delay": 0.1,
+      "label": "MEMS angle (deg)"
+    },
+    {
+      "points": 9,
+      "sweep": [
+        {
+          "channel": "Vz",
+          "start": 0.0,
+          "stop": 40.0
+        }
+      ],
+      "record": [],
+      "pre_delay": 0.1,
+      "label": "z drive (V)",
+      "hooks": {
+        "pre_sweep": {
+          "enabled": true,
+          "code": "from shg_addon.z_control import guard\nguard(globals())"
+        }
+      }
+    }
+  ],
+  "pre": {
+    "hook": "from shg_addon.actions import execute\nexecute(globals(), 'prepare_scan', **{})\n\nmems_drive = float(get('MEMS.Vd'))\nif not np.isfinite(mems_drive) or mems_drive <= 0:\n    raise ValueError('Set MEMS.Vd explicitly to a finite positive drive voltage before running this sweep; the preset preserves drive voltage and output-enable states')\n\nfrom shg_addon.z_control import prepare\nprepare(globals())",
+    "constants": [
+      {
+        "channel": "camera.exposure",
+        "value": 1.0
+      }
+    ]
+  },
+  "post": {
+    "hook": "",
+    "constants": [],
+    "record": []
+  },
+  "on_read_error": "abort",
+  "on_set_error": "abort",
+  "run_post_on_abort": true,
+  "metadata": {
+    "comment": "SHG: half-wave x MEMS x Vz. Vlock is set to 70 V and verified before any Vz write; guards precede each z step and each spectrum. Vlock remains at 70 V on finish/abort. Review ranges, drive voltage and output-enable states before starting."
+  }
+}

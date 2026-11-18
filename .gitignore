@@ -11,3 +11,13 @@ dist/
 !examples/*.json
 site/
 docs/__pycache__/
+
+# SHG laboratory state is local: includes connection profiles, calibrations,
+# backend access tokens, camera frames, and tracking/calibration measurements.
+shg_addon/state/
+shg_addon/data/
+shg_addon/vendor/toupcam.py
+shg_addon/vendor/*.dll
+shg_addon/vendor/*.so*
+shg_addon/vendor/*.dylib
+vendor/zwo/*.dll

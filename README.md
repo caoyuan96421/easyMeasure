@@ -61,6 +61,11 @@ module).
 
 ## Install
 
+For the native SHG acquisition, beam tracking, pixel/X/Y calibration, and
+half-wave/MEMS/z sweep tools, see the [SHG add-on guide](shg_addon/README.md).
+Install its optional dependencies with `pip install -e ".[shg]"` and launch
+`easymeasure-shg` (or `python -m shg_addon.launcher`).
+
 ```bash
 pip install -e .                 # numpy, PySide6, pyqtgraph, h5py, python-pptx, matplotlib,
                                  # pyvisa, pyserial, nidaqmx …
