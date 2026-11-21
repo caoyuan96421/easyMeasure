@@ -82,7 +82,8 @@ policies and metadata are below.
 
 The **Sweep** menu works on the sweep in the editor: *New*, *Load… / Save…* (JSON),
 *Load from data file…* (the definition of a stored run), *Validate* (limit-checks every
-setpoint), *Add to queue* and *Add & start*. *Continue an aborted run…* picks a run of
+setpoint), *Queue up* and *Start now* (also big buttons at the top right of the
+editor). *Continue an aborted run…* picks a run of
 the data folder and [continues it](queue.md#continuing-an-aborted-sweep).
 
 ## Queue
@@ -121,8 +122,8 @@ and search.
   PowerPoint file, display), Quit (the backend keeps running).
 * **Setup**: Save setup…, Load setup…, Merge setup… (see
   [Instruments](instruments.md#saving-the-setup)).
-* **Sweep**: New, Load…, Load from data file…, Save…, Validate, Add to queue, Add &
-  start, for the sweep in the editor (see [Sweeps](sweeps.md#the-sweep-editor)).
+* **Sweep**: New, Load…, Load from data file…, Save…, Validate, Queue up, Start now,
+  for the sweep in the editor (see [Sweeps](sweeps.md#the-sweep-editor)).
   Using one brings its tab to the front.
 * **Backend**: Start backend, Reconnect, Restart backend…, Show tray icon, Remote
   access…, Driver wizard…, Shut down backend….

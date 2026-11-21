@@ -170,7 +170,8 @@ In the **Sweep** menu (menu bar, at the top of the window):
 
 5. **Validate**: easyMeasure computes every point and checks it against the limits.
    The status line of the editor says `✔ valid: shape 161 = 161 points`.
-6. **Add & start**.
+6. **Start now**: the big green button at the top right of the Sweep editor (or
+   *Sweep → Start now*).
 
 Also worth a look: the **Post-sweep** tab. Add a constant there, `Vbg` = 0, and the
 gate goes back to 0 V when the measurement ends, even if it ends with an error or you

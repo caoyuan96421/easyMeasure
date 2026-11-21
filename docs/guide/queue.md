@@ -12,10 +12,14 @@ it:
 
 ## Adding to the queue
 
-In the **Sweep** menu (for the sweep in the editor):
+With the two big buttons at the top right of the Sweep editor, or the same entries
+of the **Sweep** menu:
 
-* **Add to queue** puts the sweep at the end of the queue.
-* **Add & start** does the same and starts the queue.
+* **Queue up** puts the sweep at the end of the queue. It runs when the queue gets
+  to it; a queue that is not running is not started.
+* **Start now** puts the sweep at the front of the queue and starts the queue. It
+  runs at once, or, if a run is going on, right after that one (which is not
+  interrupted), before anything else that was queued.
 
 The sweep is validated when it is added: a sweep that would exceed a limit is refused
 right there, not at 3 a.m. Later changes in the editor do not change a sweep that is

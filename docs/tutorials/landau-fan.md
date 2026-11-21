@@ -81,7 +81,7 @@ This sweep is `examples/graphene_fan.json`.
 
 ## 3. Run it and watch the field
 
-**Sweep → Add & start.** While it runs, add `B` to the **Monitor** (choose `B`, click
+**Start now.** While it runs, add `B` to the **Monitor** (choose `B`, click
 **Monitor**) to watch the magnet step and settle:
 
 ![The fan building up, with the field in the monitor](../images/t1-fan-running.png)

@@ -403,13 +403,20 @@ export class SweepEditor {
       btn("New", () => this.newSweep()), btn("Load…", () => this.loadFile(), { title: "load a sweep JSON file from this computer" }),
       btn("Load from data file…", () => this.loadFromData(), { cmd: "read_run_header list_runs" }),
       btn("Save…", () => this.saveFile(), { title: "download the sweep definition as JSON" }),
-      btn("Validate", () => this.validate(), { cmd: "validate_sweep" }),
-      btn("Add to queue", () => this.queue(false), { cmd: "queue_add" }),
-      btn("Add & start", () => this.queue(true), { cmd: "queue_add", cls: "primary" }));
+      btn("Validate", () => this.validate(), { cmd: "validate_sweep" }));
+    // Start now / Queue up, big, in the free corner beside the name and comment
+    this.startBtn = btn("▶  Start now", () => this.queue(true), { cmd: "queue_add", cls: "go start",
+      title: "run the sweep now: it goes to the front of the run queue, which starts; a run going on is finished first" });
+    this.queueBtn = btn("＋  Queue up", () => this.queue(false), { cmd: "queue_add", cls: "go",
+      title: "put the sweep at the end of the run queue; it runs when the queue gets to it" });
+    const go = readOnly ? null : h("div", { class: "sweep-go" }, this.startBtn, this.queueBtn);
     this.el = h("div", { class: "panel sweep" },
-      h("div", { class: "form head" }, h("label", { text: "Name" }), this.name, h("label", { text: "Comment" }), this.comment),
-      bar(h("label", {}, "on read error ", this.onRead), h("label", {}, "on set error ", this.onSet),
-        h("label", { class: "check" }, this.postOnAbort, " post actions on abort"), h("label", { class: "check" }, this.ppt, " PPT slide when done")),
+      h("div", { class: "sweep-top" },
+        h("div", { class: "sweep-head" },
+          h("div", { class: "form head" }, h("label", { text: "Name" }), this.name, h("label", { text: "Comment" }), this.comment),
+          bar(h("label", {}, "on read error ", this.onRead), h("label", {}, "on set error ", this.onSet),
+            h("label", { class: "check" }, this.postOnAbort, " post actions on abort"), h("label", { class: "check" }, this.ppt, " PPT slide when done"))),
+        go),
       tabbar, tabbody, this.status, readOnly ? null : this.actionsBar);
     this.model.on("state", () => this.refreshChannels());
     this.newSweep();
@@ -570,8 +577,11 @@ export class SweepEditor {
     const d = this._collect();
     if (!d) return;
     try {
-      const id = await this.conn.request("queue_add", { item: { kind: "sweep", definition: d }, start });
-      this.say(`queued as item #${id}${start ? " (queue started)" : ""}`);
+      const busy = !!(this.model.state && this.model.state.current_run);
+      const args = { item: { kind: "sweep", definition: d }, start };
+      if (start) args.position = 0;
+      const id = await this.conn.request("queue_add", args);
+      this.say(start ? (busy ? `item #${id}: runs right after the run going on` : `item #${id} started`) : `queued as item #${id}`);
     } catch (e) { this.say(`✘ ${e.message}`, true); }
   }
 }

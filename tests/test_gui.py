@@ -1496,12 +1496,15 @@ def test_setup_and_sweep_menus(app, gui):
         ["Save setup…", "Load setup…", "Merge setup…"]
     texts = [a.text() for a in w.sweep_menu.actions() if not a.isSeparator()]
     assert texts == ["New", "Load…", "Load from data file…", "Save…", "Validate",
-                     "Add to queue", "Add && start", "Continue an aborted run…"]
-    # no buttons left for them in the panels
+                     "Queue up", "Start now", "Continue an aborted run…"]
+    # no buttons for them in the panels, but Start now / Queue up, big, on the Sweep tab
     btns = [b.text() for b in w.setup_panel.findChildren(QPushButton)] + \
         [b.text() for b in w.editor.findChildren(QPushButton)]
-    assert not {"Save setup…", "Load setup…", "Merge setup…", "Validate", "Add to queue",
-                "Add && start"} & set(btns)
+    assert not {"Save setup…", "Load setup…", "Merge setup…", "Validate"} & set(btns)
+    assert "▶  Start now" in btns and "＋  Queue up" in btns
+    assert w.editor.start_btn.font().bold() and \
+        w.editor.start_btn.font().pointSizeF() > w.editor.status.font().pointSizeF() * 1.3
+    assert not w.running.editor.start_btn.isVisibleTo(w.running.editor)   # read-only view
     # Sweep → Validate from another tab
     w.left_tabs.setCurrentIndex(0)
     w.editor.load_definition({"name": "m", "dimensions": [
@@ -1524,8 +1527,24 @@ def test_setup_and_sweep_menus(app, gui):
     # the lock
     w.set_locked(True)
     assert not w.setup_panel.act_load.isEnabled() and not w.editor.act_run.isEnabled()
+    assert not w.editor.start_btn.isEnabled() and not w.editor.queue_btn.isEnabled()
     w.set_locked(False)
     assert w.setup_panel.act_load.isEnabled() and w.editor.act_run.isEnabled()
+    assert w.editor.start_btn.isEnabled() and w.editor.queue_btn.isEnabled()
+    # Queue up: at the end of the queue, which does not start
+    before = [q["id"] for q in be.queue_state()["queued"]]
+    w.editor.queue_btn.click()
+    assert pump(app, 5, lambda: len(be.queue_state()["queued"]) == len(before) + 1)
+    queued = be.queue_state()["queued"]
+    assert [q["id"] for q in queued[:-1]] == before and not be.queue_state()["processing"]
+    last = queued[-1]["id"]
+    # Start now: at the front, and the queue starts - it runs before the others
+    w.editor.start_btn.click()
+    assert pump(app, 5, lambda: "started" in w.editor.status.text())
+    first = int(w.editor.status.text().split("#")[1].split()[0])
+    assert pump(app, 30, lambda: {first, last} <= {h["id"] for h in be.queue_state()["history"]})
+    order = [h["id"] for h in be.queue_state()["history"]]
+    assert order.index(first) < order.index(last)
 
 
 def test_check_buttons_on_code_and_formula_fields(app, gui):

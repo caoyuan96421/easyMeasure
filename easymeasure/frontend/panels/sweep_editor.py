@@ -769,21 +769,58 @@ class SweepEditor(QWidget):
         self.act_validate = act("Validate", self.validate,
                                 "compute and check every point; shows the number of points "
                                 "and the shortest duration")
-        self.act_queue = act("Add to queue", lambda: self._queue(False),
-                             "put the sweep at the end of the run queue")
-        self.act_run = act("Add && start", lambda: self._queue(True),
-                           "put the sweep at the end of the run queue and start the queue")
+        self.act_queue = act("Queue up", lambda: self._queue(False),
+                             "put the sweep at the end of the run queue; it runs when the "
+                             "queue gets to it")
+        self.act_run = act("Start now", lambda: self._queue(True),
+                           "run the sweep now: it goes to the front of the run queue, which "
+                           "starts; a run going on is finished first")
         #: the Sweep menu, in order (None: a separator)
         self.sweep_actions = [self.act_new, self.act_load, self.act_from_data, self.act_save,
                               None, self.act_validate, None, self.act_queue, self.act_run]
+        # Start now / Queue up, big, in the free corner beside the name and comment
+        self.start_btn = self._big_button(self.act_run, "▶  Start now", primary=True)
+        self.queue_btn = self._big_button(self.act_queue, "＋  Queue up")
+        go = QVBoxLayout()
+        go.setSpacing(6)
+        go.addWidget(self.start_btn)
+        go.addWidget(self.queue_btn)
+        go.addStretch(1)
+        top = QHBoxLayout()
+        top.addLayout(head, 1)
+        top.addSpacing(12)
+        top.addLayout(go)
         lay = QVBoxLayout(self)
-        lay.addLayout(head)
+        lay.addLayout(top)
         lay.addWidget(self.tabs, 1)
         lay.addWidget(self.status)
         if model is not None:
             model.stateChanged.connect(lambda _: self.refresh_channels())
         self.new()
         self.set_read_only(read_only)
+
+    def _big_button(self, action: QAction, text: str, primary: bool = False) -> QPushButton:
+        """A big, bold button doing what *action* of the Sweep menu does (enabled with it)."""
+        b = QPushButton(text)
+        b.setObjectName("sweep_start" if primary else "sweep_queue")
+        b.setToolTip(action.toolTip())
+        f = b.font()
+        f.setBold(True)
+        f.setPointSizeF(f.pointSizeF() * 1.45)
+        b.setFont(f)
+        b.setMinimumHeight(int(b.fontMetrics().height() * 1.9))
+        b.setMinimumWidth(b.fontMetrics().horizontalAdvance(text) + 40)
+        if primary:
+            b.setStyleSheet("QPushButton { background: #2e7d32; color: white; border: 1px solid "
+                            "#1b5e20; border-radius: 4px; padding: 4px 14px }"
+                            "QPushButton:hover { background: #388e3c }"
+                            "QPushButton:pressed { background: #1b5e20 }"
+                            "QPushButton:disabled { background: #9e9e9e; border-color: #8a8a8a; "
+                            "color: #eeeeee }")
+        b.clicked.connect(action.trigger)
+        action.changed.connect(lambda: b.setEnabled(action.isEnabled()))
+        b.setEnabled(action.isEnabled())
+        return b
 
     # ------------------------------------------------------------ dimensions --
     def _channel_lists(self):
@@ -913,6 +950,8 @@ class SweepEditor(QWidget):
         for a in self.sweep_actions:
             if a is not None and a is not self.act_save:
                 a.setEnabled(not ro)
+        for b in (self.start_btn, self.queue_btn):     # the running sweep: nothing to start
+            b.setVisible(not ro)
         for d in self.dims:
             d.set_read_only(ro)
         self.pre.set_read_only(ro)
@@ -986,13 +1025,20 @@ class SweepEditor(QWidget):
                               "<span style='color:#d55'>✘ %s</span>" % e.replace("; ", "<br>")))
 
     def _queue(self, start: bool):
+        """Queue up (the end of the queue), or start now (the front, and start the queue:
+        at once, or right after the run going on)."""
         d = self._collect()
         if d is None or self.conn is None:
             return
-        self.status.setText("queueing…")
-        self.conn.request("queue_add", {"item": {"kind": "sweep", "definition": d}, "start": start},
-                          on_ok=lambda i: self.status.setText("queued as item #%s%s" % (
-                              i, " and started" if start else "")),
+        self.status.setText("starting…" if start else "queueing…")
+        args = {"item": {"kind": "sweep", "definition": d}, "start": start}
+        if start:
+            args["position"] = 0
+        busy = bool(self.model and (self.model.state or {}).get("current_run"))
+        self.conn.request("queue_add", args,
+                          on_ok=lambda i: self.status.setText(
+                              ("item #%s: runs right after the run going on" % i if busy else
+                               "item #%s started" % i) if start else "queued as item #%s" % i),
                           on_err=lambda e: self.status.setText(
                               "<span style='color:#d55'>✘ %s</span>" % e.replace("; ", "<br>")))
 

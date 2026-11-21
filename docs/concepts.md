@@ -82,7 +82,7 @@ windows can be open at once, also from other computers through the
 | add an instrument, make an alias or a composite channel | *Instruments & channels* |
 | set something by hand | the *Manual* panel (right) |
 | watch values continuously | the *Monitor* panel (right) |
-| describe and start a measurement | *Sweep editor* tab, then the **Sweep** menu (*Validate*, *Add & start*) |
+| describe and start a measurement | *Sweep editor* tab: **Start now** or **Queue up** at its top right (*Validate* is in the **Sweep** menu) |
 | pause, abort, see what ran | *Queue* (and the toolbar) |
 | look at data | *Live data*, *File → Open data file…* |
 | write or run a script | *Queue → Script* |

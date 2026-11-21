@@ -99,7 +99,7 @@ On Windows: `setup_venv.bat` creates `.venv` and installs everything,
 `run_demo_backend.bat` starts a backend with the simulated instruments and
 `run_gui.bat` starts the GUI.
 
-In the GUI: *Sweep editor → Load…* `examples/sweep_dot_map.json` → *Add & start*,
+In the GUI: *Sweep editor → Load…* `examples/sweep_dot_map.json` → *Start now*,
 then watch *Live data*. Close the GUI mid-sweep and reopen it: the sweep keeps
 running and the live view resynchronises.
 
@@ -400,7 +400,7 @@ dict, `np`). Pause / resume / abort (current) / abort all / stop after current.
 Abort reaches scripts on *every line*, so even `while True: pass` stops.
 *Start* processes what is queued; on an empty queue it does nothing, and a queue that
 runs empty goes back to `idle` by itself, so an item added later waits for the next
-*Start* (or is added with `start=True`, e.g. *Add & start*). `queue_state()["can"]`
+*Start* (or is added with `start=True`, e.g. *Start now*). `queue_state()["can"]`
 tells which controls apply right now; the GUI and the web page enable their buttons
 from it (no *Abort* without a running item, no *Resume* unless paused …).
 

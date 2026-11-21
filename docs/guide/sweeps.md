@@ -31,7 +31,10 @@ The **Sweep** menu, in the menu bar, works on the sweep in the editor:
   measurement, for a rerun or a variation.
 * **Validate** (5) checks the sweep and shows its number of points and shortest
   duration.
-* **Add to queue** and **Add & start** (6) queue it.
+* **Queue up** and **Start now** (6) queue it. Both are also big buttons at the top
+  right of the editor, beside the name: **Start now** runs the sweep at once (or
+  right after the run going on), **Queue up** puts it at the end of the queue (see
+  [Queue](queue.md#adding-to-the-queue)).
 
 A sweep is stored as a plain dictionary, the same as a JSON file. The examples
 below show that form, since it is compact: each key is a box of the editor. The full
