@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QStyledItemDelegate, QCheckBox, QComboBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+                               QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                                QPlainTextEdit, QPushButton, QSpinBox, QSplitter,
                                QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
@@ -698,9 +698,6 @@ class SweepEditor(QWidget):
         self.ppt = QCheckBox("PPT slide when done")
         self.ppt.setToolTip("append a summary slide to the configured PowerPoint file")
         self.ppt.setChecked(True)
-        head = QFormLayout()
-        head.addRow("Name", self.name)
-        head.addRow("Comment", self.comment)
         opts = FlowLayout()
         for lab, w in (("on read error", self.on_read), ("on set error", self.on_set)):
             box = QWidget()
@@ -711,7 +708,9 @@ class SweepEditor(QWidget):
             opts.addWidget(box)
         opts.addWidget(self.post_on_abort)
         opts.addWidget(self.ppt)
-        head.addRow(opts)
+        self._opts_host = QWidget()
+        self._opts_host.setLayout(opts)
+        opts.setContentsMargins(0, 0, 0, 0)
 
         # dimensions
         self.dim_list = QListWidget()
@@ -778,18 +777,22 @@ class SweepEditor(QWidget):
         #: the Sweep menu, in order (None: a separator)
         self.sweep_actions = [self.act_new, self.act_load, self.act_from_data, self.act_save,
                               None, self.act_validate, None, self.act_queue, self.act_run]
-        # Start now / Queue up, big, in the free corner beside the name and comment
+        # the head: Name and Comment, each beside a big button (Start now, Queue up),
+        # then the error policies and options across the whole width, under the buttons
+        # too - no empty corner
         self.start_btn = self._big_button(self.act_run, "▶  Start now", primary=True)
         self.queue_btn = self._big_button(self.act_queue, "＋  Queue up")
-        go = QVBoxLayout()
-        go.setSpacing(6)
-        go.addWidget(self.start_btn)
-        go.addWidget(self.queue_btn)
-        go.addStretch(1)
-        top = QHBoxLayout()
-        top.addLayout(head, 1)
-        top.addSpacing(12)
-        top.addLayout(go)
+        top = QGridLayout()
+        top.setHorizontalSpacing(8)
+        top.setVerticalSpacing(5)
+        top.addWidget(QLabel("Name"), 0, 0)
+        top.addWidget(self.name, 0, 1)
+        top.addWidget(self.start_btn, 0, 2)
+        top.addWidget(QLabel("Comment"), 1, 0)
+        top.addWidget(self.comment, 1, 1)
+        top.addWidget(self.queue_btn, 1, 2)
+        top.addWidget(self._opts_host, 2, 0, 1, 3)
+        top.setColumnStretch(1, 1)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(self.tabs, 1)
@@ -808,11 +811,11 @@ class SweepEditor(QWidget):
         f.setBold(True)
         f.setPointSizeF(f.pointSizeF() * 1.45)
         b.setFont(f)
-        b.setMinimumHeight(int(b.fontMetrics().height() * 1.9))
-        b.setMinimumWidth(b.fontMetrics().horizontalAdvance(text) + 40)
+        b.setMinimumHeight(int(b.fontMetrics().height() * 1.55))
+        b.setMinimumWidth(b.fontMetrics().horizontalAdvance(text) + 36)
         if primary:
             b.setStyleSheet("QPushButton { background: #2e7d32; color: white; border: 1px solid "
-                            "#1b5e20; border-radius: 4px; padding: 4px 14px }"
+                            "#1b5e20; border-radius: 4px; padding: 2px 12px }"
                             "QPushButton:hover { background: #388e3c }"
                             "QPushButton:pressed { background: #1b5e20 }"
                             "QPushButton:disabled { background: #9e9e9e; border-color: #8a8a8a; "

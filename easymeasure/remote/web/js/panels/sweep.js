@@ -409,14 +409,14 @@ export class SweepEditor {
       title: "run the sweep now: it goes to the front of the run queue, which starts; a run going on is finished first" });
     this.queueBtn = btn("＋  Queue up", () => this.queue(false), { cmd: "queue_add", cls: "go",
       title: "put the sweep at the end of the run queue; it runs when the queue gets to it" });
-    const go = readOnly ? null : h("div", { class: "sweep-go" }, this.startBtn, this.queueBtn);
+    // the head: Name and Comment, each beside a big button, then the error policies and
+    // options across the whole width (under the buttons too: no empty corner)
     this.el = h("div", { class: "panel sweep" },
-      h("div", { class: "sweep-top" },
-        h("div", { class: "sweep-head" },
-          h("div", { class: "form head" }, h("label", { text: "Name" }), this.name, h("label", { text: "Comment" }), this.comment),
-          bar(h("label", {}, "on read error ", this.onRead), h("label", {}, "on set error ", this.onSet),
-            h("label", { class: "check" }, this.postOnAbort, " post actions on abort"), h("label", { class: "check" }, this.ppt, " PPT slide when done"))),
-        go),
+      h("div", { class: "sweep-top" + (readOnly ? " ro" : "") },
+        h("label", { text: "Name" }), this.name, readOnly ? null : this.startBtn,
+        h("label", { text: "Comment" }), this.comment, readOnly ? null : this.queueBtn,
+        bar(h("label", {}, "on read error ", this.onRead), h("label", {}, "on set error ", this.onSet),
+          h("label", { class: "check" }, this.postOnAbort, " post actions on abort"), h("label", { class: "check" }, this.ppt, " PPT slide when done"))),
       tabbar, tabbody, this.status, readOnly ? null : this.actionsBar);
     this.model.on("state", () => this.refreshChannels());
     this.newSweep();

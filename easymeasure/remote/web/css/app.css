@@ -328,12 +328,13 @@ tr.comp-var-row td:nth-child(2), tr.comp-var-row td:nth-child(3) { color: var(--
 .pl-about { margin: 6px 0; }
 .pl-manage .bad { color: #c0392b; }
 
-/* ---- the sweep editor: Start now / Queue up beside name and comment ---- */
-.sweep-top { display: flex; gap: 14px; align-items: flex-start; }
-.sweep-top > .sweep-head { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.sweep-go { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
-.sweep-go button.go { font-size: 1.3rem; font-weight: 700; padding: .45em 1.1em; min-width: 9.5em; }
-.sweep-go button.go.start { background: #2e7d32; color: #fff; border-color: #1b5e20; }
-.sweep-go button.go.start:hover:not(:disabled) { background: #388e3c; }
-.sweep-go button.go:disabled { opacity: .55; }
-@media (max-width: 700px) { .sweep-top { flex-direction: column; } .sweep-go { flex-direction: row; } }
+/* ---- the sweep editor's head: Name / Comment beside Start now / Queue up ---- */
+.sweep-top { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: 5px 8px; align-items: center; margin-bottom: 4px; }
+.sweep-top.ro { grid-template-columns: max-content minmax(0, 1fr); }
+.sweep-top > input { min-width: 0; }
+.sweep-top > .bar { grid-column: 1 / -1; margin: 0; }
+.sweep-top button.go { font-size: 1.2rem; font-weight: 700; padding: .25em .9em; min-width: 8.5em; }
+.sweep-top button.go.start { background: #2e7d32; color: #fff; border-color: #1b5e20; }
+.sweep-top button.go.start:hover:not(:disabled) { background: #388e3c; }
+.sweep-top button.go:disabled { opacity: .55; }
